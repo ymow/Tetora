@@ -307,7 +307,12 @@ func buildClaudeArgs(req ProviderRequest, streaming bool) []string {
 		"--model", req.Model,
 		"--session-id", req.SessionID,
 		"--permission-mode", cmp.Or(req.PermissionMode, "acceptEdits"),
-		"--no-session-persistence",
+	}
+	// Only disable persistence for sessionless one-off tasks.
+	// When a session ID is provided (e.g. Discord channel sessions),
+	// let the CLI persist the session so subsequent calls can resume it.
+	if req.SessionID == "" {
+		args = append(args, "--no-session-persistence")
 	}
 
 	if req.Budget > 0 {

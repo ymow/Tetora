@@ -1,0 +1,27 @@
+{
+  "name": "decompose-pipeline",
+  "description": "大票拆解→子票開發→自動 rollup→review 的完整循環",
+  "variables": {
+    "taskId": ""
+  },
+  "timeout": "4h",
+  "steps": [
+    {
+      "id": "analyze",
+      "agent": "kokuyou",
+      "prompt": "用 taskboard_get 讀取母票 {{taskId}} 的內容，分析後用 taskboard_decompose 拆成可獨立執行的子票。\n\n規則：\n- 每張子票要有明確的完成標準\n- 指定最適合的 assignee\n- 有依賴關係的子票設定 dependsOn\n- taskboard_decompose 是冪等的，重試安全"
+    },
+    {
+      "id": "monitor",
+      "agent": "ruri",
+      "prompt": "用 taskboard_list 查看母票 {{taskId}} 的所有子票狀態。\n\n子票由 auto-dispatch 自動執行，Phase 2 的 auto-rollup 會在所有子票完成後自動推進母票。\n\n如果有子票卡住（failed 超過 retry 上限），回報狀況。",
+      "dependsOn": ["analyze"]
+    },
+    {
+      "id": "review",
+      "agent": "ruri",
+      "prompt": "用 taskboard_get 檢查母票 {{taskId}} 及所有子票的成果。\n\n確認：\n1. 所有子票都 done\n2. 成果符合母票的原始需求\n3. 無遺漏項目\n\n確認後用 taskboard_move 將母票移到 done。如有問題，加 comment 說明並保持在 review。",
+      "dependsOn": ["monitor"]
+    }
+  ]
+}

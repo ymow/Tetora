@@ -156,8 +156,11 @@ func cleanupZombieSessions(dbPath string) {
 	if dbPath == "" {
 		return
 	}
+	// Exclude Discord sessions: they are long-lived channel sessions that should
+	// survive daemon restarts. Without this, launchd KeepAlive restart cycles
+	// would repeatedly kill Discord conversation continuity.
 	sql := fmt.Sprintf(
-		`UPDATE sessions SET status = 'completed', updated_at = '%s' WHERE status = 'active' AND id != '%s'`,
+		`UPDATE sessions SET status = 'completed', updated_at = '%s' WHERE status = 'active' AND id != '%s' AND source != 'discord'`,
 		time.Now().Format(time.RFC3339), SystemLogSessionID,
 	)
 	if err := execDB(dbPath, sql); err != nil {

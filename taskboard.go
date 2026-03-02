@@ -21,6 +21,7 @@ type TaskBoard struct {
 	Assignee     string   `json:"assignee"`      // agent name
 	Priority     string   `json:"priority"`      // low/normal/high/urgent
 	Model        string   `json:"model"`         // per-task model override (e.g. "sonnet", "haiku", "opus")
+	ParentID     string   `json:"parentId"`      // parent task ID (for subtasks)
 	DependsOn    []string `json:"dependsOn"`     // task IDs this task depends on
 	DiscordThread string  `json:"discordThread"` // Discord thread ID
 	CreatedAt    string   `json:"createdAt"`
@@ -120,15 +121,23 @@ func (tb *TaskBoardEngine) initTaskBoardSchema() error {
 		return fmt.Errorf("init task board schema: %w", err)
 	}
 
-	// Migrate: add cost/duration/session columns (ignore errors for existing columns).
+	// Migrate: add columns (ignore errors for existing columns).
 	migrations := []string{
 		"ALTER TABLE tasks ADD COLUMN cost_usd REAL DEFAULT 0;",
 		"ALTER TABLE tasks ADD COLUMN duration_ms INTEGER DEFAULT 0;",
 		"ALTER TABLE tasks ADD COLUMN session_id TEXT DEFAULT '';",
 		"ALTER TABLE tasks ADD COLUMN model TEXT DEFAULT '';",
+		"ALTER TABLE tasks ADD COLUMN parent_id TEXT DEFAULT '';",
+	}
+	// Index for parent-child lookups (ignore error if already exists).
+	postMigrations := []string{
+		"CREATE INDEX IF NOT EXISTS idx_tasks_parent_id ON tasks(parent_id);",
 	}
 	for _, m := range migrations {
 		execDB(tb.dbPath, m) // ignore duplicate column errors
+	}
+	for _, m := range postMigrations {
+		execDB(tb.dbPath, m)
 	}
 
 	return nil
@@ -155,7 +164,7 @@ func (tb *TaskBoardEngine) ListTasks(status, assignee, project string) ([]TaskBo
 	sql := fmt.Sprintf(`
 		SELECT id, project, title, description, status, assignee, priority,
 		       depends_on, discord_thread_id, created_at, updated_at, completed_at, retry_count,
-		       cost_usd, duration_ms, session_id, model
+		       cost_usd, duration_ms, session_id, model, parent_id
 		FROM tasks %s
 		ORDER BY
 			CASE priority
@@ -176,31 +185,7 @@ func (tb *TaskBoardEngine) ListTasks(status, assignee, project string) ([]TaskBo
 
 	var tasks []TaskBoard
 	for _, row := range rows {
-		dependsOnJSON := fmt.Sprintf("%v", row["depends_on"])
-		var dependsOn []string
-		if dependsOnJSON != "" && dependsOnJSON != "[]" {
-			json.Unmarshal([]byte(dependsOnJSON), &dependsOn)
-		}
-
-		tasks = append(tasks, TaskBoard{
-			ID:           fmt.Sprintf("%v", row["id"]),
-			Project:      fmt.Sprintf("%v", row["project"]),
-			Title:        fmt.Sprintf("%v", row["title"]),
-			Description:  fmt.Sprintf("%v", row["description"]),
-			Status:       fmt.Sprintf("%v", row["status"]),
-			Assignee:     fmt.Sprintf("%v", row["assignee"]),
-			Priority:     fmt.Sprintf("%v", row["priority"]),
-			Model:        fmt.Sprintf("%v", row["model"]),
-			DependsOn:    dependsOn,
-			DiscordThread: fmt.Sprintf("%v", row["discord_thread_id"]),
-			CreatedAt:    fmt.Sprintf("%v", row["created_at"]),
-			UpdatedAt:    fmt.Sprintf("%v", row["updated_at"]),
-			CompletedAt:  fmt.Sprintf("%v", row["completed_at"]),
-			RetryCount:   int(getFloat64(row, "retry_count")),
-			CostUSD:      getFloat64(row, "cost_usd"),
-			DurationMs:   int64(getFloat64(row, "duration_ms")),
-			SessionID:    fmt.Sprintf("%v", row["session_id"]),
-		})
+		tasks = append(tasks, parseTaskRow(row))
 	}
 	return tasks, nil
 }
@@ -228,8 +213,8 @@ func (tb *TaskBoardEngine) CreateTask(task TaskBoard) (TaskBoard, error) {
 	}
 
 	sql := fmt.Sprintf(`
-		INSERT INTO tasks (id, project, title, description, status, assignee, priority, model, depends_on, discord_thread_id, created_at, updated_at, retry_count)
-		VALUES ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', 0)
+		INSERT INTO tasks (id, project, title, description, status, assignee, priority, model, depends_on, discord_thread_id, created_at, updated_at, retry_count, parent_id)
+		VALUES ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', 0, '%s')
 	`,
 		escapeSQLite(task.ID),
 		escapeSQLite(task.Project),
@@ -243,6 +228,7 @@ func (tb *TaskBoardEngine) CreateTask(task TaskBoard) (TaskBoard, error) {
 		escapeSQLite(task.DiscordThread),
 		task.CreatedAt,
 		task.UpdatedAt,
+		escapeSQLite(task.ParentID),
 	)
 
 	if err := execDB(tb.dbPath, sql); err != nil {
@@ -261,7 +247,7 @@ func (tb *TaskBoardEngine) UpdateTask(id string, updates map[string]any) (TaskBo
 	var setClauses []string
 	for key, val := range updates {
 		switch key {
-		case "title", "description", "priority", "assignee", "project", "discordThread", "model":
+		case "title", "description", "priority", "assignee", "project", "discordThread", "model", "parentId":
 			setClauses = append(setClauses, fmt.Sprintf("%s = '%s'", toSnakeCase(key), escapeSQLite(fmt.Sprintf("%v", val))))
 		case "dependsOn":
 			dependsOnJSON, _ := json.Marshal(val)
@@ -305,7 +291,7 @@ func (tb *TaskBoardEngine) GetTask(id string) (TaskBoard, error) {
 	sql := fmt.Sprintf(`
 		SELECT id, project, title, description, status, assignee, priority,
 		       depends_on, discord_thread_id, created_at, updated_at, completed_at, retry_count,
-		       cost_usd, duration_ms, session_id, model
+		       cost_usd, duration_ms, session_id, model, parent_id
 		FROM tasks WHERE id = '%s'
 	`, escapeSQLite(id))
 
@@ -317,32 +303,7 @@ func (tb *TaskBoardEngine) GetTask(id string) (TaskBoard, error) {
 		return TaskBoard{}, fmt.Errorf("task not found")
 	}
 
-	row := rows[0]
-	dependsOnJSON := fmt.Sprintf("%v", row["depends_on"])
-	var dependsOn []string
-	if dependsOnJSON != "" && dependsOnJSON != "[]" {
-		json.Unmarshal([]byte(dependsOnJSON), &dependsOn)
-	}
-
-	return TaskBoard{
-		ID:           fmt.Sprintf("%v", row["id"]),
-		Project:      fmt.Sprintf("%v", row["project"]),
-		Title:        fmt.Sprintf("%v", row["title"]),
-		Description:  fmt.Sprintf("%v", row["description"]),
-		Status:       fmt.Sprintf("%v", row["status"]),
-		Assignee:     fmt.Sprintf("%v", row["assignee"]),
-		Priority:     fmt.Sprintf("%v", row["priority"]),
-		Model:        fmt.Sprintf("%v", row["model"]),
-		DependsOn:    dependsOn,
-		DiscordThread: fmt.Sprintf("%v", row["discord_thread_id"]),
-		CreatedAt:    fmt.Sprintf("%v", row["created_at"]),
-		UpdatedAt:    fmt.Sprintf("%v", row["updated_at"]),
-		CompletedAt:  fmt.Sprintf("%v", row["completed_at"]),
-		RetryCount:   int(getFloat64(row, "retry_count")),
-		CostUSD:      getFloat64(row, "cost_usd"),
-		DurationMs:   int64(getFloat64(row, "duration_ms")),
-		SessionID:    fmt.Sprintf("%v", row["session_id"]),
-	}, nil
+	return parseTaskRow(rows[0]), nil
 }
 
 // MoveTask moves a task to a new status, enforcing dependency checks.
@@ -569,6 +530,63 @@ func (tb *TaskBoardEngine) fireWebhook(event string, payload any) {
 	}
 }
 
+// parseTaskRow converts a DB row map into a TaskBoard struct.
+func parseTaskRow(row map[string]any) TaskBoard {
+	dependsOnJSON := fmt.Sprintf("%v", row["depends_on"])
+	var dependsOn []string
+	if dependsOnJSON != "" && dependsOnJSON != "[]" {
+		json.Unmarshal([]byte(dependsOnJSON), &dependsOn)
+	}
+
+	parentID := fmt.Sprintf("%v", row["parent_id"])
+	if parentID == "<nil>" {
+		parentID = ""
+	}
+
+	return TaskBoard{
+		ID:            fmt.Sprintf("%v", row["id"]),
+		Project:       fmt.Sprintf("%v", row["project"]),
+		Title:         fmt.Sprintf("%v", row["title"]),
+		Description:   fmt.Sprintf("%v", row["description"]),
+		Status:        fmt.Sprintf("%v", row["status"]),
+		Assignee:      fmt.Sprintf("%v", row["assignee"]),
+		Priority:      fmt.Sprintf("%v", row["priority"]),
+		Model:         fmt.Sprintf("%v", row["model"]),
+		ParentID:      parentID,
+		DependsOn:     dependsOn,
+		DiscordThread: fmt.Sprintf("%v", row["discord_thread_id"]),
+		CreatedAt:     fmt.Sprintf("%v", row["created_at"]),
+		UpdatedAt:     fmt.Sprintf("%v", row["updated_at"]),
+		CompletedAt:   fmt.Sprintf("%v", row["completed_at"]),
+		RetryCount:    int(getFloat64(row, "retry_count")),
+		CostUSD:       getFloat64(row, "cost_usd"),
+		DurationMs:    int64(getFloat64(row, "duration_ms")),
+		SessionID:     fmt.Sprintf("%v", row["session_id"]),
+	}
+}
+
+// ListChildren returns all tasks with the given parentID.
+func (tb *TaskBoardEngine) ListChildren(parentID string) ([]TaskBoard, error) {
+	sql := fmt.Sprintf(`
+		SELECT id, project, title, description, status, assignee, priority,
+		       depends_on, discord_thread_id, created_at, updated_at, completed_at, retry_count,
+		       cost_usd, duration_ms, session_id, model, parent_id
+		FROM tasks WHERE parent_id = '%s'
+		ORDER BY created_at ASC
+	`, escapeSQLite(parentID))
+
+	rows, err := queryDB(tb.dbPath, sql)
+	if err != nil {
+		return nil, err
+	}
+
+	var tasks []TaskBoard
+	for _, row := range rows {
+		tasks = append(tasks, parseTaskRow(row))
+	}
+	return tasks, nil
+}
+
 // --- Utility Functions ---
 
 func generateID(prefix string) string {
@@ -582,6 +600,8 @@ func toSnakeCase(s string) string {
 		return "discord_thread_id"
 	case "dependsOn":
 		return "depends_on"
+	case "parentId":
+		return "parent_id"
 	default:
 		return s
 	}
@@ -632,7 +652,7 @@ func (tb *TaskBoardEngine) GetBoardView(project, assignee, priority string) (*Bo
 	sql := fmt.Sprintf(`
 		SELECT id, project, title, description, status, assignee, priority,
 		       depends_on, discord_thread_id, created_at, updated_at, completed_at, retry_count,
-		       cost_usd, duration_ms, session_id, model
+		       cost_usd, duration_ms, session_id, model, parent_id
 		FROM tasks %s
 		ORDER BY
 			CASE priority
@@ -663,31 +683,7 @@ func (tb *TaskBoardEngine) GetBoardView(project, assignee, priority string) (*Bo
 	var totalCost float64
 
 	for _, row := range rows {
-		dependsOnJSON := fmt.Sprintf("%v", row["depends_on"])
-		var dependsOn []string
-		if dependsOnJSON != "" && dependsOnJSON != "[]" {
-			json.Unmarshal([]byte(dependsOnJSON), &dependsOn)
-		}
-
-		t := TaskBoard{
-			ID:            fmt.Sprintf("%v", row["id"]),
-			Project:       fmt.Sprintf("%v", row["project"]),
-			Title:         fmt.Sprintf("%v", row["title"]),
-			Description:   fmt.Sprintf("%v", row["description"]),
-			Status:        fmt.Sprintf("%v", row["status"]),
-			Assignee:      fmt.Sprintf("%v", row["assignee"]),
-			Priority:      fmt.Sprintf("%v", row["priority"]),
-			Model:         fmt.Sprintf("%v", row["model"]),
-			DependsOn:     dependsOn,
-			DiscordThread: fmt.Sprintf("%v", row["discord_thread_id"]),
-			CreatedAt:     fmt.Sprintf("%v", row["created_at"]),
-			UpdatedAt:     fmt.Sprintf("%v", row["updated_at"]),
-			CompletedAt:   fmt.Sprintf("%v", row["completed_at"]),
-			RetryCount:    int(getFloat64(row, "retry_count")),
-			CostUSD:       getFloat64(row, "cost_usd"),
-			DurationMs:    int64(getFloat64(row, "duration_ms")),
-			SessionID:     fmt.Sprintf("%v", row["session_id"]),
-		}
+		t := parseTaskRow(row)
 
 		columns[t.Status] = append(columns[t.Status], t)
 		byStatus[t.Status]++

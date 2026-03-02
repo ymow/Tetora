@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -340,6 +343,35 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 		}
 	}
 
+	// --- Phase A: Autonomous execution mode ---
+	// Inject execution rules so the agent plans via todo.md instead of CLI plan mode.
+	prompt += "\n\n## Execution Rules\n"
+	prompt += "- You are running autonomously. Do NOT use plan mode or ask for confirmation.\n"
+	prompt += "- FIRST: Write your execution plan as a checklist to your todo.md file.\n"
+	prompt += "- THEN: Execute each item, checking them off as you go.\n"
+	prompt += "- Log major milestones by calling taskboard_comment.\n"
+	prompt += "- Your todo.md persists across retries — if items exist, continue from where you left off.\n"
+
+	// --- Phase B: Per-agent todo progress tracking ---
+	// Inject agent's existing todo.md for retry awareness.
+	todoPath := filepath.Join(d.cfg.AgentsDir, t.Assignee, "todo.md")
+	if todoContent, err := os.ReadFile(todoPath); err == nil && len(bytes.TrimSpace(todoContent)) > 0 {
+		prompt += "\n\n## Your Previous Progress (todo.md)\n"
+		prompt += string(todoContent)
+		prompt += "\n\nContinue from where you left off. Update your todo.md as you complete items.\n"
+	}
+
+	// Inject previous execution comments for retry context.
+	if t.RetryCount > 0 {
+		comments, _ := d.engine.GetThread(t.ID)
+		if len(comments) > 0 {
+			prompt += "\n\n## Previous Execution Log\n"
+			for _, c := range comments {
+				prompt += fmt.Sprintf("[%s] %s: %s\n", c.CreatedAt, c.Author, c.Content)
+			}
+		}
+	}
+
 	taskID := t.ID // capture for closure
 	task := Task{
 		Name:   "board:" + t.ID,
@@ -353,6 +385,11 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 		},
 	}
 	fillDefaults(d.cfg, &task)
+
+	// Taskboard tasks run unattended — force non-interactive mode.
+	// Plan-before-execute is achieved via prompt instructions (write todo.md),
+	// not via CLI plan mode which requires interactive approval.
+	task.PermissionMode = "auto"
 
 	// LLM-based timeout estimation: replaces keyword heuristic with a quick
 	// haiku call that reads the actual task content to judge complexity.
@@ -405,6 +442,16 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 		newStatus = "failed"
 	}
 
+	// Detect partial completion: context limit or deadline exceeded should not be
+	// treated as success — mark as failed so AutoRetryFailed() can pick it up.
+	if newStatus == "done" &&
+		(strings.Contains(result.Output, "[stopped: context limit reached]") ||
+			strings.Contains(result.Output, "[stopped: task deadline exceeded]")) {
+		newStatus = "failed"
+		d.engine.AddComment(t.ID, "system",
+			"[auto-flag] Task stopped due to context/timeout limit. Marked failed for retry.")
+	}
+
 	// Review gate: if requireReview is enabled, route to "review" instead of "done".
 	if d.engine.config.RequireReview && newStatus == "done" && t.Status != "review" {
 		newStatus = "review"
@@ -441,6 +488,8 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 	}
 
 	if newStatus == "done" || newStatus == "review" {
+		// Check if completing this task should roll up the parent.
+		d.checkParentRollup(t.ID)
 
 		// Add result as comment.
 		output := result.Output
@@ -657,6 +706,61 @@ func (d *TaskBoardDispatcher) parseTriageInterval() time.Duration {
 		return time.Hour
 	}
 	return dur
+}
+
+// checkParentRollup checks if completing a child task means all siblings are done,
+// and if so, moves the parent task to review (or done if review not required).
+func (d *TaskBoardDispatcher) checkParentRollup(taskID string) {
+	task, err := d.engine.GetTask(taskID)
+	if err != nil || task.ParentID == "" {
+		return
+	}
+
+	children, err := d.engine.ListChildren(task.ParentID)
+	if err != nil || len(children) == 0 {
+		return
+	}
+
+	// Check if ALL children are done.
+	allDone := true
+	for _, c := range children {
+		if c.Status != "done" {
+			allDone = false
+			break
+		}
+	}
+	if !allDone {
+		return
+	}
+
+	// All children done — roll up parent.
+	parent, err := d.engine.GetTask(task.ParentID)
+	if err != nil {
+		logWarn("taskboard rollup: failed to get parent", "parentId", task.ParentID, "error", err)
+		return
+	}
+
+	// Don't roll up if parent is already done/review.
+	if parent.Status == "done" || parent.Status == "review" {
+		return
+	}
+
+	targetStatus := "done"
+	if d.engine.config.RequireReview {
+		targetStatus = "review"
+	}
+
+	if _, err := d.engine.MoveTask(task.ParentID, targetStatus); err != nil {
+		logWarn("taskboard rollup: failed to move parent", "parentId", task.ParentID, "target", targetStatus, "error", err)
+		return
+	}
+
+	comment := fmt.Sprintf("[auto-rollup] All %d child tasks completed. Parent moved to %s.", len(children), targetStatus)
+	if _, err := d.engine.AddComment(task.ParentID, "system", comment); err != nil {
+		logWarn("taskboard rollup: failed to add comment", "parentId", task.ParentID, "error", err)
+	}
+
+	logInfo("taskboard rollup: parent rolled up", "parentId", task.ParentID, "children", len(children), "status", targetStatus)
 }
 
 // buildDependencyContext fetches the latest completion comment from each dependency task

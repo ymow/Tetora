@@ -129,6 +129,8 @@ var toolProfileSets = map[string][]string{
 		"agent_dispatch", "lesson_record",
 		"task_create", "task_list", "task_update",
 		"file_read", "file_write",
+		"taskboard_list", "taskboard_get", "taskboard_create",
+		"taskboard_move", "taskboard_comment", "taskboard_decompose",
 	},
 	// "full" = all tools (no filtering)
 }
@@ -175,4 +177,5 @@ func (r *ToolRegistry) registerBuiltins(cfg *Config) {
 	registerIntegrationTools(r, cfg, enabled)
 	registerDailyTools(r, cfg, enabled)
 	registerAdminTools(r, cfg, enabled)
+	registerTaskboardTools(r, cfg, enabled)
 }
