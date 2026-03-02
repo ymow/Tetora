@@ -14,7 +14,6 @@ import (
 )
 
 func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
-	cfg := s.cfg
 	state := s.state
 	sem := s.sem
 	childSem := s.childSem
@@ -34,7 +33,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 	})
 
 	// --- Sprite Config + Assets ---
-	spritesDir := filepath.Join(cfg.baseDir, "media", "sprites")
+	spritesDir := filepath.Join(s.cfg.baseDir, "media", "sprites")
 	mux.HandleFunc("/api/sprites/config", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
@@ -64,6 +63,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 			http.Error(w, "GET only", http.StatusMethodNotAllowed)
 			return
 		}
+		cfg := s.Cfg()
 		w.Header().Set("Content-Type", "application/json")
 		status := r.URL.Query().Get("status")
 		items := queryQueue(cfg.HistoryDB, status)
@@ -78,6 +78,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 	})
 
 	mux.HandleFunc("/queue/", func(w http.ResponseWriter, r *http.Request) {
+		cfg := s.Cfg()
 		w.Header().Set("Content-Type", "application/json")
 		path := strings.TrimPrefix(r.URL.Path, "/queue/")
 
@@ -173,6 +174,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
 			return
 		}
+		cfg := s.Cfg()
 
 		// Allow sub-agent dispatches to run concurrently with parent tasks.
 		// Only block duplicate batch dispatches from external callers.
@@ -244,6 +246,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
 			return
 		}
+		cfg := s.Cfg()
 		w.Header().Set("Content-Type", "application/json")
 
 		id := strings.TrimPrefix(r.URL.Path, "/cancel/")
@@ -355,10 +358,11 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 		json.NewEncoder(w).Encode(tasks)
 	})
 
-	// --- Tasks (Dashboard DB) ---
+	// --- Tasks (History DB) ---
 	mux.HandleFunc("/tasks", func(w http.ResponseWriter, r *http.Request) {
-		if cfg.DashboardDB == "" {
-			http.Error(w, `{"error":"dashboard DB not configured"}`, http.StatusServiceUnavailable)
+		cfg := s.Cfg()
+		if cfg.HistoryDB == "" {
+			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
 
@@ -366,7 +370,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 		case http.MethodGet:
 			status := r.URL.Query().Get("status")
 			if status != "" {
-				tasks, err := getTasksByStatus(cfg.DashboardDB, status)
+				tasks, err := getTasksByStatus(cfg.HistoryDB, status)
 				if err != nil {
 					http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 					return
@@ -374,7 +378,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(tasks)
 			} else {
-				stats, err := getTaskStats(cfg.DashboardDB)
+				stats, err := getTaskStats(cfg.HistoryDB)
 				if err != nil {
 					http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 					return
@@ -393,7 +397,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
 				return
 			}
-			if err := updateTaskStatus(cfg.DashboardDB, body.ID, body.Status, body.Error); err != nil {
+			if err := updateTaskStatus(cfg.HistoryDB, body.ID, body.Status, body.Error); err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 				return
 			}
@@ -407,6 +411,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 
 	// --- Output files ---
 	mux.HandleFunc("/outputs/", func(w http.ResponseWriter, r *http.Request) {
+		cfg := s.Cfg()
 		name := strings.TrimPrefix(r.URL.Path, "/outputs/")
 		// Strict filename validation: only allow alphanumeric, dash, underscore, dot.
 		if name == "" || !isValidOutputFilename(name) {
@@ -440,6 +445,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
+		cfg := s.Cfg()
 
 		// Parse multipart form (max 50MB).
 		if err := r.ParseMultipartForm(50 << 20); err != nil {

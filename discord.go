@@ -1508,7 +1508,7 @@ func (db *DiscordBot) sendRouteResponse(channelID string, route *RouteResult, re
 			{Name: "Status", Value: result.Status, Inline: true},
 			{Name: "Cost", Value: fmt.Sprintf("$%.4f", result.CostUSD), Inline: true},
 			{Name: "Duration", Value: formatDurationMs(result.DurationMs), Inline: true},
-			{Name: "今日 Token", Value: fmt.Sprintf("%d in / %d out", todayIn, todayOut), Inline: true},
+			{Name: "今日 Token", Value: formatTokenField(todayIn, todayOut, db.cfg.CostAlert.DailyTokenLimit), Inline: true},
 		},
 		Footer:    &discordEmbedFooter{Text: fmt.Sprintf("Task: %s", task.ID[:8])},
 		Timestamp: time.Now().Format(time.RFC3339),
@@ -1521,6 +1521,42 @@ func formatDurationMs(ms int64) string {
 		return fmt.Sprintf("%.1fs", float64(ms)/1000)
 	}
 	return fmt.Sprintf("%dms", ms)
+}
+
+// formatTokenField renders the "今日 Token" embed value.
+// When limit > 0 it shows a progress bar; otherwise plain numbers.
+func formatTokenField(in, out, limit int) string {
+	counts := fmt.Sprintf("%s in / %s out", formatTokenCount(in), formatTokenCount(out))
+	if limit <= 0 {
+		return counts
+	}
+	total := in + out
+	pct := float64(total) / float64(limit) * 100
+	if pct > 100 {
+		pct = 100
+	}
+	const barWidth = 10
+	filled := int(pct / 100 * barWidth)
+	bar := ""
+	for i := 0; i < barWidth; i++ {
+		if i < filled {
+			bar += "▓"
+		} else {
+			bar += "░"
+		}
+	}
+	return fmt.Sprintf("%s %.0f%%\n%s", bar, pct, counts)
+}
+
+// formatTokenCount formats a token count with K/M suffix for readability.
+func formatTokenCount(n int) string {
+	if n >= 1_000_000 {
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	}
+	if n >= 1_000 {
+		return fmt.Sprintf("%.1fK", float64(n)/1_000)
+	}
+	return fmt.Sprintf("%d", n)
 }
 
 // --- REST API Helpers ---

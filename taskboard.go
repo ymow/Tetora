@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -42,15 +41,16 @@ type TaskComment struct {
 }
 
 type TaskBoardDispatchConfig struct {
-	Enabled            bool    `json:"enabled"`
-	Interval           string  `json:"interval,omitempty"`           // default "5m"
-	DefaultModel       string  `json:"defaultModel,omitempty"`       // override model for auto-dispatched tasks
-	MaxBudget          float64 `json:"maxBudget,omitempty"`          // max cost per task in USD (default: no limit)
-	DefaultAgent       string  `json:"defaultAgent,omitempty"`       // fallback agent for unassigned todo tasks
-	BacklogAgent       string  `json:"backlogAgent,omitempty"`       // agent for backlog triage (default: "ruri")
-	ReviewAgent        string  `json:"reviewAgent,omitempty"`        // agent for review verification (default: "ruri")
-	StuckThreshold     string  `json:"stuckThreshold,omitempty"`     // max time a task can be in "doing" before reset (default: "2h")
-	MaxConcurrentTasks int     `json:"maxConcurrentTasks,omitempty"` // max tasks dispatched per scan cycle (0 = unlimited)
+	Enabled               bool    `json:"enabled"`
+	Interval              string  `json:"interval,omitempty"`              // default "5m"
+	DefaultModel          string  `json:"defaultModel,omitempty"`          // override model for auto-dispatched tasks
+	MaxBudget             float64 `json:"maxBudget,omitempty"`             // max cost per task in USD (default: no limit)
+	DefaultAgent          string  `json:"defaultAgent,omitempty"`          // fallback agent for unassigned todo tasks
+	BacklogAgent          string  `json:"backlogAgent,omitempty"`          // agent for backlog triage (default: "ruri")
+	ReviewAgent           string  `json:"reviewAgent,omitempty"`           // agent for review verification (default: "ruri")
+	StuckThreshold        string  `json:"stuckThreshold,omitempty"`        // max time a task can be in "doing" before reset (default: "2h")
+	MaxConcurrentTasks    int     `json:"maxConcurrentTasks,omitempty"`    // max tasks dispatched per scan cycle (default: 3)
+	BacklogTriageInterval string  `json:"backlogTriageInterval,omitempty"` // interval between backlog triage runs (default: "1h")
 }
 
 type TaskBoardConfig struct {
@@ -85,6 +85,10 @@ func newTaskBoardEngine(dbPath string, config TaskBoardConfig, webhooks []Webhoo
 
 // initTaskBoardSchema creates the tasks and task_comments tables if they don't exist.
 func (tb *TaskBoardEngine) initTaskBoardSchema() error {
+	if err := pragmaDB(tb.dbPath); err != nil {
+		return fmt.Errorf("init task board pragmaDB: %w", err)
+	}
+
 	schema := `
 	CREATE TABLE IF NOT EXISTS tasks (
 		id TEXT PRIMARY KEY,
@@ -112,9 +116,8 @@ func (tb *TaskBoardEngine) initTaskBoardSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee);
 	CREATE INDEX IF NOT EXISTS idx_task_comments_task_id ON task_comments(task_id);
 	`
-	cmd := exec.Command("sqlite3", tb.dbPath, schema)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("init task board schema: %s: %w", string(out), err)
+	if err := execDB(tb.dbPath, schema); err != nil {
+		return fmt.Errorf("init task board schema: %w", err)
 	}
 
 	// Migrate: add cost/duration/session columns (ignore errors for existing columns).
@@ -125,7 +128,7 @@ func (tb *TaskBoardEngine) initTaskBoardSchema() error {
 		"ALTER TABLE tasks ADD COLUMN model TEXT DEFAULT '';",
 	}
 	for _, m := range migrations {
-		exec.Command("sqlite3", tb.dbPath, m).CombinedOutput() // ignore duplicate column errors
+		execDB(tb.dbPath, m) // ignore duplicate column errors
 	}
 
 	return nil
@@ -242,9 +245,8 @@ func (tb *TaskBoardEngine) CreateTask(task TaskBoard) (TaskBoard, error) {
 		task.UpdatedAt,
 	)
 
-	cmd := exec.Command("sqlite3", tb.dbPath, sql)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return TaskBoard{}, fmt.Errorf("create task: %s: %w", string(out), err)
+	if err := execDB(tb.dbPath, sql); err != nil {
+		return TaskBoard{}, fmt.Errorf("create task: %w", err)
 	}
 
 	// Fire webhook event.
@@ -278,9 +280,8 @@ func (tb *TaskBoardEngine) UpdateTask(id string, updates map[string]any) (TaskBo
 		escapeSQLite(id),
 	)
 
-	cmd := exec.Command("sqlite3", tb.dbPath, sql)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return TaskBoard{}, fmt.Errorf("update task: %s: %w", string(out), err)
+	if err := execDB(tb.dbPath, sql); err != nil {
+		return TaskBoard{}, fmt.Errorf("update task: %w", err)
 	}
 
 	// Fetch and return updated task.
@@ -293,9 +294,8 @@ func (tb *TaskBoardEngine) DeleteTask(id string) error {
 		DELETE FROM task_comments WHERE task_id = '%s';
 		DELETE FROM tasks WHERE id = '%s';
 	`, escapeSQLite(id), escapeSQLite(id))
-	cmd := exec.Command("sqlite3", tb.dbPath, sql)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("delete task: %s: %w", string(out), err)
+	if err := execDB(tb.dbPath, sql); err != nil {
+		return fmt.Errorf("delete task: %w", err)
 	}
 	return nil
 }
@@ -394,9 +394,8 @@ func (tb *TaskBoardEngine) MoveTask(id, newStatus string) (TaskBoard, error) {
 		UPDATE tasks SET status = '%s', updated_at = '%s', completed_at = '%s' WHERE id = '%s'
 	`, escapeSQLite(newStatus), nowISO, completedAt, escapeSQLite(id))
 
-	cmd := exec.Command("sqlite3", tb.dbPath, sql)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return TaskBoard{}, fmt.Errorf("move task: %s: %w", string(out), err)
+	if err := execDB(tb.dbPath, sql); err != nil {
+		return TaskBoard{}, fmt.Errorf("move task: %w", err)
 	}
 
 	task.Status = newStatus
@@ -415,9 +414,8 @@ func (tb *TaskBoardEngine) AssignTask(id, assignee string) (TaskBoard, error) {
 		UPDATE tasks SET assignee = '%s', updated_at = '%s' WHERE id = '%s'
 	`, escapeSQLite(assignee), time.Now().UTC().Format(time.RFC3339), escapeSQLite(id))
 
-	cmd := exec.Command("sqlite3", tb.dbPath, sql)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return TaskBoard{}, fmt.Errorf("assign task: %s: %w", string(out), err)
+	if err := execDB(tb.dbPath, sql); err != nil {
+		return TaskBoard{}, fmt.Errorf("assign task: %w", err)
 	}
 
 	task, err := tb.GetTask(id)
@@ -452,9 +450,8 @@ func (tb *TaskBoardEngine) AddComment(taskID, author, content string) (TaskComme
 		comment.CreatedAt,
 	)
 
-	cmd := exec.Command("sqlite3", tb.dbPath, sql)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return TaskComment{}, fmt.Errorf("add comment: %s: %w", string(out), err)
+	if err := execDB(tb.dbPath, sql); err != nil {
+		return TaskComment{}, fmt.Errorf("add comment: %w", err)
 	}
 
 	// Fire webhook event.
@@ -514,9 +511,8 @@ func (tb *TaskBoardEngine) AutoRetryFailed() error {
 			UPDATE tasks SET status = 'todo', retry_count = %d, updated_at = '%s' WHERE id = '%s'
 		`, retryCount, time.Now().UTC().Format(time.RFC3339), escapeSQLite(id))
 
-		cmd := exec.Command("sqlite3", tb.dbPath, updateSQL)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			logWarn("auto retry failed task", "id", id, "error", string(out))
+		if err := execDB(tb.dbPath, updateSQL); err != nil {
+			logWarn("auto retry failed task", "id", id, "error", err)
 			continue
 		}
 

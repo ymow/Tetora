@@ -28,7 +28,6 @@ type Config struct {
 	MCPConfigs            map[string]json.RawMessage `json:"mcpConfigs"`
 	MCPServers            map[string]MCPServerConfig `json:"mcpServers,omitempty"`
 	Agents                 map[string]AgentConfig      `json:"agents"`
-	DashboardDB           string                     `json:"dashboardDB"`
 	HistoryDB             string                     `json:"historyDB"`
 	JobsFile              string                     `json:"jobsFile"`
 	Log                   bool                       `json:"log"`
@@ -480,9 +479,10 @@ type ProviderConfig struct {
 }
 
 type CostAlertConfig struct {
-	DailyLimit  float64 `json:"dailyLimit"`
-	WeeklyLimit float64 `json:"weeklyLimit"`
-	Action      string  `json:"action"` // "warn" or "pause"
+	DailyLimit      float64 `json:"dailyLimit"`
+	WeeklyLimit     float64 `json:"weeklyLimit"`
+	DailyTokenLimit int     `json:"dailyTokenLimit,omitempty"` // total (in+out) token cap per day; 0 = no bar
+	Action          string  `json:"action"`                    // "warn" or "pause"
 }
 
 type DashboardAuthConfig struct {

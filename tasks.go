@@ -14,7 +14,7 @@ import (
 
 type DBTask struct {
 	ID        string `json:"id"`
-	Name      string `json:"name"`
+	Title     string `json:"title"`
 	Status    string `json:"status"`
 	Priority  string `json:"priority"`
 	CreatedAt string `json:"created_at"`
@@ -87,7 +87,7 @@ func getTaskStats(dbPath string) (TaskStats, error) {
 		switch status {
 		case "todo":
 			stats.Todo = cnt
-		case "running":
+		case "doing":
 			stats.Running = cnt
 		case "review":
 			stats.Review = cnt
@@ -104,7 +104,7 @@ func getTaskStats(dbPath string) (TaskStats, error) {
 // getTasksByStatus returns tasks matching the given status.
 func getTasksByStatus(dbPath, status string) ([]DBTask, error) {
 	sql := fmt.Sprintf(
-		`SELECT id, name, status, priority, created_at, COALESCE(error,'') as error
+		`SELECT id, title, status, priority, created_at, COALESCE(error,'') as error
 		 FROM tasks WHERE status = '%s' ORDER BY priority DESC, created_at DESC LIMIT 20`,
 		escapeSQLite(status))
 	rows, err := queryDB(dbPath, sql)
@@ -116,7 +116,7 @@ func getTasksByStatus(dbPath, status string) ([]DBTask, error) {
 	for _, row := range rows {
 		tasks = append(tasks, DBTask{
 			ID:        fmt.Sprintf("%v", row["id"]),
-			Name:      fmt.Sprintf("%v", row["name"]),
+			Title:     fmt.Sprintf("%v", row["title"]),
 			Status:    fmt.Sprintf("%v", row["status"]),
 			Priority:  fmt.Sprintf("%v", row["priority"]),
 			CreatedAt: fmt.Sprintf("%v", row["created_at"]),
@@ -129,9 +129,9 @@ func getTasksByStatus(dbPath, status string) ([]DBTask, error) {
 // getStuckTasks returns tasks that have been "running" for more than N minutes.
 func getStuckTasks(dbPath string, minutes int) ([]DBTask, error) {
 	sql := fmt.Sprintf(
-		`SELECT id, name, status, priority, created_at, COALESCE(error,'') as error
+		`SELECT id, title, status, priority, created_at, COALESCE(error,'') as error
 		 FROM tasks
-		 WHERE status = 'running'
+		 WHERE status = 'doing'
 		   AND datetime(created_at) < datetime('now', '-%d minutes')
 		 ORDER BY created_at ASC`,
 		minutes)
@@ -144,7 +144,7 @@ func getStuckTasks(dbPath string, minutes int) ([]DBTask, error) {
 	for _, row := range rows {
 		tasks = append(tasks, DBTask{
 			ID:        fmt.Sprintf("%v", row["id"]),
-			Name:      fmt.Sprintf("%v", row["name"]),
+			Title:     fmt.Sprintf("%v", row["title"]),
 			Status:    fmt.Sprintf("%v", row["status"]),
 			Priority:  fmt.Sprintf("%v", row["priority"]),
 			CreatedAt: fmt.Sprintf("%v", row["created_at"]),

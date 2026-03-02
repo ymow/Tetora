@@ -637,12 +637,12 @@ func (b *Bot) cmdCost(msg *tgMessage) {
 // --- /tasks ---
 
 func (b *Bot) cmdTasks(msg *tgMessage) {
-	if b.cfg.DashboardDB == "" {
-		b.reply(msg.Chat.ID, "Dashboard DB not configured.")
+	if b.cfg.HistoryDB == "" {
+		b.reply(msg.Chat.ID, "History DB not configured.")
 		return
 	}
 
-	stats, err := getTaskStats(b.cfg.DashboardDB)
+	stats, err := getTaskStats(b.cfg.HistoryDB)
 	if err != nil {
 		b.reply(msg.Chat.ID, fmt.Sprintf("DB error: %v", err))
 		return
@@ -653,11 +653,11 @@ func (b *Bot) cmdTasks(msg *tgMessage) {
 		stats.Todo, stats.Running, stats.Review, stats.Done, stats.Failed, stats.Total)
 
 	// Show stuck tasks if any.
-	stuck, _ := getStuckTasks(b.cfg.DashboardDB, 30)
+	stuck, _ := getStuckTasks(b.cfg.HistoryDB, 30)
 	if len(stuck) > 0 {
 		text += fmt.Sprintf("\n\nStuck (>30min): %d", len(stuck))
 		for _, t := range stuck {
-			text += fmt.Sprintf("\n  - %s (%s)", t.Name, t.CreatedAt)
+			text += fmt.Sprintf("\n  - %s (%s)", t.Title, t.CreatedAt)
 		}
 	}
 

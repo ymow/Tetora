@@ -26,14 +26,15 @@ type TaskBoardDispatcher struct {
 	childSem chan struct{}
 	state    *dispatchState
 
-	mu          sync.Mutex
-	wg          sync.WaitGroup // tracks in-flight dispatchTask goroutines
-	activeCount atomic.Int32   // number of currently running dispatchTask goroutines
-	running     bool
-	stopCh      chan struct{}
-	doneCh      chan struct{} // signals when activeCount drops to 0 → immediate re-scan
-	ctx         context.Context
-	cancel      context.CancelFunc
+	mu            sync.Mutex
+	wg            sync.WaitGroup // tracks in-flight dispatchTask goroutines
+	activeCount   atomic.Int32   // number of currently running dispatchTask goroutines
+	running       bool
+	stopCh        chan struct{}
+	doneCh        chan struct{} // signals when activeCount drops to 0 → immediate re-scan
+	lastTriageAt  time.Time    // last backlog triage time (cooldown tracking)
+	ctx           context.Context
+	cancel        context.CancelFunc
 }
 
 func newTaskBoardDispatcher(engine *TaskBoardEngine, cfg *Config, sem, childSem chan struct{}, state *dispatchState) *TaskBoardDispatcher {
@@ -60,6 +61,11 @@ func (d *TaskBoardDispatcher) Start() {
 	}
 	d.running = true
 	d.mu.Unlock()
+
+	// On startup, reset ALL "doing" tasks to "todo". The daemon just started so
+	// no legitimate in-flight tasks can exist — these are orphans from a previous
+	// crash or forced shutdown where the completion handler never ran.
+	d.resetOrphanedDoing()
 
 	interval := d.parseInterval()
 	logInfo("taskboard auto-dispatch started", "interval", interval.String())
@@ -128,6 +134,43 @@ func (d *TaskBoardDispatcher) parseStuckThreshold() time.Duration {
 	return dur
 }
 
+// resetOrphanedDoing resets ALL tasks in "doing" back to "todo" unconditionally.
+// Called once at startup — since the daemon just started, any task in "doing" is
+// an orphan from a previous crash or forced shutdown.
+func (d *TaskBoardDispatcher) resetOrphanedDoing() {
+	sql := `SELECT id, title FROM tasks WHERE status = 'doing'`
+	rows, err := queryDB(d.engine.dbPath, sql)
+	if err != nil {
+		logWarn("taskboard dispatch: resetOrphanedDoing query failed", "error", err)
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+
+	now := escapeSQLite(time.Now().UTC().Format(time.RFC3339))
+	for _, row := range rows {
+		id := fmt.Sprintf("%v", row["id"])
+		title := fmt.Sprintf("%v", row["title"])
+
+		updateSQL := fmt.Sprintf(
+			`UPDATE tasks SET status = 'todo', updated_at = '%s' WHERE id = '%s' AND status = 'doing'`,
+			now, escapeSQLite(id),
+		)
+		if err := execDB(d.engine.dbPath, updateSQL); err != nil {
+			logWarn("taskboard dispatch: failed to reset orphaned task", "id", id, "error", err)
+			continue
+		}
+
+		comment := "[auto-reset] Orphaned in 'doing' at daemon startup. Reset to 'todo' for re-dispatch."
+		if _, err := d.engine.AddComment(id, "system", comment); err != nil {
+			logWarn("taskboard dispatch: failed to add orphan reset comment", "id", id, "error", err)
+		}
+
+		logInfo("taskboard dispatch: reset orphaned doing task", "id", id, "title", title)
+	}
+}
+
 // resetStuckDoing resets tasks that have been stuck in "doing" longer than StuckThreshold
 // back to "todo" so they can be re-dispatched. This handles daemon crash/restart scenarios
 // where in-flight tasks never received their completion callback.
@@ -151,11 +194,7 @@ func (d *TaskBoardDispatcher) resetStuckDoing() {
 			escapeSQLite(time.Now().UTC().Format(time.RFC3339)),
 			escapeSQLite(id),
 		)
-		if err := pragmaDB(d.engine.dbPath); err != nil {
-			logWarn("taskboard dispatch: resetStuckDoing pragmaDB failed", "id", id, "error", err)
-			continue
-		}
-		if _, err := queryDB(d.engine.dbPath, updateSQL); err != nil {
+		if err := execDB(d.engine.dbPath, updateSQL); err != nil {
 			logWarn("taskboard dispatch: failed to reset stuck task", "id", id, "error", err)
 			continue
 		}
@@ -187,8 +226,16 @@ func (d *TaskBoardDispatcher) scan() {
 		logWarn("taskboard dispatch scan error", "error", err)
 		return
 	}
+	if len(tasks) == 0 {
+		logDebug("taskboard dispatch: scan found no todo tasks")
+		d.triageBacklog()
+		return
+	}
 
 	maxTasks := d.engine.config.AutoDispatch.MaxConcurrentTasks
+	if maxTasks <= 0 {
+		maxTasks = 3
+	}
 	dispatched := 0
 
 	for _, t := range tasks {
@@ -196,7 +243,7 @@ func (d *TaskBoardDispatcher) scan() {
 			logInfo("taskboard dispatch: skipping unassigned task", "id", t.ID, "title", t.Title)
 			continue
 		}
-		if maxTasks > 0 && dispatched >= maxTasks {
+		if dispatched >= maxTasks {
 			logInfo("taskboard dispatch: maxConcurrentTasks reached, deferring remaining tasks", "limit", maxTasks)
 			break
 		}
@@ -288,7 +335,7 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 
 	// Determine target status.
 	newStatus := "done"
-	if result.Status != "success" && result.ExitCode != 0 {
+	if result.Status != "success" {
 		newStatus = "failed"
 	}
 
@@ -298,7 +345,7 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 	}
 
 	// Atomic status + cost update in a single SQL statement.
-	nowISO := escapeSQLite(time.Now().UTC().Format(time.RFC3339))
+	nowISO := time.Now().UTC().Format(time.RFC3339)
 	completedAt := ""
 	if newStatus == "done" {
 		completedAt = nowISO
@@ -312,23 +359,20 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 		result.CostUSD,
 		result.DurationMs,
 		escapeSQLite(result.SessionID),
-		nowISO,
-		completedAt,
+		escapeSQLite(nowISO),
+		escapeSQLite(completedAt),
 		escapeSQLite(t.ID),
 	)
-	if err := pragmaDB(d.engine.dbPath); err != nil {
-		logWarn("taskboard dispatch: pragmaDB failed", "id", t.ID, "error", err)
+	if err := execDB(d.engine.dbPath, combinedSQL); err != nil {
+		logError("taskboard dispatch: failed to update task status+cost", "id", t.ID, "error", err)
+	} else {
+		// Fire webhook only if DB update succeeded.
+		updatedTask := t
+		updatedTask.Status = newStatus
+		updatedTask.UpdatedAt = nowISO
+		updatedTask.CompletedAt = completedAt
+		go d.engine.fireWebhook("task.moved", updatedTask)
 	}
-	if _, err := queryDB(d.engine.dbPath, combinedSQL); err != nil {
-		logWarn("taskboard dispatch: failed to update task status+cost", "id", t.ID, "error", err)
-	}
-
-	// Fire webhook event (MoveTask normally does this).
-	updatedTask := t
-	updatedTask.Status = newStatus
-	updatedTask.UpdatedAt = nowISO
-	updatedTask.CompletedAt = completedAt
-	go d.engine.fireWebhook("task.moved", updatedTask)
 
 	if newStatus == "done" || newStatus == "review" {
 
@@ -368,6 +412,113 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 		// Auto-retry if enabled.
 		d.engine.AutoRetryFailed()
 	}
+}
+
+// triageBacklog evaluates backlog tasks and promotes ready ones to todo.
+// Runs at most once per BacklogTriageInterval (default 1h) to avoid excessive LLM calls.
+func (d *TaskBoardDispatcher) triageBacklog() {
+	triageInterval := d.parseTriageInterval()
+	if time.Since(d.lastTriageAt) < triageInterval {
+		return
+	}
+
+	backlog, err := d.engine.ListTasks("backlog", "", "")
+	if err != nil {
+		logWarn("taskboard dispatch: backlog triage query failed", "error", err)
+		return
+	}
+	if len(backlog) == 0 {
+		logDebug("taskboard dispatch: no backlog tasks to triage")
+		d.lastTriageAt = time.Now()
+		return
+	}
+
+	d.lastTriageAt = time.Now()
+
+	// Build triage prompt with all backlog tasks.
+	var sb strings.Builder
+	sb.WriteString("你是 backlog triage agent。以下是目前所有 backlog 狀態的任務，請逐一評估是否可以推進到 todo：\n\n")
+	for _, t := range backlog {
+		sb.WriteString(fmt.Sprintf("- **%s** (ID: %s, assignee: %s, priority: %s)", t.Title, t.ID, t.Assignee, t.Priority))
+		if len(t.DependsOn) > 0 {
+			sb.WriteString(fmt.Sprintf(", depends_on: %s", strings.Join(t.DependsOn, ", ")))
+		}
+		sb.WriteString("\n")
+		if t.Description != "" {
+			sb.WriteString(fmt.Sprintf("  %s\n", t.Description))
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString("## 評估標準\n")
+	sb.WriteString("1. 目標明確，不需要主人額外決策即可開始執行\n")
+	sb.WriteString("2. 有 assignee（沒有的話判斷誰適合並 assign）\n")
+	sb.WriteString("3. 依賴的上游任務都已完成（或無依賴）\n")
+	sb.WriteString("4. 專案存在且可存取\n\n")
+	sb.WriteString("符合條件的任務請用 taskboard_move 推進到 todo。\n")
+	sb.WriteString("不符合的說明原因即可，不要動它。\n")
+	sb.WriteString("最後回報：推進了幾張票、哪些、以及跳過的原因。")
+
+	agent := d.engine.config.AutoDispatch.BacklogAgent
+	if agent == "" {
+		agent = "ruri"
+	}
+
+	task := Task{
+		Name:   "backlog-triage",
+		Prompt: sb.String(),
+		Agent:  agent,
+		Source: "taskboard",
+	}
+	fillDefaults(d.cfg, &task)
+
+	dispatchCfg := d.engine.config.AutoDispatch
+	if dispatchCfg.DefaultModel != "" {
+		task.Model = dispatchCfg.DefaultModel
+	}
+	if dispatchCfg.MaxBudget > 0 && (task.Budget == 0 || task.Budget > dispatchCfg.MaxBudget) {
+		task.Budget = dispatchCfg.MaxBudget
+	}
+
+	logInfo("taskboard dispatch: starting backlog triage", "backlogCount", len(backlog), "agent", agent)
+
+	d.wg.Add(1)
+	d.activeCount.Add(1)
+	go func() {
+		defer d.wg.Done()
+		defer func() {
+			if remaining := d.activeCount.Add(-1); remaining == 0 {
+				select {
+				case d.doneCh <- struct{}{}:
+				default:
+				}
+			}
+		}()
+		defer func() {
+			if r := recover(); r != nil {
+				logError("taskboard dispatch: panic in backlog triage", "recover", r)
+			}
+		}()
+
+		result := runSingleTask(d.ctx, d.cfg, task, d.sem, d.childSem, agent)
+		if result.Status == "success" {
+			logInfo("taskboard dispatch: backlog triage completed", "cost", result.CostUSD)
+		} else {
+			logWarn("taskboard dispatch: backlog triage failed", "error", result.Error)
+		}
+	}()
+}
+
+func (d *TaskBoardDispatcher) parseTriageInterval() time.Duration {
+	raw := d.engine.config.AutoDispatch.BacklogTriageInterval
+	if raw == "" {
+		raw = "1h"
+	}
+	dur, err := time.ParseDuration(raw)
+	if err != nil {
+		logWarn("invalid backlog triage interval, using 1h", "raw", raw, "error", err)
+		return time.Hour
+	}
+	return dur
 }
 
 // buildDependencyContext fetches the latest completion comment from each dependency task

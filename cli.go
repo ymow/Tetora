@@ -201,12 +201,14 @@ func cmdUpgrade() {
 // and starts a new one in the background. Returns true if restart succeeded.
 func restartDaemonProcess(binaryPath string) bool {
 	// Check if there's a running daemon to restart.
-	out, err := exec.Command("pgrep", "-f", "tetora serve").Output()
-	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
+	if len(findDaemonPIDs()) == 0 {
 		return false
 	}
 
-	killDaemonProcess()
+	if !killDaemonProcess() {
+		fmt.Fprintf(os.Stderr, "ERROR: could not stop old daemon, aborting restart\n")
+		return true // old daemon exists but we couldn't kill it
+	}
 
 	// Start new daemon in background.
 	fmt.Println("Starting daemon...")

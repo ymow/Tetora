@@ -111,16 +111,16 @@ func cmdDoctor() {
 		}
 	}
 
-	// 7. Dashboard DB
-	if cfg.DashboardDB != "" {
-		if _, err := os.Stat(cfg.DashboardDB); err != nil {
-			check(false, "Dashboard DB", "not found")
+	// 7. History DB tasks check
+	if cfg.HistoryDB != "" {
+		if _, err := os.Stat(cfg.HistoryDB); err != nil {
+			check(false, "History DB (tasks)", "not found")
 		} else {
-			stats, err := getTaskStats(cfg.DashboardDB)
+			stats, err := getTaskStats(cfg.HistoryDB)
 			if err != nil {
-				check(false, "Dashboard DB", fmt.Sprintf("error: %v", err))
+				check(false, "History DB (tasks)", fmt.Sprintf("error: %v", err))
 			} else {
-				check(true, "Dashboard DB", fmt.Sprintf("%d tasks", stats.Total))
+				check(true, "History DB (tasks)", fmt.Sprintf("%d tasks", stats.Total))
 			}
 		}
 	}

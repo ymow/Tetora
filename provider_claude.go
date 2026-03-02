@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -300,7 +301,7 @@ func buildClaudeArgs(req ProviderRequest, streaming bool) []string {
 		"--output-format", outputFormat,
 		"--model", req.Model,
 		"--session-id", req.SessionID,
-		"--permission-mode", req.PermissionMode,
+		"--permission-mode", cmp.Or(req.PermissionMode, "acceptEdits"),
 		"--no-session-persistence",
 	}
 

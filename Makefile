@@ -1,6 +1,6 @@
 export PATH := /usr/local/Cellar/go/1.26.0/bin:$(PATH)
 
-VERSION  := 1.7.6
+VERSION  := 1.7.7
 BINARY   := tetora
 INSTALL  := $(HOME)/.tetora/bin
 LDFLAGS  := -s -w -X main.tetoraVersion=$(VERSION)
@@ -16,14 +16,35 @@ dev:
 
 reload: dev
 	$(INSTALL)/$(BINARY) stop 2>/dev/null || true
-	sleep 1
+	@sleep 1
+	@if lsof -ti :8991 >/dev/null 2>&1; then \
+		lsof -ti :8991 | xargs kill -9 2>/dev/null || true; \
+		sleep 1; \
+	fi
 	$(INSTALL)/$(BINARY) start 2>/dev/null || true
 	@echo "Reloaded v$(VERSION)"
 
 install: build
 	@mkdir -p $(INSTALL)
+	$(INSTALL)/$(BINARY) stop 2>/dev/null || true
+	@sleep 1
+	@if lsof -ti :8991 >/dev/null 2>&1; then \
+		echo "ERROR: port 8991 still in use after stop, force killing..."; \
+		lsof -ti :8991 | xargs kill -9 2>/dev/null || true; \
+		sleep 1; \
+		if lsof -ti :8991 >/dev/null 2>&1; then \
+			echo "FATAL: cannot free port 8991, aborting install"; \
+			exit 1; \
+		fi; \
+	fi
 	cp $(BINARY) $(INSTALL)/$(BINARY)
-	@echo "Installed to $(INSTALL)/$(BINARY)"
+	$(INSTALL)/$(BINARY) start 2>/dev/null || true
+	@sleep 1
+	@if lsof -ti :8991 >/dev/null 2>&1; then \
+		echo "Installed v$(VERSION) and restarted (PID $$(lsof -ti :8991))"; \
+	else \
+		echo "WARNING: installed v$(VERSION) but daemon may not have started"; \
+	fi
 	@bash -c '\
 		SHELL_RC=""; \
 		case "$$(basename "$${SHELL:-/bin/bash}")" in \
@@ -36,7 +57,6 @@ install: build
 			echo "export PATH=\"$$HOME/.tetora/bin:\$$PATH\"" >> "$$SHELL_RC"; \
 			echo "Added PATH to $$SHELL_RC"; \
 		fi; \
-		echo "Run: source $$SHELL_RC  (or restart your shell)"; \
 	'
 
 bump:
@@ -53,6 +73,10 @@ bump:
 	go build -ldflags "-s -w -X main.tetoraVersion=$$NEXT" -o $(INSTALL)/$(BINARY) .; \
 	$(INSTALL)/$(BINARY) stop 2>/dev/null || true; \
 	sleep 1; \
+	if lsof -ti :8991 >/dev/null 2>&1; then \
+		lsof -ti :8991 | xargs kill -9 2>/dev/null || true; \
+		sleep 1; \
+	fi; \
 	$(INSTALL)/$(BINARY) start 2>/dev/null || true; \
 	echo "v$$NEXT installed and reloaded"
 

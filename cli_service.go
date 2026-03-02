@@ -109,32 +109,61 @@ func launchdUninstall() {
 	fmt.Println("Service stopped and removed.")
 }
 
+// findDaemonPIDs returns PIDs of running tetora serve processes.
+// Uses pgrep first, falls back to lsof on the HTTP port.
+func findDaemonPIDs() []string {
+	// Try pgrep first.
+	if out, err := exec.Command("pgrep", "-f", "tetora serve").Output(); err == nil {
+		if pids := strings.Fields(strings.TrimSpace(string(out))); len(pids) > 0 {
+			return pids
+		}
+	}
+	// Fallback: find process holding port 8991.
+	if out, err := exec.Command("lsof", "-ti", ":8991").Output(); err == nil {
+		if pids := strings.Fields(strings.TrimSpace(string(out))); len(pids) > 0 {
+			return pids
+		}
+	}
+	return nil
+}
+
 // killDaemonProcess finds and kills running "tetora serve" processes.
 // Sends SIGTERM first, waits up to 3s, then SIGKILL stragglers.
-func killDaemonProcess() {
-	out, err := exec.Command("pgrep", "-f", "tetora serve").Output()
-	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
-		return
+// Returns true if no daemon process remains.
+func killDaemonProcess() bool {
+	pids := findDaemonPIDs()
+	if len(pids) == 0 {
+		return true
 	}
-	pids := strings.Fields(strings.TrimSpace(string(out)))
 	fmt.Printf("Stopping daemon (PID %s)...\n", strings.Join(pids, ", "))
 	for _, pid := range pids {
-		exec.Command("kill", pid).Run()
+		exec.Command("kill", pid).Run() // SIGTERM
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(200 * time.Millisecond)
-		check, _ := exec.Command("pgrep", "-f", "tetora serve").Output()
-		if len(strings.TrimSpace(string(check))) == 0 {
-			return
+		if len(findDaemonPIDs()) == 0 {
+			fmt.Println("Daemon stopped.")
+			return true
 		}
 	}
-	if remaining, _ := exec.Command("pgrep", "-f", "tetora serve").Output(); len(strings.TrimSpace(string(remaining))) > 0 {
-		for _, pid := range strings.Fields(strings.TrimSpace(string(remaining))) {
-			exec.Command("kill", "-9", pid).Run()
-		}
-		time.Sleep(200 * time.Millisecond)
+	// Force kill remaining.
+	remaining := findDaemonPIDs()
+	if len(remaining) == 0 {
+		fmt.Println("Daemon stopped.")
+		return true
 	}
+	fmt.Printf("Force killing (PID %s)...\n", strings.Join(remaining, ", "))
+	for _, pid := range remaining {
+		exec.Command("kill", "-9", pid).Run()
+	}
+	time.Sleep(500 * time.Millisecond)
+	if leftovers := findDaemonPIDs(); len(leftovers) > 0 {
+		fmt.Fprintf(os.Stderr, "ERROR: failed to kill daemon (PID %s)\n", strings.Join(leftovers, ", "))
+		return false
+	}
+	fmt.Println("Daemon stopped (forced).")
+	return true
 }
 
 // restartLaunchd kills the running daemon, then uses launchctl bootout/bootstrap

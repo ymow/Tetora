@@ -376,10 +376,10 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 	})
 
 	// --- Token Telemetry API ---
-	// --- Task Trend (from dashboard.db) ---
+	// --- Task Trend (from history.db) ---
 	mux.HandleFunc("/api/tasks/trend", func(w http.ResponseWriter, r *http.Request) {
-		if cfg.DashboardDB == "" {
-			http.Error(w, `{"error":"dashboard DB not configured"}`, http.StatusServiceUnavailable)
+		if cfg.HistoryDB == "" {
+			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -405,7 +405,7 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 			return byDate[day]
 		}
 
-		createdRows, err := queryDB(cfg.DashboardDB, fmt.Sprintf(
+		createdRows, err := queryDB(cfg.HistoryDB, fmt.Sprintf(
 			`SELECT date(created_at, 'localtime') as day, COUNT(*) as cnt
 			 FROM tasks
 			 WHERE date(created_at, 'localtime') >= date('now', 'localtime', '-%d days')
@@ -418,7 +418,7 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 			ensure(jsonStr(row["day"])).Created = jsonInt(row["cnt"])
 		}
 
-		doneRows, err := queryDB(cfg.DashboardDB, fmt.Sprintf(
+		doneRows, err := queryDB(cfg.HistoryDB, fmt.Sprintf(
 			`SELECT date(CASE WHEN completed_at != '' THEN completed_at ELSE updated_at END, 'localtime') as day, COUNT(*) as cnt
 			 FROM tasks
 			 WHERE status IN ('done', 'completed')

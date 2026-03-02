@@ -513,6 +513,8 @@ func (e *ProactiveEngine) actionDispatch(ctx context.Context, rule ProactiveRule
 		Agent:  agentName,
 	}
 
+	fillDefaults(e.cfg, &task)
+
 	logInfo("proactive dispatch action", "rule", rule.Name, "agent", agentName, "taskId", truncate(task.ID, 16), "prompt", truncate(prompt, 100))
 
 	// Run in background goroutine so the trigger loop is not blocked.
@@ -584,6 +586,43 @@ func (e *ProactiveEngine) buildAutonomousPrompt(rule ProactiveRule) string {
 				createdAt, _ := row["created_at"].(string)
 				b.WriteString(fmt.Sprintf("  - [%s] score:%d at %s\n    feedback: %s\n    improvement: %s\n", agent, score, createdAt, feedback, improvement))
 			}
+		}
+	}
+
+	// Taskboard tickets (backlog, todo, doing, failed).
+	if e.cfg.HistoryDB != "" {
+		tbRows, err := queryDB(e.cfg.HistoryDB, `
+			SELECT id, title, status, assignee, priority, project, updated_at
+			FROM tasks
+			WHERE status IN ('backlog', 'todo', 'doing', 'failed')
+			ORDER BY
+				CASE priority
+					WHEN 'urgent' THEN 1
+					WHEN 'high' THEN 2
+					WHEN 'normal' THEN 3
+					WHEN 'low' THEN 4
+					ELSE 5
+				END,
+				created_at DESC
+			LIMIT 20
+		`)
+		if err == nil && len(tbRows) > 0 {
+			b.WriteString("\nTaskboard tickets (active):\n")
+			for _, row := range tbRows {
+				id, _ := row["id"].(string)
+				title, _ := row["title"].(string)
+				status, _ := row["status"].(string)
+				assignee, _ := row["assignee"].(string)
+				priority, _ := row["priority"].(string)
+				project, _ := row["project"].(string)
+				if assignee == "" {
+					assignee = "unassigned"
+				}
+				b.WriteString(fmt.Sprintf("  - [%s] %s: %s (assignee:%s, priority:%s, project:%s)\n",
+					status, id, title, assignee, priority, project))
+			}
+		} else if err == nil {
+			b.WriteString("\nTaskboard: no active tickets.\n")
 		}
 	}
 

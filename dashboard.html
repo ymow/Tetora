@@ -318,6 +318,40 @@ tr:hover { background: rgba(255,255,255,0.02); }
 .task-stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; }
 .task-stat-value { font-size: 22px; font-weight: 700; }
 
+/* Alert Banner */
+#alert-banner { position: sticky; top: 0; z-index: 200; }
+.alert-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 20px;
+  font-size: 13px;
+  font-weight: 500;
+  gap: 12px;
+}
+.alert-item.alert-warn {
+  background: rgba(251,191,36,0.12);
+  border-bottom: 1px solid rgba(251,191,36,0.25);
+  color: var(--yellow);
+}
+.alert-item.alert-error {
+  background: rgba(248,113,113,0.12);
+  border-bottom: 1px solid rgba(248,113,113,0.25);
+  color: var(--red);
+}
+.alert-dismiss {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.55;
+  padding: 0 4px;
+  font-size: 17px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.alert-dismiss:hover { opacity: 1; }
+
 /* Toast */
 .toast {
   position: fixed;
@@ -1281,6 +1315,7 @@ tr:hover { background: rgba(255,255,255,0.02); }
 </style>
 </head>
 <body>
+<div id="alert-banner"></div>
 <div class="container">
   <header>
     <div class="logo">Tetora <span id="version"></span></div>
@@ -2802,6 +2837,80 @@ function toast(msg) {
   setTimeout(() => el.classList.remove('show'), 2500);
 }
 
+// ====== Alert Banner ======
+var _dismissedAlerts = new Set();
+var _currentAlerts = [];
+
+function _renderAlerts() {
+  var banner = document.getElementById('alert-banner');
+  var html = _currentAlerts
+    .filter(function(a) { return !_dismissedAlerts.has(a.id); })
+    .map(function(a) {
+      return '<div class="alert-item alert-' + a.level + '">' +
+        '<span>' + esc(a.msg) + '</span>' +
+        '<button class="alert-dismiss" onclick="_dismissAlert(\'' + esc(a.id) + '\')" title="Dismiss">&times;</button>' +
+        '</div>';
+    }).join('');
+  banner.innerHTML = html;
+}
+
+function _dismissAlert(id) {
+  _dismissedAlerts.add(id);
+  _renderAlerts();
+}
+
+function checkAlerts(cost, doingTasks) {
+  var alerts = [];
+  var now = Date.now();
+  var TIMEOUT_MS = 30 * 60 * 1000;
+
+  // Cost quota alerts
+  var dailyLimit = cost.dailyLimit || 0;
+  var weeklyLimit = cost.weeklyLimit || 0;
+  if (dailyLimit > 0) {
+    var dp = (cost.today || 0) / dailyLimit;
+    if (dp >= 1.0) {
+      alerts.push({ id: 'daily-over', level: 'error', msg: 'Daily cost limit reached: ' + costFmt(cost.today) + ' / ' + costFmt(dailyLimit) });
+    } else if (dp >= 0.8) {
+      alerts.push({ id: 'daily-warn', level: 'warn', msg: 'Daily cost at ' + Math.round(dp * 100) + '%: ' + costFmt(cost.today) + ' / ' + costFmt(dailyLimit) });
+    }
+  }
+  if (weeklyLimit > 0) {
+    var wp = (cost.week || 0) / weeklyLimit;
+    if (wp >= 1.0) {
+      alerts.push({ id: 'weekly-over', level: 'error', msg: 'Weekly cost limit reached: ' + costFmt(cost.week) + ' / ' + costFmt(weeklyLimit) });
+    } else if (wp >= 0.8) {
+      alerts.push({ id: 'weekly-warn', level: 'warn', msg: 'Weekly cost at ' + Math.round(wp * 100) + '%: ' + costFmt(cost.week) + ' / ' + costFmt(weeklyLimit) });
+    }
+  }
+
+  // Task timeout alerts
+  if (Array.isArray(doingTasks)) {
+    doingTasks.forEach(function(t) {
+      if (t.updatedAt) {
+        var elapsed = now - new Date(t.updatedAt).getTime();
+        if (elapsed >= TIMEOUT_MS) {
+          var mins = Math.floor(elapsed / 60000);
+          alerts.push({
+            id: 'task-timeout-' + t.id,
+            level: 'warn',
+            msg: 'Task stalled (' + mins + ' min): ' + (t.title || t.id)
+          });
+        }
+      }
+    });
+  }
+
+  // Remove stale dismissals (alert no longer active)
+  var activeIds = new Set(alerts.map(function(a) { return a.id; }));
+  _dismissedAlerts.forEach(function(id) {
+    if (!activeIds.has(id)) _dismissedAlerts.delete(id);
+  });
+
+  _currentAlerts = alerts;
+  _renderAlerts();
+}
+
 function timeStr(iso) {
   if (!iso || iso.startsWith('0001')) return '-';
   const d = new Date(iso);
@@ -2831,12 +2940,13 @@ function statusBadge(s) {
 
 async function refresh() {
   try {
-    const [health, jobs, cost, tasks, roles] = await Promise.all([
+    const [health, jobs, cost, tasks, roles, doingTasks] = await Promise.all([
       fetchJSON('/healthz'),
       fetchJSON('/cron').catch(() => []),
       fetchJSON('/stats/cost').catch(() => ({ today: 0, week: 0, month: 0 })),
       fetchJSON('/tasks').catch(() => null),
       fetchJSON('/roles').catch(() => []),
+      fetchJSON('/api/tasks?status=doing').catch(() => []),
     ]);
 
     // Connection badge
@@ -2875,6 +2985,9 @@ async function refresh() {
       return `<div class="stat"><div class="stat-label">${s.label}</div><div class="stat-value ${s.cls || ''}" ${s.color ? `style="color:${s.color}"` : ''}>${s.value}</div>${bar}</div>`;
     }).join('');
     document.getElementById('stats').innerHTML = statsHTML;
+
+    // Alert banner
+    checkAlerts(cost, doingTasks);
 
     // Agent World — update sprite states + toggle visibility
     var dispSprites = dispatch.sprites || {};
@@ -3048,9 +3161,16 @@ function formatChain(j) {
 
 function esc(s) {
   if (!s) return '';
+  if (typeof s === 'object') s = s.name || s.id || String(s);
   const el = document.createElement('span');
   el.textContent = s;
   return el.innerHTML;
+}
+
+function agentName(a) {
+  if (!a) return '';
+  if (typeof a === 'object') return a.name || a.id || '';
+  return String(a);
 }
 
 function parseDuration(s) {
@@ -5214,9 +5334,11 @@ function populateBoardFilters() {
   agentSel.innerHTML = '<option value="">All Agents</option>';
   var agents = (cachedBoardData && cachedBoardData.agents) || [];
   agents.forEach(function(a) {
+    var n = agentName(a);
+    if (!n) return;
     var opt = document.createElement('option');
-    opt.value = a;
-    opt.textContent = a;
+    opt.value = n;
+    opt.textContent = n;
     agentSel.appendChild(opt);
   });
   agentSel.value = currentAgent;
@@ -5302,11 +5424,13 @@ async function openTaskDetail(taskId) {
       }
     } catch(e) {}
     agents.forEach(function(a) {
+      var n = agentName(a);
+      if (!n) return;
       var opt = document.createElement('option');
-      opt.value = a; opt.textContent = a;
+      opt.value = n; opt.textContent = n;
       assigneeSel.appendChild(opt);
     });
-    assigneeSel.value = task.assignee || '';
+    assigneeSel.value = agentName(task.assignee) || '';
 
     // Populate project dropdown.
     var projSel = document.getElementById('td-project');
@@ -5351,7 +5475,7 @@ async function deleteTask() {
   try {
     await fetch('/api/tasks/' + id, { method: 'DELETE' });
     closeTaskDetail();
-    loadKanbanBoard();
+    refreshBoard();
     toast('Task 已刪除');
   } catch(e) {
     toast('刪除失敗: ' + e.message);

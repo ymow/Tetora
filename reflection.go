@@ -36,22 +36,27 @@ type ReflectionResult struct {
 
 // initReflectionDB creates the reflections table and index.
 func initReflectionDB(dbPath string) error {
-	sql := `
-CREATE TABLE IF NOT EXISTS reflections (
+	// Create table first (so subsequent ALTER TABLE migration has a target).
+	if err := execDB(dbPath, `CREATE TABLE IF NOT EXISTS reflections (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id TEXT NOT NULL,
-  agent TEXT NOT NULL,
+  agent TEXT NOT NULL DEFAULT '',
   score INTEGER NOT NULL DEFAULT 3,
   feedback TEXT DEFAULT '',
   improvement TEXT DEFAULT '',
   cost_usd REAL DEFAULT 0,
   created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_reflections_agent ON reflections(agent);
-`
-	cmd := exec.Command("sqlite3", dbPath, sql)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("init reflections: %s: %w", string(out), err)
+);`); err != nil {
+		return fmt.Errorf("init reflections table: %w", err)
+	}
+	// Migration: add agent column if missing (for DBs created before this column existed).
+	if err := execDB(dbPath, `ALTER TABLE reflections ADD COLUMN agent TEXT NOT NULL DEFAULT '';`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			return fmt.Errorf("init reflections migration: %w", err)
+		}
+	}
+	if err := execDB(dbPath, `CREATE INDEX IF NOT EXISTS idx_reflections_agent ON reflections(agent);`); err != nil {
+		return fmt.Errorf("init reflections index: %w", err)
 	}
 	return nil
 }
