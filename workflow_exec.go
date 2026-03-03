@@ -604,14 +604,15 @@ func (e *workflowExecutor) runDispatchStep(ctx context.Context, step *WorkflowSt
 	// Create a session for this step.
 	createSession(e.cfg.HistoryDB, Session{
 		ID:     task.SessionID,
-		Agent:   step.Agent,
+		Agent:   task.Agent,
 		Source: "workflow:" + e.workflow.Name,
 		Status: "active",
 		Title:  fmt.Sprintf("%s / %s", e.workflow.Name, step.ID),
 	})
 
 	// Execute using runSingleTask (respects semaphore).
-	taskResult := runSingleTask(ctx, e.cfg, task, e.sem, e.childSem, step.Agent)
+	taskResult := runSingleTask(ctx, e.cfg, task, e.sem, e.childSem, task.Agent)
+	recordSessionActivity(e.cfg.HistoryDB, task, taskResult, task.Agent)
 
 	result.Output = taskResult.Output
 	result.CostUSD = taskResult.CostUSD
@@ -625,7 +626,7 @@ func (e *workflowExecutor) runDispatchStep(ctx context.Context, step *WorkflowSt
 		delegations := parseAutoDelegate(result.Output)
 		if len(delegations) > 0 {
 			result.Output = processAutoDelegations(ctx, e.cfg, delegations,
-				result.Output, e.run.ID, step.Agent, step.ID,
+				result.Output, e.run.ID, task.Agent, step.ID,
 				e.state, e.sem, e.childSem, e.broker)
 		}
 	case "timeout":
@@ -854,20 +855,19 @@ func (e *workflowExecutor) runHandoffStep(ctx context.Context, step *WorkflowSte
 	// Build task with handoff context.
 	prompt := buildHandoffPrompt(sourceOutput, instruction)
 
+	resolvedAgent := resolveTemplate(step.Agent, wCtx)
 	task := Task{
-		ID:        newUUID(),
-		Name:      fmt.Sprintf("%s/%s (handoff:%s→%s)", e.workflow.Name, step.ID, fromAgent, step.Agent),
-		Prompt:    prompt,
-		Agent:      step.Agent,
-		Model:     step.Model,
-		Provider:  step.Provider,
-		Timeout:   step.Timeout,
-		Budget:    step.Budget,
-		Source:    fmt.Sprintf("workflow:%s:handoff", e.workflow.Name),
-		SessionID: toSessionID,
-	}
-	if task.PermissionMode == "" {
-		task.PermissionMode = step.PermissionMode
+		ID:             newUUID(),
+		Name:           fmt.Sprintf("%s/%s (handoff:%s→%s)", e.workflow.Name, step.ID, fromAgent, resolvedAgent),
+		Prompt:         prompt,
+		Agent:          resolvedAgent,
+		Model:          resolveTemplate(step.Model, wCtx),
+		Provider:       resolveTemplate(step.Provider, wCtx),
+		Timeout:        resolveTemplate(step.Timeout, wCtx),
+		Budget:         step.Budget,
+		PermissionMode: resolveTemplate(step.PermissionMode, wCtx),
+		Source:         fmt.Sprintf("workflow:%s:handoff", e.workflow.Name),
+		SessionID:      toSessionID,
 	}
 	fillDefaults(e.cfg, &task)
 
@@ -877,10 +877,10 @@ func (e *workflowExecutor) runHandoffStep(ctx context.Context, step *WorkflowSte
 	// Create session.
 	createSession(e.cfg.HistoryDB, Session{
 		ID:        toSessionID,
-		Agent:      step.Agent,
+		Agent:      resolvedAgent,
 		Source:    fmt.Sprintf("workflow:%s:handoff", e.workflow.Name),
 		Status:    "active",
-		Title:     fmt.Sprintf("Handoff: %s → %s / %s", fromAgent, step.Agent, step.ID),
+		Title:     fmt.Sprintf("Handoff: %s → %s / %s", fromAgent, resolvedAgent, step.ID),
 		CreatedAt: now,
 		UpdatedAt: now,
 	})
@@ -889,7 +889,8 @@ func (e *workflowExecutor) runHandoffStep(ctx context.Context, step *WorkflowSte
 	updateHandoffStatus(e.cfg.HistoryDB, handoffID, "active")
 
 	// Execute.
-	taskResult := runSingleTask(ctx, e.cfg, task, e.sem, e.childSem, step.Agent)
+	taskResult := runSingleTask(ctx, e.cfg, task, e.sem, e.childSem, resolvedAgent)
+	recordSessionActivity(e.cfg.HistoryDB, task, taskResult, resolvedAgent)
 
 	result.Output = taskResult.Output
 	result.CostUSD = taskResult.CostUSD
@@ -1019,11 +1020,11 @@ func (e *workflowExecutor) runDispatchStepDryRun(step *WorkflowStep,
 	result.TaskID = task.ID
 	result.SessionID = task.SessionID
 
-	est := estimateTaskCost(e.cfg, task, step.Agent)
+	est := estimateTaskCost(e.cfg, task, task.Agent)
 	result.CostUSD = est.EstimatedCostUSD
 	result.Status = "success"
 	result.Output = fmt.Sprintf("[DRY-RUN] step=%s role=%s model=%s estimated_cost=$%.4f",
-		step.ID, step.Agent, est.Model, est.EstimatedCostUSD)
+		step.ID, task.Agent, est.Model, est.EstimatedCostUSD)
 }
 
 // runSkillStepDryRun returns mock output without running the skill.
@@ -1056,27 +1057,29 @@ func (e *workflowExecutor) runHandoffStepDryRun(step *WorkflowStep,
 	sourceOutput := sourceResult.Output
 	prompt := buildHandoffPrompt(sourceOutput, instruction)
 
+	resolvedAgent := resolveTemplate(step.Agent, wCtx)
 	task := Task{
-		ID:        newUUID(),
-		Name:      fmt.Sprintf("%s/%s (handoff)", e.workflow.Name, step.ID),
-		Prompt:    prompt,
-		Agent:      step.Agent,
-		Model:     step.Model,
-		Provider:  step.Provider,
-		Timeout:   step.Timeout,
-		Budget:    step.Budget,
-		Source:    fmt.Sprintf("workflow:%s:handoff", e.workflow.Name),
-		SessionID: newUUID(),
+		ID:             newUUID(),
+		Name:           fmt.Sprintf("%s/%s (handoff)", e.workflow.Name, step.ID),
+		Prompt:         prompt,
+		Agent:          resolvedAgent,
+		Model:          resolveTemplate(step.Model, wCtx),
+		Provider:       resolveTemplate(step.Provider, wCtx),
+		Timeout:        resolveTemplate(step.Timeout, wCtx),
+		Budget:         step.Budget,
+		PermissionMode: resolveTemplate(step.PermissionMode, wCtx),
+		Source:         fmt.Sprintf("workflow:%s:handoff", e.workflow.Name),
+		SessionID:      newUUID(),
 	}
 	fillDefaults(e.cfg, &task)
 
-	est := estimateTaskCost(e.cfg, task, step.Agent)
+	est := estimateTaskCost(e.cfg, task, resolvedAgent)
 	result.TaskID = task.ID
 	result.SessionID = task.SessionID
 	result.CostUSD = est.EstimatedCostUSD
 	result.Status = "success"
 	result.Output = fmt.Sprintf("[DRY-RUN] step=%s role=%s model=%s estimated_cost=$%.4f (handoff)",
-		step.ID, step.Agent, est.Model, est.EstimatedCostUSD)
+		step.ID, resolvedAgent, est.Model, est.EstimatedCostUSD)
 }
 
 // --- Shadow Step Implementations ---
@@ -1092,7 +1095,7 @@ func (e *workflowExecutor) runDispatchStepShadow(ctx context.Context, step *Work
 	result.SessionID = task.SessionID
 
 	// Execute using the provider directly (no history/session recording).
-	taskResult := runSingleTaskNoRecord(ctx, e.cfg, task, e.sem, e.childSem, step.Agent)
+	taskResult := runSingleTaskNoRecord(ctx, e.cfg, task, e.sem, e.childSem, task.Agent)
 
 	result.Output = taskResult.Output
 	result.CostUSD = taskResult.CostUSD
@@ -1131,17 +1134,19 @@ func (e *workflowExecutor) runHandoffStepShadow(ctx context.Context, step *Workf
 	instruction := resolveTemplate(step.Prompt, wCtx)
 	prompt := buildHandoffPrompt(sourceOutput, instruction)
 
+	resolvedAgent := resolveTemplate(step.Agent, wCtx)
 	task := Task{
-		ID:        newUUID(),
-		Name:      fmt.Sprintf("%s/%s (handoff:%s)", e.workflow.Name, step.ID, step.Agent),
-		Prompt:    prompt,
-		Agent:      step.Agent,
-		Model:     step.Model,
-		Provider:  step.Provider,
-		Timeout:   step.Timeout,
-		Budget:    step.Budget,
-		Source:    fmt.Sprintf("workflow:%s:handoff", e.workflow.Name),
-		SessionID: newUUID(),
+		ID:             newUUID(),
+		Name:           fmt.Sprintf("%s/%s (handoff:%s)", e.workflow.Name, step.ID, resolvedAgent),
+		Prompt:         prompt,
+		Agent:          resolvedAgent,
+		Model:          resolveTemplate(step.Model, wCtx),
+		Provider:       resolveTemplate(step.Provider, wCtx),
+		Timeout:        resolveTemplate(step.Timeout, wCtx),
+		Budget:         step.Budget,
+		PermissionMode: resolveTemplate(step.PermissionMode, wCtx),
+		Source:         fmt.Sprintf("workflow:%s:handoff", e.workflow.Name),
+		SessionID:      newUUID(),
 	}
 	fillDefaults(e.cfg, &task)
 
@@ -1149,7 +1154,7 @@ func (e *workflowExecutor) runHandoffStepShadow(ctx context.Context, step *Workf
 	result.SessionID = task.SessionID
 
 	// Execute without recording history/session/handoff metadata.
-	taskResult := runSingleTaskNoRecord(ctx, e.cfg, task, e.sem, e.childSem, step.Agent)
+	taskResult := runSingleTaskNoRecord(ctx, e.cfg, task, e.sem, e.childSem, resolvedAgent)
 
 	result.Output = taskResult.Output
 	result.CostUSD = taskResult.CostUSD

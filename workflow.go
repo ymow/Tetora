@@ -565,12 +565,12 @@ func buildStepTask(s *WorkflowStep, wCtx *WorkflowContext, workflowName string) 
 		ID:             newUUID(),
 		Name:           fmt.Sprintf("%s/%s", workflowName, s.ID),
 		Prompt:         resolveTemplate(s.Prompt, wCtx),
-		Agent:           s.Agent,
-		Model:          s.Model,
-		Provider:       s.Provider,
-		Timeout:        s.Timeout,
+		Agent:          resolveTemplate(s.Agent, wCtx),
+		Model:          resolveTemplate(s.Model, wCtx),
+		Provider:       resolveTemplate(s.Provider, wCtx),
+		Timeout:        resolveTemplate(s.Timeout, wCtx),
 		Budget:         s.Budget,
-		PermissionMode: s.PermissionMode,
+		PermissionMode: resolveTemplate(s.PermissionMode, wCtx),
 		Source:         "workflow:" + workflowName,
 	}
 }

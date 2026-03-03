@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -277,6 +279,7 @@ func (d *TaskBoardDispatcher) scan() {
 	if len(tasks) == 0 {
 		logDebug("taskboard dispatch: scan found no todo tasks")
 		d.triageBacklog()
+		d.idleAnalysis()
 		return
 	}
 
@@ -389,7 +392,7 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 	// Taskboard tasks run unattended — force non-interactive mode.
 	// Plan-before-execute is achieved via prompt instructions (write todo.md),
 	// not via CLI plan mode which requires interactive approval.
-	task.PermissionMode = "auto"
+	task.PermissionMode = "bypassPermissions"
 
 	// LLM-based timeout estimation: replaces keyword heuristic with a quick
 	// haiku call that reads the actual task content to judge complexity.
@@ -418,8 +421,21 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 		}
 	}
 
+	// Determine if this task should run through a workflow pipeline.
+	workflowName := t.Workflow
+	if workflowName == "" {
+		workflowName = d.engine.config.DefaultWorkflow
+	}
+
+	usedWorkflow := workflowName != "" && workflowName != "none"
+
 	start := time.Now()
-	result := runSingleTask(ctx, d.cfg, task, d.sem, d.childSem, t.Assignee)
+	var result TaskResult
+	if usedWorkflow {
+		result = d.runTaskWithWorkflow(ctx, t, task, workflowName)
+	} else {
+		result = runSingleTask(ctx, d.cfg, task, d.sem, d.childSem, t.Assignee)
+	}
 	duration := time.Since(start)
 
 	// Immediately persist cost/duration/session as completion evidence.
@@ -438,18 +454,21 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 
 	// Determine target status.
 	newStatus := "done"
-	if result.Status != "success" {
+	switch {
+	case result.Status == "success":
+		// keep "done"
+	case result.Status == "cancelled":
+		newStatus = "failed"
+		d.engine.AddComment(t.ID, "system", "[auto-flag] Task was cancelled (not retryable).")
+	default:
 		newStatus = "failed"
 	}
 
-	// Detect partial completion: context limit or deadline exceeded should not be
-	// treated as success — mark as failed so AutoRetryFailed() can pick it up.
-	if newStatus == "done" &&
-		(strings.Contains(result.Output, "[stopped: context limit reached]") ||
-			strings.Contains(result.Output, "[stopped: task deadline exceeded]")) {
+	// Treat empty output as failure — timeout/error often produces no output.
+	if newStatus == "done" && strings.TrimSpace(result.Output) == "" {
 		newStatus = "failed"
 		d.engine.AddComment(t.ID, "system",
-			"[auto-flag] Task stopped due to context/timeout limit. Marked failed for retry.")
+			"[auto-flag] Task completed with empty output. Marked failed for investigation.")
 	}
 
 	// Review gate: if requireReview is enabled, route to "review" instead of "done".
@@ -487,9 +506,24 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 		go d.engine.fireWebhook("task.moved", updatedTask)
 	}
 
+	// Post-task workspace git: commit workspace changes regardless of outcome.
+	d.postTaskWorkspaceGit(t)
+
+	// Post-task problem scan: lightweight LLM analysis of output for latent issues.
+	d.postTaskProblemScan(t, result.Output, newStatus)
+
 	if newStatus == "done" || newStatus == "review" {
 		// Check if completing this task should roll up the parent.
 		d.checkParentRollup(t.ID)
+
+		// Auto-promote downstream tasks whose dependencies are now satisfied.
+		d.promoteUnblockedTasks(t.ID)
+
+		// Post-task git: commit & push changes if enabled.
+		// Skip when a workflow was used — workflows have their own commit step.
+		if !usedWorkflow {
+			d.postTaskGit(t)
+		}
 
 		// Add result as comment.
 		output := result.Output
@@ -763,6 +797,135 @@ func (d *TaskBoardDispatcher) checkParentRollup(taskID string) {
 	logInfo("taskboard rollup: parent rolled up", "parentId", task.ParentID, "children", len(children), "status", targetStatus)
 }
 
+// runTaskWithWorkflow executes a task through a workflow pipeline instead of a single dispatch.
+// It loads the named workflow, injects task variables, runs executeWorkflow, and returns
+// a merged ProviderResult for the caller's status/cost handling.
+func (d *TaskBoardDispatcher) runTaskWithWorkflow(ctx context.Context, t TaskBoard, task Task, workflowName string) TaskResult {
+	w, err := loadWorkflowByName(d.cfg, workflowName)
+	if err != nil {
+		logWarn("runTaskWithWorkflow: load failed, falling back to single dispatch",
+			"task", t.ID, "workflow", workflowName, "error", err)
+		return runSingleTask(ctx, d.cfg, task, d.sem, d.childSem, t.Assignee)
+	}
+
+	// Inject task variables into the workflow.
+	vars := map[string]string{
+		"taskId":          t.ID,
+		"taskTitle":       t.Title,
+		"taskDescription": t.Description,
+		"agent":           t.Assignee,
+	}
+
+	logInfo("runTaskWithWorkflow: starting workflow pipeline",
+		"task", t.ID, "workflow", workflowName, "steps", len(w.Steps))
+
+	run := executeWorkflow(ctx, d.cfg, w, vars, d.state, d.sem, d.childSem)
+
+	// Merge workflow run results into a single TaskResult.
+	result := TaskResult{
+		CostUSD:    run.TotalCost,
+		DurationMs: run.DurationMs,
+	}
+
+	// Extract SessionID from the last step that has one.
+	for i := len(w.Steps) - 1; i >= 0; i-- {
+		if sr, ok := run.StepResults[w.Steps[i].ID]; ok && sr.SessionID != "" {
+			result.SessionID = sr.SessionID
+			break
+		}
+	}
+
+	if run.Status == "success" {
+		result.Status = "success"
+		// Concatenate all step outputs with headers for full pipeline context.
+		var parts []string
+		var lastOutput string
+		for _, s := range w.Steps {
+			if sr, ok := run.StepResults[s.ID]; ok && sr.Output != "" {
+				parts = append(parts, fmt.Sprintf("## Step: %s\n%s", s.ID, sr.Output))
+				lastOutput = sr.Output
+			}
+		}
+		if len(parts) > 1 {
+			result.Output = strings.Join(parts, "\n\n---\n\n")
+		} else {
+			result.Output = lastOutput
+		}
+	} else {
+		// Distinguish timeout/cancelled/error status.
+		switch run.Status {
+		case "timeout":
+			result.Status = "timeout"
+		case "cancelled":
+			result.Status = "cancelled"
+		default:
+			result.Status = "error"
+		}
+		result.Error = run.Error
+		// Collect failed step's output/error with step ID for context.
+		for _, s := range w.Steps {
+			if sr, ok := run.StepResults[s.ID]; ok && sr.Status == "error" {
+				result.Output = fmt.Sprintf("[step:%s] %s", s.ID, sr.Error)
+				break
+			}
+		}
+	}
+
+	logInfo("runTaskWithWorkflow: completed",
+		"task", t.ID, "workflow", workflowName, "status", run.Status, "cost", run.TotalCost)
+	return result
+}
+
+// promoteUnblockedTasks checks backlog tasks that depend on the just-completed task.
+// If all dependencies of a candidate are now done (or review), it promotes to "todo".
+func (d *TaskBoardDispatcher) promoteUnblockedTasks(completedID string) {
+	// Find backlog tasks whose depends_on mentions the completed task.
+	sql := fmt.Sprintf(
+		`SELECT id, depends_on FROM tasks WHERE status = 'backlog' AND depends_on LIKE '%%%s%%'`,
+		escapeSQLite(completedID),
+	)
+	rows, err := queryDB(d.engine.dbPath, sql)
+	if err != nil {
+		logWarn("promoteUnblockedTasks: query failed", "error", err)
+		return
+	}
+
+	promoted := 0
+	for _, row := range rows {
+		id := fmt.Sprintf("%v", row["id"])
+		depsJSON := fmt.Sprintf("%v", row["depends_on"])
+		var depIDs []string
+		if err := json.Unmarshal([]byte(depsJSON), &depIDs); err != nil || len(depIDs) == 0 {
+			continue
+		}
+
+		allSatisfied := true
+		for _, depID := range depIDs {
+			dep, err := d.engine.GetTask(depID)
+			if err != nil || (dep.Status != "done" && dep.Status != "review") {
+				allSatisfied = false
+				break
+			}
+		}
+		if !allSatisfied {
+			continue
+		}
+
+		if _, err := d.engine.MoveTask(id, "todo"); err != nil {
+			logWarn("promoteUnblockedTasks: move failed", "id", id, "error", err)
+			continue
+		}
+		d.engine.AddComment(id, "system",
+			"[auto-promote] All dependencies resolved. Moved to todo.")
+		promoted++
+		logInfo("promoteUnblockedTasks: promoted", "id", id)
+	}
+
+	if promoted > 0 {
+		logInfo("promoteUnblockedTasks: total promoted", "count", promoted, "trigger", completedID)
+	}
+}
+
 // buildDependencyContext fetches the latest completion comment from each dependency task
 // and concatenates them into context for the downstream task.
 func (d *TaskBoardDispatcher) buildDependencyContext(depIDs []string) string {
@@ -797,4 +960,425 @@ func (d *TaskBoardDispatcher) buildDependencyContext(depIDs []string) string {
 	}
 
 	return strings.Join(parts, "\n\n")
+}
+
+// postTaskWorkspaceGit commits workspace changes after a task completes (done or failed).
+// The workspace (memory, rules, knowledge, skills, agent todo.md) is modified during task
+// execution. This ensures those changes are tracked in git with the task ID in the commit message.
+func (d *TaskBoardDispatcher) postTaskWorkspaceGit(t TaskBoard) {
+	wsDir := d.cfg.WorkspaceDir
+	if wsDir == "" {
+		return
+	}
+
+	// Verify workspace is a git repo.
+	if err := exec.Command("git", "-C", wsDir, "rev-parse", "--git-dir").Run(); err != nil {
+		return
+	}
+
+	// Check for uncommitted changes.
+	statusOut, err := exec.Command("git", "-C", wsDir, "status", "--porcelain").Output()
+	if err != nil {
+		logWarn("postTaskWorkspaceGit: git status failed", "task", t.ID, "error", err)
+		return
+	}
+	if len(bytes.TrimSpace(statusOut)) == 0 {
+		return
+	}
+
+	if out, err := exec.Command("git", "-C", wsDir, "add", "-A").CombinedOutput(); err != nil {
+		logWarn("postTaskWorkspaceGit: git add failed", "task", t.ID, "error", string(out))
+		return
+	}
+
+	commitMsg := fmt.Sprintf("[%s] %s", t.ID, t.Title)
+	if out, err := exec.Command("git", "-C", wsDir, "commit", "-m", commitMsg).CombinedOutput(); err != nil {
+		logWarn("postTaskWorkspaceGit: git commit failed", "task", t.ID, "error", string(out))
+		return
+	}
+
+	logInfo("postTaskWorkspaceGit: committed workspace changes", "task", t.ID)
+}
+
+// postTaskGit commits and optionally pushes changes after a task completes.
+// Only runs when gitCommit is enabled, the task has a project with a workdir
+// that is a git repo, and there are uncommitted changes.
+func (d *TaskBoardDispatcher) postTaskGit(t TaskBoard) {
+	if !d.engine.config.GitCommit {
+		return
+	}
+	if t.Project == "" || t.Project == "default" {
+		return
+	}
+	if t.Assignee == "" {
+		return
+	}
+
+	p, err := getProject(d.cfg.HistoryDB, t.Project)
+	if err != nil || p == nil || p.Workdir == "" {
+		return
+	}
+	workdir := p.Workdir
+
+	// Verify workdir is a git repo.
+	if err := exec.Command("git", "-C", workdir, "rev-parse", "--git-dir").Run(); err != nil {
+		return
+	}
+
+	// Check for uncommitted changes.
+	statusOut, err := exec.Command("git", "-C", workdir, "status", "--porcelain").Output()
+	if err != nil {
+		logWarn("postTaskGit: git status failed", "task", t.ID, "error", err)
+		return
+	}
+	if len(bytes.TrimSpace(statusOut)) == 0 {
+		logInfo("postTaskGit: no changes to commit", "task", t.ID, "project", t.Project)
+		return
+	}
+
+	// Branch: {assignee}/{project-name}
+	branch := fmt.Sprintf("%s/%s", t.Assignee, p.Name)
+
+	if out, err := exec.Command("git", "-C", workdir, "checkout", "-B", branch).CombinedOutput(); err != nil {
+		msg := fmt.Sprintf("[post-task-git] checkout -B %s failed: %s", branch, strings.TrimSpace(string(out)))
+		logWarn("postTaskGit: checkout failed", "task", t.ID, "error", msg)
+		d.engine.AddComment(t.ID, "system", msg)
+		return
+	}
+
+	if out, err := exec.Command("git", "-C", workdir, "add", "-A").CombinedOutput(); err != nil {
+		msg := fmt.Sprintf("[post-task-git] add -A failed: %s", strings.TrimSpace(string(out)))
+		logWarn("postTaskGit: add failed", "task", t.ID, "error", msg)
+		d.engine.AddComment(t.ID, "system", msg)
+		return
+	}
+
+	commitMsg := fmt.Sprintf("[%s] %s", t.ID, t.Title)
+	if out, err := exec.Command("git", "-C", workdir, "commit", "-m", commitMsg).CombinedOutput(); err != nil {
+		msg := fmt.Sprintf("[post-task-git] commit failed: %s", strings.TrimSpace(string(out)))
+		logWarn("postTaskGit: commit failed", "task", t.ID, "error", msg)
+		d.engine.AddComment(t.ID, "system", msg)
+		return
+	}
+
+	logInfo("postTaskGit: committed", "task", t.ID, "branch", branch)
+	d.engine.AddComment(t.ID, "system", fmt.Sprintf("[post-task-git] Committed to branch %s", branch))
+
+	// Push if enabled.
+	if d.engine.config.GitPush {
+		if out, err := exec.Command("git", "-C", workdir, "push", "-u", "origin", branch).CombinedOutput(); err != nil {
+			msg := fmt.Sprintf("[post-task-git] push failed: %s", strings.TrimSpace(string(out)))
+			logWarn("postTaskGit: push failed", "task", t.ID, "error", msg)
+			d.engine.AddComment(t.ID, "system", msg)
+			return
+		}
+		logInfo("postTaskGit: pushed", "task", t.ID, "branch", branch)
+		d.engine.AddComment(t.ID, "system", fmt.Sprintf("[post-task-git] Pushed to origin/%s", branch))
+	}
+}
+
+// idleAnalysisSem limits concurrent idle-analysis LLM calls.
+var idleAnalysisSem = make(chan struct{}, 1)
+
+// idleAnalysis generates backlog tasks when the board is idle.
+// Conditions: idleAnalyze enabled, no doing/review/todo tasks, 24h cooldown per project.
+func (d *TaskBoardDispatcher) idleAnalysis() {
+	if !d.engine.config.IdleAnalyze {
+		return
+	}
+
+	// Verify no doing or review tasks exist.
+	for _, status := range []string{"doing", "review"} {
+		tasks, err := d.engine.ListTasks(status, "", "")
+		if err != nil || len(tasks) > 0 {
+			return
+		}
+	}
+
+	// Find active projects: distinct projects with tasks completed in last 7 days.
+	cutoff7d := time.Now().Add(-7 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	projectSQL := fmt.Sprintf(`
+		SELECT DISTINCT project FROM tasks
+		WHERE status IN ('done','failed')
+		AND completed_at > '%s'
+		AND project != '' AND project != 'default'
+		LIMIT 3
+	`, escapeSQLite(cutoff7d))
+	projectRows, err := queryDB(d.engine.dbPath, projectSQL)
+	if err != nil || len(projectRows) == 0 {
+		return
+	}
+
+	cutoff24h := time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339)
+
+	for _, row := range projectRows {
+		projectID := fmt.Sprintf("%v", row["project"])
+
+		// 24h cooldown: check for recent [idle-analysis] comments in this project.
+		cooldownSQL := fmt.Sprintf(`
+			SELECT COUNT(*) as cnt FROM task_comments
+			WHERE content LIKE '%%[idle-analysis]%%'
+			AND created_at > '%s'
+			AND task_id IN (SELECT id FROM tasks WHERE project = '%s')
+		`, escapeSQLite(cutoff24h), escapeSQLite(projectID))
+		cooldownRows, err := queryDB(d.engine.dbPath, cooldownSQL)
+		if err == nil && len(cooldownRows) > 0 && getFloat64(cooldownRows[0], "cnt") > 0 {
+			logDebug("idleAnalysis: 24h cooldown active", "project", projectID)
+			continue
+		}
+
+		d.runIdleAnalysisForProject(projectID)
+	}
+}
+
+// runIdleAnalysisForProject gathers context and asks an LLM to suggest next tasks.
+func (d *TaskBoardDispatcher) runIdleAnalysisForProject(projectID string) {
+	// Gather recently completed tasks.
+	recentSQL := fmt.Sprintf(`
+		SELECT id, title, status FROM tasks
+		WHERE project = '%s' AND status IN ('done','failed')
+		ORDER BY completed_at DESC LIMIT 10
+	`, escapeSQLite(projectID))
+	recentRows, err := queryDB(d.engine.dbPath, recentSQL)
+	if err != nil || len(recentRows) == 0 {
+		return
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Recently completed tasks:\n")
+	for _, r := range recentRows {
+		sb.WriteString(fmt.Sprintf("- [%s] %s (%s)\n",
+			fmt.Sprintf("%v", r["id"]),
+			fmt.Sprintf("%v", r["title"]),
+			fmt.Sprintf("%v", r["status"])))
+	}
+
+	// Gather git log if project has a workdir.
+	p, _ := getProject(d.cfg.HistoryDB, projectID)
+	if p != nil && p.Workdir != "" {
+		if gitOut, err := exec.Command("git", "-C", p.Workdir, "log", "--oneline", "-20").Output(); err == nil {
+			sb.WriteString("\nRecent git activity:\n")
+			sb.WriteString(string(gitOut))
+		}
+	}
+
+	projectName := projectID
+	if p != nil && p.Name != "" {
+		projectName = p.Name
+	}
+
+	prompt := fmt.Sprintf(`Based on the completed tasks and recent git activity for project "%s", identify 1-3 logical next tasks.
+
+%s
+
+Output ONLY a JSON array of objects with keys: title, description, priority (low/normal/high).
+Example: [{"title":"...","description":"...","priority":"normal"}]`, projectName, sb.String())
+
+	task := Task{
+		ID:             newUUID(),
+		Name:           "idle-analysis-" + projectID,
+		Prompt:         prompt,
+		Model:          "haiku",
+		Budget:         0.10,
+		Timeout:        "30s",
+		PermissionMode: "plan",
+		Source:         "idle-analysis",
+	}
+	fillDefaults(d.cfg, &task)
+	task.Model = "haiku"
+	task.Budget = 0.10
+
+	logInfo("idleAnalysis: analyzing project", "project", projectID)
+	result := runSingleTask(d.ctx, d.cfg, task, idleAnalysisSem, nil, "")
+	if result.Status != "success" || strings.TrimSpace(result.Output) == "" {
+		logWarn("idleAnalysis: LLM call failed", "project", projectID, "error", result.Error)
+		return
+	}
+
+	// Parse JSON array from output.
+	type suggestion struct {
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		Priority    string `json:"priority"`
+	}
+	var suggestions []suggestion
+
+	output := result.Output
+	start := strings.Index(output, "[")
+	end := strings.LastIndex(output, "]")
+	if start < 0 || end <= start {
+		logWarn("idleAnalysis: no JSON array in output", "project", projectID)
+		return
+	}
+	if err := json.Unmarshal([]byte(output[start:end+1]), &suggestions); err != nil {
+		logWarn("idleAnalysis: JSON parse failed", "project", projectID, "error", err)
+		return
+	}
+
+	// Cap at 3 suggestions.
+	if len(suggestions) > 3 {
+		suggestions = suggestions[:3]
+	}
+
+	created := 0
+	for _, s := range suggestions {
+		if s.Title == "" {
+			continue
+		}
+		priority := s.Priority
+		if priority == "" {
+			priority = "normal"
+		}
+		newTask, err := d.engine.CreateTask(TaskBoard{
+			Project:     projectID,
+			Title:       s.Title,
+			Description: s.Description,
+			Priority:    priority,
+			Status:      "backlog",
+		})
+		if err != nil {
+			logWarn("idleAnalysis: failed to create task", "project", projectID, "title", s.Title, "error", err)
+			continue
+		}
+		d.engine.AddComment(newTask.ID, "system", "[idle-analysis] Auto-generated from project analysis")
+		created++
+	}
+
+	logInfo("idleAnalysis: created backlog tasks", "project", projectID, "count", created)
+}
+
+// problemScanSem limits concurrent problem-scan LLM calls.
+var problemScanSem = make(chan struct{}, 2)
+
+// postTaskProblemScan uses a lightweight LLM call to scan the task output for latent
+// issues: error patterns, unresolved TODOs, test failures, warnings, partial implementations.
+// If problems are found, adds a comment to the task and optionally creates follow-up tickets.
+func (d *TaskBoardDispatcher) postTaskProblemScan(t TaskBoard, output string, newStatus string) {
+	if !d.engine.config.ProblemScan {
+		return
+	}
+	if strings.TrimSpace(output) == "" {
+		return
+	}
+
+	// Truncate output to keep LLM cost low.
+	scanInput := output
+	if len(scanInput) > 4000 {
+		scanInput = scanInput[:4000] + "\n... (truncated)"
+	}
+
+	prompt := fmt.Sprintf(`You are a post-task quality scanner. Analyze this task output and identify latent problems that may need follow-up.
+
+Task: %s (status: %s)
+
+Output:
+%s
+
+Look for:
+1. Error messages or stack traces (even if the task "succeeded")
+2. Unresolved TODOs or FIXMEs mentioned in the output
+3. Test failures or skipped tests
+4. Warnings that could become errors later
+5. Partial implementations ("will do later", "not yet implemented", etc.)
+6. Security concerns (hardcoded credentials, unsafe patterns)
+
+If you find problems, respond with a JSON object:
+{"problems": [{"severity": "high|medium|low", "summary": "one-line description", "detail": "brief explanation"}], "followup": [{"title": "follow-up task title", "description": "what needs to be done", "priority": "high|normal|low"}]}
+
+If no problems found, respond with exactly: {"problems": [], "followup": []}`, truncateStr(t.Title, 200), newStatus, scanInput)
+
+	task := Task{
+		ID:             newUUID(),
+		Name:           "problem-scan-" + t.ID,
+		Prompt:         prompt,
+		Model:          "haiku",
+		Budget:         0.05,
+		Timeout:        "30s",
+		PermissionMode: "plan",
+		Source:         "problem-scan",
+	}
+	fillDefaults(d.cfg, &task)
+	task.Model = "haiku"
+	task.Budget = 0.05
+
+	result := runSingleTask(d.ctx, d.cfg, task, problemScanSem, nil, "")
+	if result.Status != "success" || strings.TrimSpace(result.Output) == "" {
+		logDebug("postTaskProblemScan: LLM call failed or empty", "task", t.ID, "error", result.Error)
+		return
+	}
+
+	// Parse JSON from output.
+	type problem struct {
+		Severity string `json:"severity"`
+		Summary  string `json:"summary"`
+		Detail   string `json:"detail"`
+	}
+	type followup struct {
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		Priority    string `json:"priority"`
+	}
+	type scanResult struct {
+		Problems []problem  `json:"problems"`
+		Followup []followup `json:"followup"`
+	}
+
+	raw := result.Output
+	start := strings.Index(raw, "{")
+	end := strings.LastIndex(raw, "}")
+	if start < 0 || end <= start {
+		logDebug("postTaskProblemScan: no JSON in output", "task", t.ID)
+		return
+	}
+
+	var sr scanResult
+	if err := json.Unmarshal([]byte(raw[start:end+1]), &sr); err != nil {
+		logDebug("postTaskProblemScan: JSON parse failed", "task", t.ID, "error", err)
+		return
+	}
+
+	if len(sr.Problems) == 0 && len(sr.Followup) == 0 {
+		logDebug("postTaskProblemScan: no issues found", "task", t.ID)
+		return
+	}
+
+	// Build comment with findings.
+	var sb strings.Builder
+	sb.WriteString("[problem-scan] Potential issues detected:\n")
+	for _, p := range sr.Problems {
+		sb.WriteString(fmt.Sprintf("- [%s] %s: %s\n", p.Severity, p.Summary, p.Detail))
+	}
+
+	if _, err := d.engine.AddComment(t.ID, "system", sb.String()); err != nil {
+		logWarn("postTaskProblemScan: failed to add comment", "task", t.ID, "error", err)
+	}
+
+	// Create follow-up tickets (cap at 3).
+	created := 0
+	for _, f := range sr.Followup {
+		if created >= 3 || f.Title == "" {
+			break
+		}
+		priority := f.Priority
+		if priority == "" {
+			priority = "normal"
+		}
+		newTask, err := d.engine.CreateTask(TaskBoard{
+			Project:     t.Project,
+			Title:       f.Title,
+			Description: f.Description,
+			Priority:    priority,
+			Status:      "backlog",
+			DependsOn:   []string{t.ID},
+		})
+		if err != nil {
+			logWarn("postTaskProblemScan: failed to create follow-up", "task", t.ID, "title", f.Title, "error", err)
+			continue
+		}
+		d.engine.AddComment(newTask.ID, "system",
+			fmt.Sprintf("[problem-scan] Auto-created from scan of task %s (%s)", t.ID, t.Title))
+		created++
+	}
+
+	logInfo("postTaskProblemScan: scan complete", "task", t.ID, "problems", len(sr.Problems), "followups", created)
 }

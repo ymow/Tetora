@@ -23,6 +23,7 @@ type TaskBoard struct {
 	Model        string   `json:"model"`         // per-task model override (e.g. "sonnet", "haiku", "opus")
 	ParentID     string   `json:"parentId"`      // parent task ID (for subtasks)
 	DependsOn    []string `json:"dependsOn"`     // task IDs this task depends on
+	Workflow     string   `json:"workflow"`      // workflow name override ("" = use config default, "none" = skip)
 	DiscordThread string  `json:"discordThread"` // Discord thread ID
 	CreatedAt    string   `json:"createdAt"`
 	UpdatedAt    string   `json:"updatedAt"`
@@ -59,6 +60,11 @@ type TaskBoardConfig struct {
 	MaxRetries    int                     `json:"maxRetries,omitempty"`    // default 3
 	RequireReview bool                    `json:"requireReview,omitempty"` // quality gate
 	AutoDispatch  TaskBoardDispatchConfig `json:"autoDispatch,omitempty"`
+	DefaultWorkflow string                 `json:"defaultWorkflow,omitempty"` // workflow name for all dispatched tasks (empty = no workflow)
+	GitCommit     bool                    `json:"gitCommit,omitempty"`    // auto-commit on task done
+	GitPush       bool                    `json:"gitPush,omitempty"`      // auto-push after commit (requires gitCommit)
+	IdleAnalyze   bool                    `json:"idleAnalyze,omitempty"`  // auto-analyze when idle
+	ProblemScan   bool                    `json:"problemScan,omitempty"` // scan output for latent issues after task completion
 }
 
 func (c TaskBoardConfig) maxRetriesOrDefault() int {
@@ -128,6 +134,7 @@ func (tb *TaskBoardEngine) initTaskBoardSchema() error {
 		"ALTER TABLE tasks ADD COLUMN session_id TEXT DEFAULT '';",
 		"ALTER TABLE tasks ADD COLUMN model TEXT DEFAULT '';",
 		"ALTER TABLE tasks ADD COLUMN parent_id TEXT DEFAULT '';",
+		"ALTER TABLE tasks ADD COLUMN workflow TEXT DEFAULT '';",
 	}
 	// Index for parent-child lookups (ignore error if already exists).
 	postMigrations := []string{
@@ -163,7 +170,7 @@ func (tb *TaskBoardEngine) ListTasks(status, assignee, project string) ([]TaskBo
 
 	sql := fmt.Sprintf(`
 		SELECT id, project, title, description, status, assignee, priority,
-		       depends_on, discord_thread_id, created_at, updated_at, completed_at, retry_count,
+		       depends_on, workflow, discord_thread_id, created_at, updated_at, completed_at, retry_count,
 		       cost_usd, duration_ms, session_id, model, parent_id
 		FROM tasks %s
 		ORDER BY
@@ -213,8 +220,8 @@ func (tb *TaskBoardEngine) CreateTask(task TaskBoard) (TaskBoard, error) {
 	}
 
 	sql := fmt.Sprintf(`
-		INSERT INTO tasks (id, project, title, description, status, assignee, priority, model, depends_on, discord_thread_id, created_at, updated_at, retry_count, parent_id)
-		VALUES ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', 0, '%s')
+		INSERT INTO tasks (id, project, title, description, status, assignee, priority, model, depends_on, workflow, discord_thread_id, created_at, updated_at, retry_count, parent_id)
+		VALUES ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', 0, '%s')
 	`,
 		escapeSQLite(task.ID),
 		escapeSQLite(task.Project),
@@ -225,6 +232,7 @@ func (tb *TaskBoardEngine) CreateTask(task TaskBoard) (TaskBoard, error) {
 		escapeSQLite(task.Priority),
 		escapeSQLite(task.Model),
 		escapeSQLite(string(dependsOnJSON)),
+		escapeSQLite(task.Workflow),
 		escapeSQLite(task.DiscordThread),
 		task.CreatedAt,
 		task.UpdatedAt,
@@ -247,7 +255,7 @@ func (tb *TaskBoardEngine) UpdateTask(id string, updates map[string]any) (TaskBo
 	var setClauses []string
 	for key, val := range updates {
 		switch key {
-		case "title", "description", "priority", "assignee", "project", "discordThread", "model", "parentId":
+		case "title", "description", "priority", "assignee", "project", "discordThread", "model", "parentId", "workflow":
 			setClauses = append(setClauses, fmt.Sprintf("%s = '%s'", toSnakeCase(key), escapeSQLite(fmt.Sprintf("%v", val))))
 		case "dependsOn":
 			dependsOnJSON, _ := json.Marshal(val)
@@ -290,7 +298,7 @@ func (tb *TaskBoardEngine) DeleteTask(id string) error {
 func (tb *TaskBoardEngine) GetTask(id string) (TaskBoard, error) {
 	sql := fmt.Sprintf(`
 		SELECT id, project, title, description, status, assignee, priority,
-		       depends_on, discord_thread_id, created_at, updated_at, completed_at, retry_count,
+		       depends_on, workflow, discord_thread_id, created_at, updated_at, completed_at, retry_count,
 		       cost_usd, duration_ms, session_id, model, parent_id
 		FROM tasks WHERE id = '%s'
 	`, escapeSQLite(id))
@@ -453,6 +461,8 @@ func (tb *TaskBoardEngine) GetThread(taskID string) ([]TaskComment, error) {
 }
 
 // AutoRetryFailed moves failed tasks back to "todo" if retry count < maxRetries.
+// Uses CAS (Compare-And-Swap) pattern on retry_count to prevent double-increment races.
+// Skips tasks flagged as cancelled (not retryable).
 func (tb *TaskBoardEngine) AutoRetryFailed() error {
 	maxRetries := tb.config.maxRetriesOrDefault()
 	sql := fmt.Sprintf(`
@@ -466,18 +476,40 @@ func (tb *TaskBoardEngine) AutoRetryFailed() error {
 
 	for _, row := range rows {
 		id := fmt.Sprintf("%v", row["id"])
-		retryCount := int(getFloat64(row, "retry_count")) + 1
+		currentRetry := int(getFloat64(row, "retry_count"))
 
+		// Skip tasks flagged as cancelled (not retryable).
+		comments, _ := tb.GetThread(id)
+		cancelled := false
+		for _, c := range comments {
+			if strings.Contains(c.Content, "[auto-flag] Task was cancelled") {
+				cancelled = true
+				break
+			}
+		}
+		if cancelled {
+			logInfo("auto retry: skipping cancelled task", "id", id)
+			continue
+		}
+
+		newRetry := currentRetry + 1
+		// CAS: only update if retry_count still matches what we read.
 		updateSQL := fmt.Sprintf(`
-			UPDATE tasks SET status = 'todo', retry_count = %d, updated_at = '%s' WHERE id = '%s'
-		`, retryCount, time.Now().UTC().Format(time.RFC3339), escapeSQLite(id))
+			UPDATE tasks SET status = 'todo', retry_count = %d, updated_at = '%s'
+			WHERE id = '%s' AND retry_count = %d
+		`, newRetry, time.Now().UTC().Format(time.RFC3339), escapeSQLite(id), currentRetry)
 
 		if err := execDB(tb.dbPath, updateSQL); err != nil {
 			logWarn("auto retry failed task", "id", id, "error", err)
 			continue
 		}
 
-		logInfo("auto retried failed task", "id", id, "retryCount", retryCount)
+		// Verify CAS succeeded (sqlite3 CLI doesn't return affected rows).
+		verifyRows, _ := queryDB(tb.dbPath, fmt.Sprintf(
+			`SELECT retry_count FROM tasks WHERE id = '%s'`, escapeSQLite(id)))
+		if len(verifyRows) > 0 && int(getFloat64(verifyRows[0], "retry_count")) == newRetry {
+			logInfo("auto retried failed task", "id", id, "retryCount", newRetry)
+		}
 	}
 
 	return nil
@@ -543,6 +575,11 @@ func parseTaskRow(row map[string]any) TaskBoard {
 		parentID = ""
 	}
 
+	workflow := fmt.Sprintf("%v", row["workflow"])
+	if workflow == "<nil>" {
+		workflow = ""
+	}
+
 	return TaskBoard{
 		ID:            fmt.Sprintf("%v", row["id"]),
 		Project:       fmt.Sprintf("%v", row["project"]),
@@ -554,6 +591,7 @@ func parseTaskRow(row map[string]any) TaskBoard {
 		Model:         fmt.Sprintf("%v", row["model"]),
 		ParentID:      parentID,
 		DependsOn:     dependsOn,
+		Workflow:      workflow,
 		DiscordThread: fmt.Sprintf("%v", row["discord_thread_id"]),
 		CreatedAt:     fmt.Sprintf("%v", row["created_at"]),
 		UpdatedAt:     fmt.Sprintf("%v", row["updated_at"]),
@@ -569,7 +607,7 @@ func parseTaskRow(row map[string]any) TaskBoard {
 func (tb *TaskBoardEngine) ListChildren(parentID string) ([]TaskBoard, error) {
 	sql := fmt.Sprintf(`
 		SELECT id, project, title, description, status, assignee, priority,
-		       depends_on, discord_thread_id, created_at, updated_at, completed_at, retry_count,
+		       depends_on, workflow, discord_thread_id, created_at, updated_at, completed_at, retry_count,
 		       cost_usd, duration_ms, session_id, model, parent_id
 		FROM tasks WHERE parent_id = '%s'
 		ORDER BY created_at ASC
@@ -651,7 +689,7 @@ func (tb *TaskBoardEngine) GetBoardView(project, assignee, priority string) (*Bo
 
 	sql := fmt.Sprintf(`
 		SELECT id, project, title, description, status, assignee, priority,
-		       depends_on, discord_thread_id, created_at, updated_at, completed_at, retry_count,
+		       depends_on, workflow, discord_thread_id, created_at, updated_at, completed_at, retry_count,
 		       cost_usd, duration_ms, session_id, model, parent_id
 		FROM tasks %s
 		ORDER BY
