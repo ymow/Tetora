@@ -821,7 +821,22 @@ func (ce *CronEngine) runJob(ctx context.Context, j *cronJob) {
 		}
 
 		attemptStart := time.Now()
-		result = runSingleTask(ctx, ce.cfg, task, ce.sem, ce.childSem, j.Agent)
+
+		// Hard timeout: wrap each attempt in a Go-level deadline so that hung
+		// processes (e.g. browser CDP disconnect) get forcefully cancelled.
+		// This ensures runCount is always decremented, preventing "already running"
+		// blockage on subsequent cron ticks.
+		attemptCtx := ctx
+		if task.Timeout != "" {
+			if hardLimit, err := time.ParseDuration(task.Timeout); err == nil {
+				// Add 2-minute buffer beyond the CLI timeout to allow graceful exit
+				// before the hard kill kicks in.
+				var hardCancel context.CancelFunc
+				attemptCtx, hardCancel = context.WithTimeout(ctx, hardLimit+2*time.Minute)
+				defer hardCancel()
+			}
+		}
+		result = runSingleTask(attemptCtx, ce.cfg, task, ce.sem, ce.childSem, j.Agent)
 
 		if result.Status == "success" {
 			break

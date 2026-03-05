@@ -39,6 +39,8 @@ type Task struct {
 	AddDirs        []string `json:"addDirs"`
 	SystemPrompt   string   `json:"systemPrompt"`
 	SessionID      string   `json:"sessionId"`
+	Resume         bool     `json:"resume,omitempty"`         // use --continue (resume existing CLI session)
+	PersistSession bool     `json:"persistSession,omitempty"` // don't add --no-session-persistence
 	Agent           string   `json:"agent,omitempty"`    // role name for smart dispatch
 	Source         string   `json:"source,omitempty"`  // "dispatch", "cron", "ask", "route:*"
 	TraceID        string   `json:"traceId,omitempty"` // trace ID for request correlation
@@ -863,6 +865,14 @@ func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem ch
 		result.Status = "success"
 	}
 
+	// If the provider reported success but produced no output, treat it as an
+	// error — the session likely exited before producing any messages (e.g.
+	// CLI startup failure, auth error, or silent crash).
+	if result.Status == "success" && strings.TrimSpace(result.Output) == "" {
+		result.Status = "error"
+		result.Error = "session produced no output"
+	}
+
 	// Offline queue: if all providers are unavailable, enqueue for later retry.
 	if result.Status == "error" && isAllProvidersUnavailable(result.Error) && cfg.OfflineQueue.Enabled {
 		if !isQueueFull(cfg.HistoryDB, cfg.OfflineQueue.maxItemsOrDefault()) {
@@ -1247,17 +1257,24 @@ func runTask(ctx context.Context, cfg *Config, task Task, state *dispatchState) 
 	result.TrustLevel = trustLevel
 
 	// Async reflection — self-assessment after task completion.
+	// Use a detached context so the reflection goroutine is not cancelled
+	// when the parent dispatch context (derived from r.Context()) is done.
 	if shouldReflect(cfg, task, result) {
 		go func() {
-			ref, err := performReflection(ctx, cfg, task, result)
+			reflCtx, reflCancel := context.WithTimeout(
+				withTraceID(context.Background(), traceIDFromContext(ctx)),
+				2*time.Minute,
+			)
+			defer reflCancel()
+			ref, err := performReflection(reflCtx, cfg, task, result)
 			if err != nil {
-				logDebugCtx(ctx, "reflection failed", "taskId", task.ID[:8], "error", err)
+				logDebug("reflection failed", "taskId", task.ID[:8], "error", err)
 				return
 			}
 			if err := storeReflection(cfg.HistoryDB, ref); err != nil {
-				logDebugCtx(ctx, "reflection store failed", "taskId", task.ID[:8], "error", err)
+				logDebug("reflection store failed", "taskId", task.ID[:8], "error", err)
 			} else {
-				logDebugCtx(ctx, "reflection stored", "taskId", task.ID[:8], "role", ref.Agent, "score", ref.Score)
+				logDebug("reflection stored", "taskId", task.ID[:8], "role", ref.Agent, "score", ref.Score)
 			}
 		}()
 	}
@@ -1801,7 +1818,9 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 		if br := checkBudget(cfg, agentName, "", 0); br != nil && !br.Allowed {
 			logWarnCtx(ctx, "global budget exceeded mid-loop", "msg", br.Message)
 			finalResult = &ProviderResult{
-				Output: result.Output + "\n[stopped: global budget exceeded]",
+				Output:  result.Output + "\n[stopped: global budget exceeded]",
+				IsError: true,
+				Error:   "global budget exceeded",
 			}
 			break
 		}
@@ -1819,7 +1838,9 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 			if estTokens > threshold {
 				logWarnCtx(ctx, "context window limit after compression", "estimatedTokens", estTokens, "threshold", threshold)
 				finalResult = &ProviderResult{
-					Output: result.Output + "\n[stopped: context limit reached]",
+					Output:  result.Output + "\n[stopped: context limit reached]",
+					IsError: true,
+					Error:   "context window limit reached",
 				}
 				break
 			}

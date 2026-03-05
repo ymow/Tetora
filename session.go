@@ -712,7 +712,15 @@ func getOrCreateChannelSession(dbPath, source, chKey, role, title string) (*Sess
 		return nil, err
 	}
 	if sess != nil {
-		return sess, nil
+		// Agent mismatch: the channel is now routed to a different agent.
+		// Archive the old session and create a fresh one for the new agent.
+		if role != "" && sess.Agent != role {
+			logInfo("channel session agent changed, archiving old session",
+				"channelKey", chKey, "oldAgent", sess.Agent, "newAgent", role, "sessionId", sess.ID)
+			_ = updateSessionStatus(dbPath, sess.ID, "archived")
+		} else {
+			return sess, nil
+		}
 	}
 
 	// Create new session.

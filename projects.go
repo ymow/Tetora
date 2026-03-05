@@ -92,10 +92,11 @@ func listProjects(dbPath, status string) ([]Project, error) {
 }
 
 func getProject(dbPath, id string) (*Project, error) {
+	escaped := escapeSQLite(id)
 	sql := fmt.Sprintf(
 		`SELECT id, name, description, status, workdir, tags, repo_url, category, priority, created_at, updated_at
-		 FROM projects WHERE id = '%s' LIMIT 1`,
-		escapeSQLite(id),
+		 FROM projects WHERE id = '%s' OR name = '%s' LIMIT 1`,
+		escaped, escaped,
 	)
 	rows, err := queryDB(dbPath, sql)
 	if err != nil {
