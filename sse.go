@@ -38,6 +38,9 @@ const (
 	SSEToolResult        = "tool_result"
 	SSESessionMessage    = "session_message"
 	SSEAgentState        = "agent_state"
+	SSEHeartbeatAlert    = "heartbeat_alert"
+	SSETaskStalled       = "task_stalled"
+	SSETaskRecovered     = "task_recovered"
 )
 
 // --- SSE Broker ---

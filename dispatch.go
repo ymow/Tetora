@@ -122,10 +122,12 @@ type discordActivity struct {
 }
 
 type taskState struct {
-	task     Task
-	startAt  time.Time
-	cmd      *exec.Cmd
-	cancelFn context.CancelFunc
+	task         Task
+	startAt      time.Time
+	lastActivity time.Time // last time this task produced output or progress
+	cmd          *exec.Cmd
+	cancelFn     context.CancelFunc
+	stalled      bool // true when heartbeat monitor has flagged this task
 }
 
 func newDispatchState() *dispatchState {
@@ -160,10 +162,24 @@ func (s *dispatchState) removeDiscordActivity(taskID string) {
 }
 
 // publishSSE publishes an SSE event to the task, session, and global dashboard channels.
+// It also updates the lastActivity timestamp on the corresponding taskState for heartbeat monitoring.
 func (s *dispatchState) publishSSE(event SSEEvent) {
 	if s.broker == nil {
 		return
 	}
+
+	// Update lastActivity for heartbeat monitoring on output/progress events.
+	if event.TaskID != "" {
+		switch event.Type {
+		case SSEOutputChunk, SSEProgress, SSEToolCall, SSEToolResult:
+			s.mu.Lock()
+			if ts, ok := s.running[event.TaskID]; ok {
+				ts.lastActivity = time.Now()
+			}
+			s.mu.Unlock()
+		}
+	}
+
 	keys := []string{SSEDashboardKey}
 	if event.TaskID != "" {
 		keys = append(keys, event.TaskID)
@@ -996,7 +1012,8 @@ func runTask(ctx context.Context, cfg *Config, task Task, state *dispatchState) 
 	taskCtx, taskCancel := context.WithTimeout(ctx, timeout)
 	defer taskCancel()
 
-	ts := &taskState{task: task, startAt: time.Now(), cancelFn: taskCancel}
+	now := time.Now()
+	ts := &taskState{task: task, startAt: now, lastActivity: now, cancelFn: taskCancel}
 	state.mu.Lock()
 	state.running[task.ID] = ts
 	state.mu.Unlock()

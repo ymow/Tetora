@@ -614,6 +614,13 @@ func main() {
 			}
 		}
 
+		// Agent heartbeat monitor.
+		var heartbeatMon *HeartbeatMonitor
+		if cfg.Heartbeat.Enabled {
+			heartbeatMon = newHeartbeatMonitor(cfg.Heartbeat, state, notifyFn)
+			go heartbeatMon.Start(ctx)
+		}
+
 		// Proactive engine.
 		var proactiveEngine *ProactiveEngine
 		if cfg.Proactive.Enabled {
@@ -956,6 +963,7 @@ func main() {
 			proactiveEngine: proactiveEngine, groupChatEngine: groupChatEngine, voiceEngine: voiceEngine,
 			slackBot: slackBot, whatsappBot: whatsappBot, pluginHost: pluginHost,
 			lineBot: lineBot, teamsBot: teamsBot, signalBot: signalBot, gchatBot: gchatBot, imessageBot: imessageBot,
+			heartbeatMonitor: heartbeatMon,
 			DegradedServices: degradedServices,
 			drainCh:          drainCh,
 		}

@@ -30,6 +30,7 @@ type Server struct {
 	taskBoardDispatcher *TaskBoardDispatcher
 	canvasEngine        *CanvasEngine
 	voiceRealtimeEngine *VoiceRealtimeEngine
+	heartbeatMonitor    *HeartbeatMonitor
 	startTime           time.Time
 	limiter             *loginLimiter
 	apiLimiter          *apiRateLimiter

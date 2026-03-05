@@ -27,16 +27,23 @@ func (s *Server) registerHealthRoutes(mux *http.ServeMux) {
 			Agent    string `json:"agent,omitempty"`
 			Source  string `json:"source,omitempty"`
 			Elapsed string `json:"elapsed"`
+			Stalled bool   `json:"stalled,omitempty"`
+			Silent  string `json:"silent,omitempty"` // time since last output
 		}
 		agents := make([]agentInfo, 0, count)
 		for _, ts := range s.state.running {
-			agents = append(agents, agentInfo{
+			info := agentInfo{
 				ID:      ts.task.ID,
 				Name:    ts.task.Name,
 				Agent:    ts.task.Agent,
 				Source:  ts.task.Source,
 				Elapsed: time.Since(ts.startAt).Round(time.Second).String(),
-			})
+				Stalled: ts.stalled,
+			}
+			if !ts.lastActivity.IsZero() {
+				info.Silent = time.Since(ts.lastActivity).Round(time.Second).String()
+			}
+			agents = append(agents, info)
 		}
 		s.state.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]any{
@@ -56,6 +63,39 @@ func (s *Server) registerHealthRoutes(mux *http.ServeMux) {
 			if st, ok := checks["status"].(string); ok {
 				checks["status"] = degradeStatus(st, "degraded")
 			}
+		}
+		// Heartbeat monitor stats.
+		if s.heartbeatMonitor != nil {
+			stats := s.heartbeatMonitor.Stats()
+			hbInfo := map[string]any{
+				"enabled":         true,
+				"checkCount":      stats.CheckCount,
+				"stallsDetected":  stats.StallsDetected,
+				"stallsRecovered": stats.StallsRecovered,
+				"autoCancelled":   stats.AutoCancelled,
+				"timeoutWarnings": stats.TimeoutWarnings,
+			}
+			if !stats.LastCheck.IsZero() {
+				hbInfo["lastCheck"] = stats.LastCheck.Format(time.RFC3339)
+			}
+			// Count currently stalled tasks.
+			stalledCount := 0
+			s.state.mu.Lock()
+			for _, ts := range s.state.running {
+				if ts.stalled {
+					stalledCount++
+				}
+			}
+			s.state.mu.Unlock()
+			hbInfo["stalledNow"] = stalledCount
+			if stalledCount > 0 {
+				if st, ok := checks["status"].(string); ok {
+					checks["status"] = degradeStatus(st, "degraded")
+				}
+			}
+			checks["heartbeat"] = hbInfo
+		} else {
+			checks["heartbeat"] = map[string]any{"enabled": false}
 		}
 		b, _ := json.MarshalIndent(checks, "", "  ")
 		w.Write(b)
