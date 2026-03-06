@@ -144,6 +144,10 @@ func (s *tmuxSupervisor) recoverWorkers(profile tmuxCLIProfile) {
 			LastChanged: time.Now(),
 		}
 		s.register(name, w)
+		// Start monitoring goroutine for active workers.
+		if state == tmuxStateWorking || state == tmuxStateStarting {
+			go s.monitorRecoveredWorker(name, profile)
+		}
 		recovered++
 	}
 	if recovered > 0 {
@@ -167,6 +171,85 @@ func hasPromptText(capture string) bool {
 		}
 	}
 	return false
+}
+
+// monitorRecoveredWorker polls a recovered worker's tmux session for state changes,
+// publishing SSE events so the dashboard Activity Feed stays updated. When the
+// worker finishes (idle at prompt with stable output), it captures the output.
+func (s *tmuxSupervisor) monitorRecoveredWorker(name string, profile tmuxCLIProfile) {
+	const pollInterval = 2 * time.Second
+	const stabilityNeeded = 3
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	stableCount := 0
+	lastCapture := ""
+	pollCount := 0
+
+	for range ticker.C {
+		pollCount++
+
+		w := s.getWorker(name)
+		if w == nil {
+			return // unregistered externally
+		}
+		if !tmuxHasSession(name) {
+			logInfo("monitored worker session disappeared", "tmux", name)
+			s.unregister(name)
+			return
+		}
+
+		capture, err := tmuxCapture(name)
+		if err != nil {
+			continue
+		}
+
+		state := profile.DetectState(capture)
+		changed := capture != lastCapture
+		lastCapture = capture
+		w.LastCapture = capture
+
+		if w.State != state {
+			w.State = state
+			w.LastChanged = time.Now()
+			if s.broker != nil {
+				s.broker.Publish(SSEDashboardKey, SSEEvent{
+					Type: SSEWorkerUpdate,
+					Data: map[string]string{"action": "state_changed", "name": name, "state": state.String()},
+				})
+			}
+		}
+
+		// Publish periodic state for SSE Activity Feed.
+		// First at poll 3 (~6s, gives SSE subscribers time to connect), then every ~30s.
+		if s.broker != nil && s.broker.HasSubscribers(SSEDashboardKey) && (pollCount == 3 || pollCount%15 == 0) {
+			s.broker.Publish(SSEDashboardKey, SSEEvent{
+				Type: SSEWorkerUpdate,
+				Data: map[string]string{"action": "state_changed", "name": name, "state": w.State.String()},
+			})
+		}
+
+		switch state {
+		case tmuxStateWaiting:
+			if changed {
+				stableCount = 1
+			} else {
+				stableCount++
+			}
+			// Stable at prompt → worker finished.
+			if stableCount >= stabilityNeeded && !hasPromptText(capture) {
+				logInfo("monitored worker finished", "tmux", name)
+				return // stop monitoring; worker stays registered as idle
+			}
+		case tmuxStateDone:
+			logInfo("monitored worker exited", "tmux", name)
+			s.unregister(name)
+			return
+		default:
+			stableCount = 0
+		}
+	}
 }
 
 // isShellPrompt checks if a line looks like a shell prompt ($ or % at the end).

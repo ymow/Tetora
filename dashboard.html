@@ -559,6 +559,7 @@ tr:hover { background: rgba(255,255,255,0.02); }
 .activity-type.error { background: #450a0a; color: var(--red); }
 .activity-type.tool { background: #1c1917; color: var(--yellow); }
 .activity-type.queued { background: #422006; color: var(--yellow); }
+.activity-type.worker { background: #1a1a2e; color: #60a5fa; }
 .activity-detail { flex: 1; color: var(--text); line-height: 1.4; }
 .activity-detail .muted { color: var(--muted); font-size: 11px; }
 .activity-time { font-size: 11px; color: var(--muted); white-space: nowrap; }
@@ -3412,7 +3413,14 @@ function handleActivityEvent(type, ev) {
     case 'worker_update':
       if (currentTab === 'dashboard') refreshWorkers();
       if (data.action === 'unregistered' && _terminalViewerName === data.name) closeTerminalViewer();
-      return;
+      badge = 'worker';
+      var wName = data.name || '';
+      if (wName.startsWith('tetora-worker-')) wName = wName.substring(14);
+      if (data.action === 'state_changed') detail = '<b>' + esc(wName) + '</b> → ' + esc(data.state || '');
+      else if (data.action === 'registered') detail = '<b>' + esc(wName) + '</b> registered';
+      else if (data.action === 'unregistered') detail = '<b>' + esc(wName) + '</b> stopped';
+      else detail = esc(wName) + ' ' + esc(data.action || '');
+      break;
     default:
       detail = type;
   }
