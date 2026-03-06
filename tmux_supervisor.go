@@ -106,149 +106,25 @@ func (s *tmuxSupervisor) getWorker(name string) *tmuxWorker {
 	return s.workers[name]
 }
 
-// recoverWorkers scans for existing tetora-worker-* tmux sessions and
-// re-registers them in the supervisor. This handles daemon restarts where
-// tmux sessions survive but the in-memory supervisor state is lost.
-// If a session is detected as "waiting" with text in the prompt (i.e. the
-// daemon died between paste and Enter), it sends Enter to resume.
-func (s *tmuxSupervisor) recoverWorkers(profile tmuxCLIProfile) {
+// cleanupOrphanedSessions kills all tetora-worker-* tmux sessions left over
+// from a previous daemon run. These sessions have no dispatch context (no
+// task ID, no reply channel) so they can't return results. Keeping them
+// wastes resources and confuses the dashboard.
+func (s *tmuxSupervisor) cleanupOrphanedSessions() {
 	sessions := tmuxListSessions()
-	recovered := 0
+	cleaned := 0
 	for _, name := range sessions {
 		if !strings.HasPrefix(name, "tetora-worker-") {
 			continue
 		}
 		if s.getWorker(name) != nil {
-			continue // already tracked
+			continue // actively managed by current daemon
 		}
-		// Detect current state from capture.
-		state := tmuxStateUnknown
-		var capture string
-		if c, err := tmuxCapture(name); err == nil && profile != nil {
-			capture = c
-			state = profile.DetectState(c)
-		}
-
-		// If "waiting" with text on prompt line, the daemon likely died
-		// between paste and Enter. Send Enter to resume the stuck prompt.
-		if state == tmuxStateWaiting && hasPromptText(capture) {
-			logInfo("recovered worker has stuck prompt, sending Enter", "tmux", name)
-			tmuxSendKeys(name, "Enter")
-			state = tmuxStateWorking
-		}
-
-		w := &tmuxWorker{
-			TmuxName:    name,
-			State:       state,
-			CreatedAt:   time.Now(), // approximate — real start time unknown
-			LastChanged: time.Now(),
-		}
-		s.register(name, w)
-		// Start monitoring goroutine for active workers.
-		if state == tmuxStateWorking || state == tmuxStateStarting {
-			go s.monitorRecoveredWorker(name, profile)
-		}
-		recovered++
+		tmuxKill(name)
+		cleaned++
 	}
-	if recovered > 0 {
-		logInfo("recovered orphaned tmux workers", "count", recovered)
-	}
-}
-
-// hasPromptText checks if the capture has text after the ❯ prompt character,
-// indicating a prompt was typed/pasted but not submitted.
-func hasPromptText(capture string) bool {
-	for _, line := range strings.Split(capture, "\n") {
-		trimmed := strings.TrimSpace(line)
-		// Has ❯ followed by non-whitespace content (regular space, NBSP, or tab).
-		if strings.HasPrefix(trimmed, "❯") && len(trimmed) > len("❯") {
-			after := trimmed[len("❯"):]
-			after = strings.TrimSpace(after)
-			after = strings.ReplaceAll(after, "\u00a0", "")
-			if after != "" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// monitorRecoveredWorker polls a recovered worker's tmux session for state changes,
-// publishing SSE events so the dashboard Activity Feed stays updated. When the
-// worker finishes (idle at prompt with stable output), it captures the output.
-func (s *tmuxSupervisor) monitorRecoveredWorker(name string, profile tmuxCLIProfile) {
-	const pollInterval = 2 * time.Second
-	const stabilityNeeded = 3
-
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	stableCount := 0
-	lastCapture := ""
-	pollCount := 0
-
-	for range ticker.C {
-		pollCount++
-
-		w := s.getWorker(name)
-		if w == nil {
-			return // unregistered externally
-		}
-		if !tmuxHasSession(name) {
-			logInfo("monitored worker session disappeared", "tmux", name)
-			s.unregister(name)
-			return
-		}
-
-		capture, err := tmuxCapture(name)
-		if err != nil {
-			continue
-		}
-
-		state := profile.DetectState(capture)
-		changed := capture != lastCapture
-		lastCapture = capture
-		w.LastCapture = capture
-
-		if w.State != state {
-			w.State = state
-			w.LastChanged = time.Now()
-			if s.broker != nil {
-				s.broker.Publish(SSEDashboardKey, SSEEvent{
-					Type: SSEWorkerUpdate,
-					Data: map[string]string{"action": "state_changed", "name": name, "state": state.String()},
-				})
-			}
-		}
-
-		// Publish periodic state for SSE Activity Feed.
-		// First at poll 3 (~6s, gives SSE subscribers time to connect), then every ~30s.
-		if s.broker != nil && s.broker.HasSubscribers(SSEDashboardKey) && (pollCount == 3 || pollCount%15 == 0) {
-			s.broker.Publish(SSEDashboardKey, SSEEvent{
-				Type: SSEWorkerUpdate,
-				Data: map[string]string{"action": "state_changed", "name": name, "state": w.State.String()},
-			})
-		}
-
-		switch state {
-		case tmuxStateWaiting:
-			if changed {
-				stableCount = 1
-			} else {
-				stableCount++
-			}
-			// Stable at prompt → worker finished.
-			if stableCount >= stabilityNeeded && !hasPromptText(capture) {
-				logInfo("monitored worker finished", "tmux", name)
-				return // stop monitoring; worker stays registered as idle
-			}
-		case tmuxStateDone:
-			logInfo("monitored worker exited", "tmux", name)
-			s.unregister(name)
-			return
-		default:
-			stableCount = 0
-		}
+	if cleaned > 0 {
+		logInfo("cleaned up orphaned tmux sessions", "count", cleaned)
 	}
 }
 
