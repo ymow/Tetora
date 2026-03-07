@@ -92,6 +92,117 @@ func (s *Server) registerHookRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/hooks/event", s.hookReceiver.handleEvent)
 	mux.HandleFunc("/api/hooks/status", s.hookReceiver.handleStatus)
 	mux.HandleFunc("/api/hooks/notify", s.handleHookNotify)
+	mux.HandleFunc("/api/hooks/install", s.handleHookInstall)
+	mux.HandleFunc("/api/hooks/remove", s.handleHookRemove)
+	mux.HandleFunc("/api/hooks/install-status", s.handleHookInstallStatus)
+}
+
+// handleHookInstall installs Tetora hooks into Claude Code settings.
+// POST /api/hooks/install
+func (s *Server) handleHookInstall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	cfg := s.Cfg()
+	if err := installHooks(cfg.ListenAddr); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	resp := map[string]any{"ok": true}
+
+	// Also generate MCP bridge config.
+	if err := generateMCPBridgeConfig(cfg); err != nil {
+		resp["mcpBridgeError"] = err.Error()
+	} else {
+		homeDir, _ := os.UserHomeDir()
+		resp["mcpBridge"] = filepath.Join(homeDir, ".tetora", "mcp", "bridge.json")
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleHookRemove removes Tetora hooks from Claude Code settings.
+// POST /api/hooks/remove
+func (s *Server) handleHookRemove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err := removeHooks(); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"ok": "true"})
+}
+
+// handleHookInstallStatus checks whether hooks are currently installed.
+// GET /api/hooks/install-status
+func (s *Server) handleHookInstallStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	installed := false
+	hookCount := 0
+
+	// Check Claude Code settings for Tetora hooks.
+	settings, _, err := loadClaudeSettings()
+	if err == nil {
+		raw, ok := settings.raw["hooks"]
+		if ok {
+			var hooks hooksConfig
+			if json.Unmarshal(raw, &hooks) == nil {
+				for _, h := range hooks.PostToolUse {
+					if isTetoraHook(h.Command) {
+						installed = true
+						hookCount++
+					}
+				}
+				for _, h := range hooks.Stop {
+					if isTetoraHook(h.Command) {
+						hookCount++
+					}
+				}
+				for _, h := range hooks.Notification {
+					if isTetoraHook(h.Command) {
+						hookCount++
+					}
+				}
+			}
+		}
+	}
+
+	// Check MCP bridge config.
+	homeDir, _ := os.UserHomeDir()
+	bridgePath := filepath.Join(homeDir, ".tetora", "mcp", "bridge.json")
+	_, mcpErr := os.Stat(bridgePath)
+	mcpBridge := mcpErr == nil
+
+	// Get event count from hook receiver.
+	var eventCount int64
+	if s.hookReceiver != nil {
+		s.hookReceiver.mu.RLock()
+		eventCount = s.hookReceiver.eventCount
+		s.hookReceiver.mu.RUnlock()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"installed":  installed,
+		"hookCount":  hookCount,
+		"mcpBridge":  mcpBridge,
+		"eventCount": eventCount,
+	})
 }
 
 // handleHookNotify receives notifications from Claude Code via MCP bridge
