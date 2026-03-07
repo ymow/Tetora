@@ -246,6 +246,20 @@ func discordSelectMenu(customID, placeholder string, options []discordSelectOpti
 	}
 }
 
+// discordMultiSelectMenu creates a string select menu with multi-select enabled.
+func discordMultiSelectMenu(customID, placeholder string, options []discordSelectOption, maxValues int) discordComponent {
+	minV := 0
+	maxV := maxValues
+	return discordComponent{
+		Type:        componentTypeStringSelect,
+		CustomID:    customID,
+		Placeholder: placeholder,
+		Options:     options,
+		MinValues:   &minV,
+		MaxValues:   &maxV,
+	}
+}
+
 // discordUserSelect creates a user select menu.
 func discordUserSelect(customID, placeholder string) discordComponent {
 	return discordComponent{
@@ -334,6 +348,23 @@ func verifyDiscordSignature(publicKeyHex, signature, timestamp string, body []by
 
 	msg := []byte(timestamp + string(body))
 	return ed25519.Verify(ed25519.PublicKey(pubKeyBytes), msg, sigBytes)
+}
+
+// runCallbackWithTimeout runs a Discord interaction callback with a 30-second timeout guard.
+// The callback itself is not cancelled — this only logs if it exceeds the timeout.
+func runCallbackWithTimeout(cb func(discordInteractionData), data discordInteractionData) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		cb(data)
+	}()
+	go func() {
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			logWarn("discord callback exceeded 30s timeout", "customID", data.CustomID)
+		}
+	}()
 }
 
 // --- Interaction Handler ---
@@ -458,7 +489,7 @@ func handleComponentInteraction(ctx context.Context, db *DiscordBot, w http.Resp
 
 			// Fire callback in background.
 			if pi.Callback != nil {
-				go pi.Callback(data)
+				runCallbackWithTimeout(pi.Callback, data)
 			}
 
 			// Remove if not reusable.
@@ -518,7 +549,7 @@ func handleModalSubmit(ctx context.Context, db *DiscordBot, w http.ResponseWrite
 			}
 
 			if pi.Callback != nil {
-				go pi.Callback(data)
+				runCallbackWithTimeout(pi.Callback, data)
 			}
 			db.interactions.remove(data.CustomID)
 

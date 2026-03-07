@@ -51,6 +51,7 @@ const (
 type sseBroker struct {
 	mu          sync.RWMutex
 	subscribers map[string]map[chan SSEEvent]struct{} // key -> set of channels
+	dropCount   atomic.Int64
 }
 
 func newSSEBroker() *sseBroker {
@@ -63,7 +64,7 @@ func newSSEBroker() *sseBroker {
 // Returns the event channel and an unsubscribe function.
 // The channel is buffered to avoid blocking publishers.
 func (b *sseBroker) Subscribe(key string) (chan SSEEvent, func()) {
-	ch := make(chan SSEEvent, 64)
+	ch := make(chan SSEEvent, 256)
 	b.mu.Lock()
 	if b.subscribers[key] == nil {
 		b.subscribers[key] = make(map[chan SSEEvent]struct{})
@@ -107,6 +108,7 @@ func (b *sseBroker) Publish(key string, event SSEEvent) {
 		case ch <- event:
 		default:
 			// Channel full — drop event to avoid blocking.
+			b.dropCount.Add(1)
 		}
 	}
 }
@@ -135,8 +137,19 @@ func (b *sseBroker) PublishMulti(keys []string, event SSEEvent) {
 		select {
 		case ch <- event:
 		default:
+			b.dropCount.Add(1)
 		}
 	}
+}
+
+// DroppedEvents returns the total number of dropped events and resets the counter.
+func (b *sseBroker) DroppedEvents() int64 {
+	return b.dropCount.Swap(0)
+}
+
+// TotalDroppedEvents returns the total number of dropped events without resetting.
+func (b *sseBroker) TotalDroppedEvents() int64 {
+	return b.dropCount.Load()
 }
 
 // HasSubscribers returns true if the given key has any active subscribers.

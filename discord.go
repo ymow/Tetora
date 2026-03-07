@@ -431,6 +431,7 @@ type DiscordBot struct {
 	gatewayConn  *wsConn                  // P14.5: active gateway connection for voice state updates
 	notifier     *discordTaskNotifier     // task notification (thread-per-task)
 	terminal     *terminalBridge         // terminal bridge (tmux ↔ Discord)
+	msgSem       chan struct{}            // limits concurrent message handlers
 }
 
 func newDiscordBot(cfg *Config, state *dispatchState, sem, childSem chan struct{}, cron *CronEngine) *DiscordBot {
@@ -445,6 +446,7 @@ func newDiscordBot(cfg *Config, state *dispatchState, sem, childSem chan struct{
 		interactions:  newDiscordInteractionState(), // P14.1
 		threads:       newThreadBindingStore(),      // P14.2
 		threadParents: newThreadParentCache(),
+		msgSem:        make(chan struct{}, 32),
 	}
 
 	// P14.3: Initialize reaction manager.
@@ -683,7 +685,16 @@ func (db *DiscordBot) handleEvent(payload gatewayPayload) {
 		// P14.2: Parse with channel_type for thread detection.
 		var msgT discordMessageWithType
 		if json.Unmarshal(payload.D, &msgT) == nil {
-			go db.handleMessageWithType(msgT.discordMessage, msgT.ChannelType)
+			select {
+			case db.msgSem <- struct{}{}:
+				go func() {
+					defer func() { <-db.msgSem }()
+					db.handleMessageWithType(msgT.discordMessage, msgT.ChannelType)
+				}()
+			default:
+				logWarn("discord message handler limit reached, dropping message",
+					"author", msgT.Author.Username, "channel", msgT.ChannelID)
+			}
 		}
 	case "VOICE_STATE_UPDATE":
 		// P14.5: Handle voice state updates
@@ -750,7 +761,7 @@ func (db *DiscordBot) handleGatewayComponent(ctx context.Context, interaction *d
 				}
 			}
 			if pi.Callback != nil {
-				go pi.Callback(data)
+				runCallbackWithTimeout(pi.Callback, data)
 			}
 			if !pi.Reusable {
 				db.interactions.remove(data.CustomID)
@@ -789,7 +800,7 @@ func (db *DiscordBot) handleGatewayModal(ctx context.Context, interaction *disco
 				}
 			}
 			if pi.Callback != nil {
-				go pi.Callback(data)
+				runCallbackWithTimeout(pi.Callback, data)
 			}
 			db.interactions.remove(data.CustomID)
 			return discordInteractionResponse{

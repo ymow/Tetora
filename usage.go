@@ -86,6 +86,12 @@ func queryUsageSummary(dbPath, period string) (*UsageSummary, error) {
 		dateFilter = "date(started_at,'localtime') >= date('now','localtime','-7 days')"
 	case "month":
 		dateFilter = "date(started_at,'localtime') >= date('now','localtime','-30 days')"
+	case "prev_today":
+		dateFilter = "date(started_at,'localtime') = date('now','localtime','-1 day')"
+	case "prev_week":
+		dateFilter = "date(started_at,'localtime') >= date('now','localtime','-14 days') AND date(started_at,'localtime') < date('now','localtime','-7 days')"
+	case "prev_month":
+		dateFilter = "date(started_at,'localtime') >= date('now','localtime','-60 days') AND date(started_at,'localtime') < date('now','localtime','-30 days')"
 	default:
 		dateFilter = "date(started_at,'localtime') = date('now','localtime')"
 		period = "today"

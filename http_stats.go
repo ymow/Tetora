@@ -485,4 +485,127 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 			"days":    days,
 		})
 	})
+
+	// --- Period Comparison ---
+	mux.HandleFunc("/api/usage/compare", func(w http.ResponseWriter, r *http.Request) {
+		if cfg.HistoryDB == "" {
+			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		period := r.URL.Query().Get("period")
+		if period == "" {
+			period = "week"
+		}
+
+		current, err := queryUsageSummary(cfg.HistoryDB, period)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		// Query previous period for comparison.
+		prevPeriod := "prev_" + period
+		previous, err := queryUsageSummary(cfg.HistoryDB, prevPeriod)
+		if err != nil {
+			// If prev query fails, return current with zero deltas.
+			previous = &UsageSummary{}
+		}
+
+		// Calculate deltas.
+		costDelta := 0.0
+		taskDelta := 0.0
+		if previous.TotalCost > 0 {
+			costDelta = (current.TotalCost - previous.TotalCost) / previous.TotalCost * 100
+		}
+		if previous.TotalTasks > 0 {
+			taskDelta = float64(current.TotalTasks-previous.TotalTasks) / float64(previous.TotalTasks) * 100
+		}
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"current":   current,
+			"previous":  previous,
+			"costDelta": costDelta,
+			"taskDelta": taskDelta,
+			"period":    period,
+		})
+	})
+
+	// --- Agent Scorecard ---
+	mux.HandleFunc("/api/agents/scorecard", func(w http.ResponseWriter, r *http.Request) {
+		if cfg.HistoryDB == "" {
+			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		days := 7
+		if d := r.URL.Query().Get("days"); d != "" {
+			if n, err := strconv.Atoi(d); err == nil && n > 0 && n <= 365 {
+				days = n
+			}
+		}
+
+		sql := fmt.Sprintf(`
+			SELECT assignee,
+			       COUNT(*) as total_tasks,
+			       SUM(CASE WHEN status IN ('done','completed') THEN 1 ELSE 0 END) as done_tasks,
+			       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_tasks,
+			       COALESCE(SUM(cost_usd), 0) as total_cost,
+			       COALESCE(AVG(CASE WHEN status IN ('done','completed') THEN cost_usd END), 0) as avg_cost_per_task,
+			       COALESCE(AVG(CASE WHEN duration_ms > 0 THEN duration_ms END), 0) as avg_duration_ms
+			FROM tasks
+			WHERE assignee != ''
+			  AND created_at >= datetime('now', '-%d days')
+			GROUP BY assignee
+			ORDER BY done_tasks DESC
+		`, days)
+
+		rows, err := queryDB(cfg.HistoryDB, sql)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		type AgentScore struct {
+			Agent          string  `json:"agent"`
+			TotalTasks     int     `json:"totalTasks"`
+			DoneTasks      int     `json:"doneTasks"`
+			FailedTasks    int     `json:"failedTasks"`
+			SuccessRate    float64 `json:"successRate"`
+			TotalCost      float64 `json:"totalCost"`
+			AvgCostPerTask float64 `json:"avgCostPerTask"`
+			AvgDurationMs  float64 `json:"avgDurationMs"`
+		}
+
+		var scores []AgentScore
+		for _, row := range rows {
+			total := jsonInt(row["total_tasks"])
+			done := jsonInt(row["done_tasks"])
+			failed := jsonInt(row["failed_tasks"])
+			successRate := 0.0
+			if total > 0 {
+				successRate = float64(done) / float64(total) * 100
+			}
+			scores = append(scores, AgentScore{
+				Agent:          jsonStr(row["assignee"]),
+				TotalTasks:     total,
+				DoneTasks:      done,
+				FailedTasks:    failed,
+				SuccessRate:    successRate,
+				TotalCost:      jsonFloat(row["total_cost"]),
+				AvgCostPerTask: jsonFloat(row["avg_cost_per_task"]),
+				AvgDurationMs:  jsonFloat(row["avg_duration_ms"]),
+			})
+		}
+		if scores == nil {
+			scores = []AgentScore{}
+		}
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"agents": scores,
+			"days":   days,
+		})
+	})
 }

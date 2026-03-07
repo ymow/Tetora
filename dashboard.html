@@ -90,6 +90,28 @@ body.theme-material {
   --font-heading: 'Roboto', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-body: 'Roboto', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
 }
+body.theme-boardroom {
+  --bg: #f8f9fa; --surface: #ffffff; --border: #e2e8f0;
+  --text: #1a202c; --muted: #718096;
+  --accent: #2b6cb0; --accent2: #4a5568; --green: #38a169; --red: #e53e3e; --yellow: #d69e2e;
+  --pixel-border: #e2e8f0;
+  --panel-radius: 8px;
+  --panel-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
+  --panel-blur: none;
+  --panel-border: 1px solid #e2e8f0;
+  --header-border: 1px solid #e2e8f0;
+  --font-heading: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+body.theme-boardroom .agent-world-toggle,
+body.theme-boardroom .agent-world-canvas,
+body.theme-boardroom .aw-minimap { display: none !important; }
+body.theme-boardroom .logo { -webkit-text-fill-color: #1a202c; }
+body.theme-boardroom .logo span { -webkit-text-fill-color: #718096; }
+body.theme-boardroom .exec-card {
+  background: linear-gradient(135deg, rgba(43,108,176,0.06) 0%, rgba(74,85,104,0.06) 100%);
+  border-color: rgba(43,108,176,0.15);
+}
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 /* 8-Bit Pixel Borders */
@@ -203,6 +225,26 @@ header {
 .stat-label { font-size: 8px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px; font-family: var(--font-heading); }
 .stat-value { font-size: 26px; font-weight: 700; margin-top: 2px; }
 .stat-value.cost { font-family: 'SF Mono', 'Fira Code', monospace; }
+
+/* Executive Summary */
+.exec-summary { margin-bottom: 24px; }
+.exec-summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.exec-card {
+  background: linear-gradient(135deg, rgba(6,182,212,0.08) 0%, rgba(139,92,246,0.08) 100%);
+  border: 1px solid rgba(6,182,212,0.2);
+  border-radius: var(--panel-radius);
+  padding: 20px;
+  text-align: center;
+}
+.exec-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); font-family: var(--font-heading); }
+.exec-value { font-size: 32px; font-weight: 800; margin-top: 6px; font-family: 'SF Mono', 'Fira Code', monospace; }
+.exec-card:nth-child(4) .exec-value { color: var(--green); }
+@media (max-width: 768px) { .exec-summary-grid { grid-template-columns: 1fr 1fr; } }
+/* Stat Delta */
+.stat-delta { font-size: 11px; margin-top: 4px; }
+.stat-delta.up { color: var(--green); }
+.stat-delta.down { color: var(--red); }
+.stat-delta.neutral { color: var(--muted); }
 
 /* Projects Grid */
 .projects-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
@@ -328,6 +370,145 @@ header {
 }
 @media (max-width: 480px) {
   .kanban-column { min-width: 85vw; max-width: 85vw; }
+}
+
+/* ====== Dashboard View System ====== */
+.view-selector-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px; padding: 20px 0; max-width: 960px; margin: 0 auto;
+}
+.view-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--panel-radius);
+  padding: 28px 22px; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+  backdrop-filter: var(--panel-blur); text-align: center;
+}
+.view-card:hover { transform: translateY(-4px); box-shadow: 0 8px 24px rgba(0,0,0,0.2); border-color: var(--accent); }
+.view-card-icon { font-size: 32px; margin-bottom: 12px; display: block; }
+.view-card-title { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 6px; font-family: var(--font-heading); }
+.view-card-desc { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.view-topbar {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 16px; padding: 8px 0;
+}
+.view-topbar .btn-views {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--panel-radius);
+  padding: 5px 12px; font-size: 12px; color: var(--accent); cursor: pointer; font-weight: 600;
+  transition: background 0.15s;
+}
+.view-topbar .btn-views:hover { background: rgba(255,255,255,0.06); }
+.view-topbar .view-title { font-size: 16px; font-weight: 600; color: var(--text); font-family: var(--font-heading); }
+.dash-view { display: none; }
+.dash-view.active { display: block; }
+
+/* Quest Log */
+.quest-board { display: flex; flex-direction: column; gap: 20px; }
+.quest-section-title {
+  font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--muted); padding-bottom: 6px; border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.quest-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--panel-radius);
+  padding: 14px 16px; cursor: pointer; transition: transform 0.15s, box-shadow 0.15s;
+  border-left: 4px solid var(--muted); backdrop-filter: var(--panel-blur);
+}
+.quest-card:hover { transform: translateX(4px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+.quest-card.quest-doing { border-left-color: var(--yellow); }
+.quest-card.quest-todo { border-left-color: var(--accent); }
+.quest-card.quest-backlog { border-left-color: #6b7280; }
+.quest-card.quest-review { border-left-color: var(--accent2); }
+.quest-card.quest-done { border-left-color: var(--green); }
+.quest-card.quest-failed { border-left-color: var(--red); }
+.quest-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.quest-card-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.quest-rank {
+  font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px;
+  font-family: var(--font-mono);
+}
+.quest-rank-s { background: rgba(248,113,113,0.2); color: #f87171; }
+.quest-rank-a { background: rgba(245,158,11,0.2); color: #f59e0b; }
+.quest-rank-b { background: rgba(96,165,250,0.2); color: #60a5fa; }
+.quest-rank-c { background: rgba(107,107,128,0.2); color: var(--muted); }
+.quest-card-meta { display: flex; gap: 8px; flex-wrap: wrap; }
+.quest-card-meta span { font-size: 11px; color: var(--muted); }
+.quest-card-meta .quest-project { color: var(--accent2); font-weight: 500; }
+.quest-card-meta .quest-agent { color: var(--accent); font-weight: 500; }
+.quest-card-meta .quest-cost { font-family: var(--font-mono); color: var(--green); }
+
+/* Calendar View */
+.calendar-nav {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+}
+.calendar-nav .cal-title { font-size: 16px; font-weight: 600; color: var(--text); font-family: var(--font-heading); }
+.calendar-nav button {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--panel-radius);
+  padding: 4px 12px; font-size: 12px; color: var(--text); cursor: pointer;
+}
+.calendar-nav button:hover { background: rgba(255,255,255,0.06); }
+.calendar-weekdays {
+  display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; margin-bottom: 2px;
+}
+.calendar-weekdays span {
+  text-align: center; font-size: 11px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; padding: 6px 0;
+}
+.calendar-grid {
+  display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;
+}
+.calendar-cell {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--panel-radius);
+  padding: 8px; min-height: 80px; cursor: pointer; transition: background 0.15s;
+}
+.calendar-cell:hover { background: rgba(255,255,255,0.05); }
+.calendar-cell.today { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.calendar-cell.other-month { opacity: 0.35; }
+.calendar-cell .cal-date { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+.calendar-cell .cal-stats { font-size: 10px; color: var(--muted); line-height: 1.6; }
+.calendar-cell .cal-stats .cal-done { color: var(--green); }
+.calendar-cell .cal-stats .cal-cost { color: var(--accent); font-family: var(--font-mono); }
+.calendar-cell .cal-stats .cal-sessions { color: var(--accent2); }
+.calendar-day-detail {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--panel-radius);
+  padding: 16px; margin-top: 12px; backdrop-filter: var(--panel-blur);
+}
+.calendar-day-detail h3 { font-size: 14px; color: var(--text); margin-bottom: 10px; font-family: var(--font-heading); }
+.calendar-day-detail .stats { margin-bottom: 10px; }
+
+/* Stats Report */
+.stats-report-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+}
+.stats-report-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--panel-radius);
+  padding: 16px; backdrop-filter: var(--panel-blur);
+}
+.stats-report-card h3 {
+  font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 12px; font-family: var(--font-heading);
+}
+.stats-report-filters {
+  display: flex; gap: 8px; align-items: center; margin-bottom: 16px;
+}
+.stats-report-filters button {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--panel-radius);
+  padding: 4px 12px; font-size: 12px; color: var(--text); cursor: pointer;
+}
+.stats-report-filters button:hover { background: rgba(255,255,255,0.06); }
+.stats-report-filters button.active { border-color: var(--accent); color: var(--accent); }
+.pie-chart-wrap { display: flex; align-items: center; gap: 16px; }
+.pie-legend { display: flex; flex-direction: column; gap: 4px; }
+.pie-legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text); }
+.pie-legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.pie-legend-val { color: var(--muted); font-family: var(--font-mono); margin-left: auto; }
+
+@media (max-width: 768px) {
+  .view-selector-grid { grid-template-columns: 1fr 1fr; }
+  .stats-report-grid { grid-template-columns: 1fr; }
+  .calendar-cell { min-height: 60px; padding: 4px; }
+  .calendar-cell .cal-date { font-size: 10px; }
+  .calendar-cell .cal-stats { font-size: 9px; }
+}
+@media (max-width: 480px) {
+  .view-selector-grid { grid-template-columns: 1fr; }
+  .calendar-cell { min-height: 50px; }
 }
 
 /* Directory Browser */
@@ -1752,6 +1933,7 @@ body:not([class*="theme-"])::after, body.theme-default::after {
           <button onclick="setTheme('default')">Glass</button>
           <button onclick="setTheme('clean')">Clean</button>
           <button onclick="setTheme('material')">Material</button>
+          <button onclick="setTheme('boardroom')">Boardroom</button>
           <button onclick="setTheme('classic')">Retro</button>
           <button onclick="setTheme('nes')">NES Dark</button>
           <button onclick="setTheme('gameboy')">Game Boy</button>
@@ -1784,6 +1966,38 @@ body:not([class*="theme-"])::after, body.theme-default::after {
   </div>
 
   <div id="dashboard-content">
+  <!-- View Selector -->
+  <div id="dash-view-selector" class="dash-view active">
+    <div class="view-selector-grid">
+      <div class="view-card" onclick="selectDashView('default')">
+        <span class="view-card-icon">📊</span>
+        <div class="view-card-title">Dashboard</div>
+        <div class="view-card-desc">Default overview — stats, sessions, jobs, trends</div>
+      </div>
+      <div class="view-card" onclick="selectDashView('quest')">
+        <span class="view-card-icon">⚔️</span>
+        <div class="view-card-title">Quest Log</div>
+        <div class="view-card-desc">RPG-style task board — commissions, ranks, progress</div>
+      </div>
+      <div class="view-card" onclick="selectDashView('calendar')">
+        <span class="view-card-icon">📅</span>
+        <div class="view-card-title">Calendar</div>
+        <div class="view-card-desc">Monthly grid — daily sessions, tasks, costs</div>
+      </div>
+      <div class="view-card" onclick="selectDashView('stats')">
+        <span class="view-card-icon">📈</span>
+        <div class="view-card-title">Stats Report</div>
+        <div class="view-card-desc">Charts & breakdowns — by project, agent, time</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Default View (original dashboard) -->
+  <div id="dash-view-default" class="dash-view">
+    <div class="view-topbar">
+      <button class="btn-views" onclick="showViewSelector()">◀ Views</button>
+      <span class="view-title">Dashboard</span>
+    </div>
   <!-- Onboarding Banner -->
   <div class="onboarding-banner" id="onboarding-banner" style="display:none">
     <h2>Welcome to Tetora</h2>
@@ -1812,6 +2026,16 @@ body:not([class*="theme-"])::after, body.theme-default::after {
       <button class="aw-zoom-btn" onclick="officeZoom(1)" title="Zoom in">+</button>
     </div>
     <div class="decor-palette" id="decor-palette" style="display:none"></div>
+  </div>
+
+  <!-- Executive Summary (CEO view) -->
+  <div id="exec-summary" class="exec-summary" style="display:none">
+    <div class="exec-summary-grid">
+      <div class="exec-card" id="exec-tasks-done"><div class="exec-label">Tasks Done (Week)</div><div class="exec-value" id="exec-tasks-val">-</div></div>
+      <div class="exec-card" id="exec-hours-saved"><div class="exec-label">Hours Saved</div><div class="exec-value" id="exec-hours-val">-</div></div>
+      <div class="exec-card" id="exec-cost"><div class="exec-label">AI Cost (Week)</div><div class="exec-value" id="exec-cost-val">-</div></div>
+      <div class="exec-card" id="exec-roi"><div class="exec-label">ROI</div><div class="exec-value" id="exec-roi-val">-</div></div>
+    </div>
   </div>
 
   <!-- Cost + Stats -->
@@ -1888,6 +2112,19 @@ body:not([class*="theme-"])::after, body.theme-default::after {
         <tbody id="cost-sessions-body"></tbody></table>
       </div>
     </div>
+    <div id="cost-forecast" style="margin-top:16px;display:none">
+      <div style="font-size:13px;font-weight:600;color:var(--muted);margin-bottom:8px">Cost Projection</div>
+      <div class="stats" id="cost-forecast-cards"></div>
+    </div>
+  </div>
+
+  <!-- Agent Team Scorecard -->
+  <div class="section" id="agent-scorecard-section" style="display:none">
+    <div class="section-header">
+      <span class="section-title">Agent Team</span>
+      <span class="section-meta" id="scorecard-meta"></span>
+    </div>
+    <div class="stats" id="agent-scorecard-grid"></div>
   </div>
 
   <!-- Agent Activity -->
@@ -2274,6 +2511,61 @@ body:not([class*="theme-"])::after, body.theme-default::after {
     <div class="section-header"><span class="section-title">System Health</span></div>
     <div class="stats" id="health-stats"></div>
   </div>
+  </div><!-- /dash-view-default -->
+
+  <!-- Quest Log View -->
+  <div id="dash-view-quest" class="dash-view">
+    <div class="view-topbar">
+      <button class="btn-views" onclick="showViewSelector()">◀ Views</button>
+      <span class="view-title">Quest Log</span>
+    </div>
+    <div class="quest-board" id="quest-board"></div>
+  </div>
+
+  <!-- Calendar View -->
+  <div id="dash-view-calendar" class="dash-view">
+    <div class="view-topbar">
+      <button class="btn-views" onclick="showViewSelector()">◀ Views</button>
+      <span class="view-title">Calendar</span>
+    </div>
+    <div class="calendar-nav" id="calendar-nav">
+      <button onclick="calendarPrev()">◀</button>
+      <span class="cal-title" id="cal-title"></span>
+      <button onclick="calendarNext()">▶</button>
+      <button onclick="calendarToday()">Today</button>
+    </div>
+    <div class="calendar-weekdays">
+      <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
+    </div>
+    <div class="calendar-grid" id="calendar-grid"></div>
+    <div id="calendar-day-detail" style="display:none"></div>
+  </div>
+
+  <!-- Stats Report View -->
+  <div id="dash-view-stats" class="dash-view">
+    <div class="view-topbar">
+      <button class="btn-views" onclick="showViewSelector()">◀ Views</button>
+      <span class="view-title">Stats Report</span>
+      <div style="display:flex;gap:6px;margin-left:auto">
+        <button class="btn" onclick="exportStatsJSON()" style="font-size:11px;padding:4px 10px">Export JSON</button>
+        <button class="btn" onclick="copyStatsSummary()" style="font-size:11px;padding:4px 10px">Copy Summary</button>
+      </div>
+    </div>
+    <div class="stats-report-filters" id="stats-filters">
+      <span style="font-size:12px;color:var(--muted)">Period:</span>
+      <button class="active" onclick="setStatsReportPeriod(7, this)">7d</button>
+      <button onclick="setStatsReportPeriod(14, this)">14d</button>
+      <button onclick="setStatsReportPeriod(30, this)">30d</button>
+      <button onclick="setStatsReportPeriod(90, this)">90d</button>
+    </div>
+    <div class="stats-report-grid" id="stats-report-grid">
+      <div class="stats-report-card"><h3>Task Completion Trend</h3><div id="sr-task-chart"></div></div>
+      <div class="stats-report-card"><h3>Cost Trend</h3><div id="sr-cost-chart"></div></div>
+      <div class="stats-report-card"><h3>By Project</h3><div id="sr-project-pie" class="pie-chart-wrap"></div></div>
+      <div class="stats-report-card"><h3>By Agent</h3><div id="sr-agent-pie" class="pie-chart-wrap"></div></div>
+    </div>
+  </div>
+
   </div><!-- /dashboard-content -->
 
   <div id="chat-content" style="display:none">
@@ -2396,6 +2688,7 @@ body:not([class*="theme-"])::after, body.theme-default::after {
           <button class="btn" onclick="setTheme('default')" id="theme-btn-default">Glass</button>
           <button class="btn" onclick="setTheme('clean')" id="theme-btn-clean">Clean</button>
           <button class="btn" onclick="setTheme('material')" id="theme-btn-material">Material</button>
+          <button class="btn" onclick="setTheme('boardroom')" id="theme-btn-boardroom">Boardroom</button>
           <button class="btn" onclick="setTheme('classic')" id="theme-btn-classic">Retro</button>
           <button class="btn" onclick="setTheme('nes')" id="theme-btn-nes">NES Dark</button>
           <button class="btn" onclick="setTheme('gameboy')" id="theme-btn-gameboy">Game Boy</button>
@@ -3322,6 +3615,45 @@ let historyPage = 1;
 let historyTotal = 0;
 const historyLimit = 20;
 
+// ====== Dashboard View System ======
+const DASH_VIEWS = ['selector', 'default', 'quest', 'calendar', 'stats'];
+let currentDashView = localStorage.getItem('tetora-dash-view') || 'selector';
+let calendarYear, calendarMonth; // set in calendarToday()
+let statsReportDays = 7;
+
+function selectDashView(view) {
+  currentDashView = view;
+  localStorage.setItem('tetora-dash-view', view);
+  applyDashView();
+  loadDashViewData();
+}
+
+function showViewSelector() {
+  currentDashView = 'selector';
+  localStorage.removeItem('tetora-dash-view');
+  applyDashView();
+}
+
+function applyDashView() {
+  DASH_VIEWS.forEach(function(v) {
+    var el = document.getElementById('dash-view-' + v);
+    if (el) el.classList.toggle('active', v === currentDashView);
+  });
+}
+
+function loadDashViewData() {
+  if (currentDashView === 'default') {
+    refresh();
+  } else if (currentDashView === 'quest') {
+    refreshQuestLog();
+  } else if (currentDashView === 'calendar') {
+    if (!calendarYear) calendarToday();
+    else refreshCalendarView();
+  } else if (currentDashView === 'stats') {
+    refreshStatsReport();
+  }
+}
+
 // --- Dashboard SSE Activity Feed ---
 const ACTIVITY_MAX = 50;
 let activityItems = [];
@@ -3671,6 +4003,11 @@ async function refresh() {
     }).join('');
     document.getElementById('stats').innerHTML = statsHTML;
 
+    // Executive Summary + Period Deltas + Agent Scorecard
+    loadExecSummary();
+    loadPeriodDeltas();
+    loadAgentScorecard();
+
     // Alert banner
     checkAlerts(cost, doingTasks);
 
@@ -3729,18 +4066,18 @@ async function refresh() {
     // Sessions (Mission Control) — skip heavy poll when on Chat tab
     window._cachedRoles = {};
     if (Array.isArray(roles)) roles.forEach(r => { window._cachedRoles[r.name] = r; });
-    if (currentTab === 'dashboard') {
+    if (currentTab === 'dashboard' && currentDashView === 'default') {
       await refreshSessions();
+
+      // Trend chart
+      await refreshTrend();
+
+      // History Trends
+      await refreshHistoryTrends();
+
+      // System Health
+      refreshHealth();
     }
-
-    // Trend chart
-    await refreshTrend();
-
-    // History Trends
-    await refreshHistoryTrends();
-
-    // System Health
-    refreshHealth();
 
     // Cache jobs for edit modal
     cachedJobs = Array.isArray(jobs) ? jobs : [];
@@ -4142,6 +4479,309 @@ async function refreshHistoryTrends() {
     [{ key: 'costUsd', color: 'var(--accent)' }],
     { formatVal: function(v) { return '$' + v.toFixed(v < 0.01 ? 4 : 2); } }
   );
+}
+
+// ====== Quest Log View ======
+async function refreshQuestLog() {
+  try {
+    var data = await fetchJSON('/api/tasks/board');
+    var cols = data.columns || {};
+    var sections = [
+      { title: 'In Progress', keys: ['doing'], cls: 'quest-doing' },
+      { title: 'Under Review', keys: ['review'], cls: 'quest-review' },
+      { title: 'Commissions Accepted', keys: ['todo', 'backlog', 'needs-thought', 'idea'], cls: '' },
+      { title: 'Completed (Recent 20)', keys: ['done'], cls: 'quest-done', limit: 20 },
+      { title: 'Failed', keys: ['failed'], cls: 'quest-failed' },
+    ];
+    var html = '';
+    sections.forEach(function(sec) {
+      var tasks = [];
+      sec.keys.forEach(function(k) {
+        (cols[k] || []).forEach(function(t) {
+          t._status = k;
+          tasks.push(t);
+        });
+      });
+      if (sec.limit) tasks = tasks.slice(0, sec.limit);
+      if (tasks.length === 0) return;
+      html += '<div class="quest-section-title">' + esc(sec.title) + ' (' + tasks.length + ')</div>';
+      tasks.forEach(function(t) {
+        var statusCls = sec.cls || ('quest-' + t._status);
+        var rank = questRank(t.priority);
+        var meta = [];
+        if (t.project) meta.push('<span class="quest-project">' + esc(t.project) + '</span>');
+        if (t.assignee) meta.push('<span class="quest-agent">' + esc(typeof t.assignee === 'object' ? t.assignee.name : t.assignee) + '</span>');
+        if (t.cost > 0) meta.push('<span class="quest-cost">' + costFmt(t.cost) + '</span>');
+        if (t.createdAt) meta.push('<span>' + dateTimeStr(t.createdAt) + '</span>');
+        html += '<div class="quest-card ' + statusCls + '" onclick="openTaskDetail(\'' + esc(t.id) + '\')">' +
+          '<div class="quest-card-header">' +
+            '<span class="quest-card-title">' + esc(t.title || t.name || t.id) + '</span>' +
+            '<span class="quest-rank ' + rank.cls + '">' + rank.label + '</span>' +
+          '</div>' +
+          '<div class="quest-card-meta">' + meta.join('') + '</div>' +
+        '</div>';
+      });
+    });
+    document.getElementById('quest-board').innerHTML = html || '<div style="color:var(--muted);padding:20px;text-align:center">No quests found</div>';
+  } catch(e) {
+    document.getElementById('quest-board').innerHTML = '<div style="color:var(--red);padding:20px">Error: ' + esc(e.message) + '</div>';
+  }
+}
+
+function questRank(priority) {
+  switch((priority || '').toLowerCase()) {
+    case 'urgent': return { label: 'S Rank', cls: 'quest-rank-s' };
+    case 'high': return { label: 'A Rank', cls: 'quest-rank-a' };
+    case 'normal': case '': case undefined: return { label: 'B Rank', cls: 'quest-rank-b' };
+    default: return { label: 'C Rank', cls: 'quest-rank-c' };
+  }
+}
+
+// ====== Calendar View ======
+function calendarToday() {
+  var now = new Date();
+  calendarYear = now.getFullYear();
+  calendarMonth = now.getMonth();
+  refreshCalendarView();
+}
+
+function calendarPrev() {
+  calendarMonth--;
+  if (calendarMonth < 0) { calendarMonth = 11; calendarYear--; }
+  refreshCalendarView();
+}
+
+function calendarNext() {
+  calendarMonth++;
+  if (calendarMonth > 11) { calendarMonth = 0; calendarYear++; }
+  refreshCalendarView();
+}
+
+async function refreshCalendarView() {
+  var titleEl = document.getElementById('cal-title');
+  var months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  titleEl.textContent = months[calendarMonth] + ' ' + calendarYear;
+
+  // Calculate days range for API
+  var firstDay = new Date(calendarYear, calendarMonth, 1);
+  var lastDay = new Date(calendarYear, calendarMonth + 1, 0);
+  var daysInMonth = lastDay.getDate();
+  // Pad to cover full API range
+  var apiDays = daysInMonth + 14; // extra buffer
+
+  try {
+    var [taskData, usageData, sessData] = await Promise.all([
+      fetchJSON('/api/tasks/trend?days=' + apiDays).catch(function() { return []; }),
+      fetchJSON('/api/usage/trend?days=' + apiDays).catch(function() { return []; }),
+      fetchJSON('/sessions?limit=200').catch(function() { return { sessions: [] }; }),
+    ]);
+
+    // Build daily map from API data
+    var dayMap = {};
+    (Array.isArray(taskData) ? taskData : []).forEach(function(d) {
+      var key = d.date || d.Date;
+      if (!key) return;
+      if (!dayMap[key]) dayMap[key] = { tasks: 0, done: 0, cost: 0, sessions: 0 };
+      dayMap[key].tasks += (d.created || 0);
+      dayMap[key].done += (d.done || 0);
+    });
+    (Array.isArray(usageData) ? usageData : []).forEach(function(d) {
+      var key = d.date || d.Date;
+      if (!key) return;
+      if (!dayMap[key]) dayMap[key] = { tasks: 0, done: 0, cost: 0, sessions: 0 };
+      dayMap[key].cost += (d.costUsd || 0);
+    });
+    var sessions = (sessData && sessData.sessions) || [];
+    sessions.forEach(function(s) {
+      var key = (s.startedAt || s.createdAt || '').slice(0, 10);
+      if (!key) return;
+      if (!dayMap[key]) dayMap[key] = { tasks: 0, done: 0, cost: 0, sessions: 0 };
+      dayMap[key].sessions++;
+    });
+
+    renderCalendarGrid(dayMap);
+  } catch(e) {
+    document.getElementById('calendar-grid').innerHTML = '<div style="color:var(--red);padding:20px;grid-column:1/-1">Error: ' + esc(e.message) + '</div>';
+  }
+}
+
+function renderCalendarGrid(dayMap) {
+  var grid = document.getElementById('calendar-grid');
+  var today = new Date();
+  var todayStr = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+
+  var firstDay = new Date(calendarYear, calendarMonth, 1);
+  var startDow = firstDay.getDay(); // 0=Sun
+  var daysInMonth = new Date(calendarYear, calendarMonth + 1, 0).getDate();
+  var daysInPrev = new Date(calendarYear, calendarMonth, 0).getDate();
+
+  var html = '';
+
+  // Previous month filler
+  for (var i = startDow - 1; i >= 0; i--) {
+    var d = daysInPrev - i;
+    html += '<div class="calendar-cell other-month"><div class="cal-date">' + d + '</div></div>';
+  }
+
+  // Current month
+  for (var d = 1; d <= daysInMonth; d++) {
+    var dateStr = calendarYear + '-' + String(calendarMonth + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+    var isToday = dateStr === todayStr;
+    var data = dayMap[dateStr] || { tasks: 0, done: 0, cost: 0, sessions: 0 };
+    var statsHtml = '';
+    if (data.done > 0) statsHtml += '<div class="cal-done">' + data.done + ' done</div>';
+    if (data.tasks > 0 && data.tasks !== data.done) statsHtml += '<div>' + data.tasks + ' created</div>';
+    if (data.sessions > 0) statsHtml += '<div class="cal-sessions">' + data.sessions + ' sessions</div>';
+    if (data.cost > 0) statsHtml += '<div class="cal-cost">' + costFmt(data.cost) + '</div>';
+
+    html += '<div class="calendar-cell' + (isToday ? ' today' : '') + '" onclick="showCalendarDayDetail(\'' + dateStr + '\')">' +
+      '<div class="cal-date">' + d + '</div>' +
+      '<div class="cal-stats">' + statsHtml + '</div>' +
+    '</div>';
+  }
+
+  // Next month filler (fill to complete row)
+  var totalCells = startDow + daysInMonth;
+  var remaining = totalCells % 7 === 0 ? 0 : 7 - (totalCells % 7);
+  for (var i = 1; i <= remaining; i++) {
+    html += '<div class="calendar-cell other-month"><div class="cal-date">' + i + '</div></div>';
+  }
+
+  grid.innerHTML = html;
+}
+
+function showCalendarDayDetail(dateStr) {
+  var detail = document.getElementById('calendar-day-detail');
+  var parts = dateStr.split('-');
+  var label = parts[1] + '/' + parts[2] + '/' + parts[0];
+  detail.style.display = '';
+  detail.innerHTML = '<h3>' + label + '</h3><div style="color:var(--muted);font-size:12px">Loading...</div>';
+
+  fetchJSON('/sessions?limit=50&date=' + dateStr).catch(function() { return { sessions: [] }; }).then(function(data) {
+    var sessions = (data && data.sessions) || [];
+    var html = '<h3>' + label + ' <button class="btn" onclick="document.getElementById(\'calendar-day-detail\').style.display=\'none\'" style="float:right;padding:2px 8px;font-size:11px">Close</button></h3>';
+    if (sessions.length === 0) {
+      html += '<div style="color:var(--muted);font-size:12px">No sessions on this day</div>';
+    } else {
+      html += '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + sessions.length + ' sessions</div>';
+      html += sessions.map(function(s) {
+        var role = s.role || s.agent || '-';
+        var cost = s.cost > 0 ? costFmt(s.cost) : '';
+        var dur = s.duration || '';
+        var status = s.status || 'done';
+        return '<div style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:12px">' +
+          '<span style="color:var(--accent);font-weight:500">' + esc(typeof role === 'object' ? role.name : role) + '</span> ' +
+          '<span style="color:var(--muted)">' + esc(dur) + '</span> ' +
+          (cost ? '<span style="color:var(--green);font-family:var(--font-mono)">' + cost + '</span> ' : '') +
+          statusBadge(status) +
+          (s.task ? '<div style="margin-top:3px;color:var(--text);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:400px">' + esc(s.task) + '</div>' : '') +
+        '</div>';
+      }).join('');
+    }
+    detail.innerHTML = html;
+  });
+}
+
+// ====== Stats Report View ======
+function setStatsReportPeriod(days, btn) {
+  statsReportDays = days;
+  var filters = document.getElementById('stats-filters');
+  filters.querySelectorAll('button').forEach(function(b) { b.classList.remove('active'); });
+  if (btn) btn.classList.add('active');
+  refreshStatsReport();
+}
+
+async function refreshStatsReport() {
+  try {
+    var [taskData, usageData, boardData] = await Promise.all([
+      fetchJSON('/api/tasks/trend?days=' + statsReportDays).catch(function() { return []; }),
+      fetchJSON('/api/usage/trend?days=' + statsReportDays).catch(function() { return []; }),
+      fetchJSON('/api/tasks/board').catch(function() { return { columns: {}, stats: {}, projects: [], agents: [] }; }),
+    ]);
+
+    var taskArr = Array.isArray(taskData) ? taskData : [];
+    var usageArr = Array.isArray(usageData) ? usageData : [];
+
+    // Task completion trend
+    document.getElementById('sr-task-chart').innerHTML = makeSVGLineChart(
+      taskArr,
+      [{ key: 'created', color: 'var(--accent2)' }, { key: 'done', color: 'var(--green)' }]
+    );
+
+    // Cost trend
+    document.getElementById('sr-cost-chart').innerHTML = makeSVGLineChart(
+      usageArr,
+      [{ key: 'costUsd', color: 'var(--accent)' }],
+      { formatVal: function(v) { return '$' + v.toFixed(v < 0.01 ? 4 : 2); } }
+    );
+
+    // Aggregate tasks by project for pie chart
+    var projectCounts = {};
+    var agentCounts = {};
+    var cols = boardData.columns || {};
+    ['idea','backlog','needs-thought','todo','doing','review','done','failed'].forEach(function(s) {
+      (cols[s] || []).forEach(function(t) {
+        var proj = t.project || 'Unassigned';
+        projectCounts[proj] = (projectCounts[proj] || 0) + 1;
+        var agent = t.assignee ? (typeof t.assignee === 'object' ? t.assignee.name : t.assignee) : 'Unassigned';
+        agentCounts[agent] = (agentCounts[agent] || 0) + 1;
+      });
+    });
+
+    // Render pie charts
+    document.getElementById('sr-project-pie').innerHTML = makeSVGPieChart(projectCounts, 'Tasks by Project');
+    document.getElementById('sr-agent-pie').innerHTML = makeSVGPieChart(agentCounts, 'Tasks by Agent');
+
+  } catch(e) {
+    document.getElementById('stats-report-grid').innerHTML = '<div style="color:var(--red);padding:20px;grid-column:1/-1">Error: ' + esc(e.message) + '</div>';
+  }
+}
+
+function makeSVGPieChart(data) {
+  var PIE_COLORS = ['#06b6d4','#8b5cf6','#34d399','#f59e0b','#f87171','#60a5fa','#ec4899','#a78bfa','#fbbf24','#14b8a6'];
+  var entries = Object.keys(data).map(function(k) { return { label: k, value: data[k] }; });
+  entries.sort(function(a, b) { return b.value - a.value; });
+
+  var total = entries.reduce(function(s, e) { return s + e.value; }, 0);
+  if (total === 0) {
+    return '<div style="color:var(--muted);font-size:12px;padding:10px">No data</div>';
+  }
+
+  var R = 60, CX = 70, CY = 70;
+  var svg = '<svg viewBox="0 0 140 140" style="width:140px;height:140px;flex-shrink:0">';
+  var startAngle = -Math.PI / 2;
+
+  entries.forEach(function(e, i) {
+    var sliceAngle = (e.value / total) * 2 * Math.PI;
+    var endAngle = startAngle + sliceAngle;
+    var largeArc = sliceAngle > Math.PI ? 1 : 0;
+    var x1 = CX + R * Math.cos(startAngle);
+    var y1 = CY + R * Math.sin(startAngle);
+    var x2 = CX + R * Math.cos(endAngle);
+    var y2 = CY + R * Math.sin(endAngle);
+    var color = PIE_COLORS[i % PIE_COLORS.length];
+
+    if (entries.length === 1) {
+      svg += '<circle cx="' + CX + '" cy="' + CY + '" r="' + R + '" fill="' + color + '"/>';
+    } else {
+      svg += '<path d="M ' + CX + ' ' + CY + ' L ' + x1.toFixed(2) + ' ' + y1.toFixed(2) + ' A ' + R + ' ' + R + ' 0 ' + largeArc + ' 1 ' + x2.toFixed(2) + ' ' + y2.toFixed(2) + ' Z" fill="' + color + '"/>';
+    }
+    startAngle = endAngle;
+  });
+  svg += '</svg>';
+
+  var legend = '<div class="pie-legend">';
+  entries.slice(0, 8).forEach(function(e, i) {
+    var color = PIE_COLORS[i % PIE_COLORS.length];
+    var pct = ((e.value / total) * 100).toFixed(0);
+    legend += '<div class="pie-legend-item"><span class="pie-legend-dot" style="background:' + color + '"></span>' + esc(e.label) + '<span class="pie-legend-val">' + e.value + ' (' + pct + '%)</span></div>';
+  });
+  if (entries.length > 8) {
+    legend += '<div class="pie-legend-item" style="color:var(--muted)">...and ' + (entries.length - 8) + ' more</div>';
+  }
+  legend += '</div>';
+
+  return svg + legend;
 }
 
 // --- Job Actions ---
@@ -6710,6 +7350,10 @@ function switchTab(tab) {
   if (tab === 'settings') {
     refreshSettings();
   }
+  if (tab === 'dashboard') {
+    applyDashView();
+    loadDashViewData();
+  }
   if (tab === 'workspace') {
     refreshBoard();
     loadMemoryBrowser();
@@ -7611,14 +8255,176 @@ async function loadCostDashboard(period) {
         return '<tr><td>' + esc(s.agent) + '</td><td title="' + esc(s.title || '') + '">' + esc(title) + '</td><td>' + s.messages + '</td><td style="font-size:12px">' + tokens + '</td><td>' + costFmt(s.totalCostUsd) + '</td><td style="font-size:12px">' + created + '</td></tr>';
       }).join('');
     }
+    // Cost projection
+    updateCostForecast(summary);
   } catch(e) {
     console.error('Cost dashboard error:', e);
   }
 }
 
+// --- Executive Summary ---
+async function loadExecSummary() {
+  try {
+    const [summary, taskTrend] = await Promise.all([
+      fetchJSON('/api/usage/summary?period=week').catch(() => ({})),
+      fetchJSON('/api/tasks/trend?days=7').catch(() => []),
+    ]);
+
+    const doneTasks = taskTrend.reduce((sum, d) => sum + (d.done || 0), 0);
+    const hoursPerTask = 2.0;
+    const freelancerRate = 50;
+    const hoursSaved = doneTasks * hoursPerTask;
+    const humanCost = hoursSaved * freelancerRate;
+    const aiCost = summary.totalCostUsd || 0;
+    const roi = aiCost > 0 ? ((humanCost - aiCost) / aiCost * 100) : 0;
+
+    document.getElementById('exec-tasks-val').textContent = doneTasks;
+    document.getElementById('exec-hours-val').textContent = '~' + hoursSaved + 'h';
+    document.getElementById('exec-cost-val').textContent = costFmt(aiCost);
+    document.getElementById('exec-roi-val').textContent = roi > 0 ? roi.toFixed(0) + '%' : '-';
+
+    document.getElementById('exec-summary').style.display = doneTasks > 0 || aiCost > 0 ? '' : 'none';
+  } catch(e) { console.error('loadExecSummary:', e); }
+}
+
+// --- Period Comparison Deltas ---
+async function loadPeriodDeltas() {
+  try {
+    const data = await fetchJSON('/api/usage/compare?period=week');
+    const costEl = document.querySelector('#stats .stat:first-child');
+    if (costEl && data.costDelta !== undefined) {
+      let existing = costEl.querySelector('.stat-delta');
+      if (!existing) { existing = document.createElement('div'); costEl.appendChild(existing); }
+      const arrow = data.costDelta > 0 ? '▲' : data.costDelta < 0 ? '▼' : '—';
+      // For cost, up is bad (red), down is good (green) — invert colors
+      const costCls = data.costDelta > 0 ? 'down' : data.costDelta < 0 ? 'up' : 'neutral';
+      existing.className = 'stat-delta ' + costCls;
+      existing.textContent = arrow + ' ' + Math.abs(data.costDelta).toFixed(1) + '% vs prev';
+    }
+  } catch(e) { /* silently fail — deltas are supplementary */ }
+}
+
+// --- Cost Projection ---
+function updateCostForecast(summary) {
+  var el = document.getElementById('cost-forecast');
+  var cards = document.getElementById('cost-forecast-cards');
+  if (!el || !cards) return;
+
+  var cost = summary.totalCostUsd || 0;
+  var period = costPeriod;
+  var projectedMonthly = 0;
+  var daysInPeriod = 1;
+
+  if (period === 'today') { projectedMonthly = cost * 30; daysInPeriod = 1; }
+  else if (period === 'week') { projectedMonthly = (cost / 7) * 30; daysInPeriod = 7; }
+  else if (period === 'month') { projectedMonthly = cost; daysInPeriod = 30; }
+
+  var dailyBurn = cost / daysInPeriod;
+  var html = '<div class="stat"><div class="stat-label">Daily Burn Rate</div><div class="stat-value cost">' + costFmt(dailyBurn) + '/d</div></div>';
+  html += '<div class="stat"><div class="stat-label">Projected Monthly</div><div class="stat-value cost">' + costFmt(projectedMonthly) + '</div></div>';
+
+  cards.innerHTML = html;
+  el.style.display = cost > 0 ? '' : 'none';
+}
+
+// --- Agent Team Scorecard ---
+async function loadAgentScorecard() {
+  try {
+    var data = await fetchJSON('/api/agents/scorecard?days=7');
+    var agents = data.agents || [];
+    var section = document.getElementById('agent-scorecard-section');
+    var grid = document.getElementById('agent-scorecard-grid');
+    var meta = document.getElementById('scorecard-meta');
+
+    if (agents.length === 0) { section.style.display = 'none'; return; }
+
+    section.style.display = '';
+    meta.textContent = agents.length + ' agent' + (agents.length !== 1 ? 's' : '') + ' (7d)';
+
+    grid.innerHTML = agents.map(function(a) {
+      var successColor = a.successRate >= 90 ? 'var(--green)' : a.successRate >= 70 ? 'var(--yellow)' : 'var(--red)';
+      var avgDuration = a.avgDurationMs > 0 ? formatDuration(a.avgDurationMs) : '-';
+      return '<div class="stat" style="text-align:center">' +
+        '<div class="stat-label">' + esc(a.agent) + '</div>' +
+        '<div class="stat-value" style="font-size:22px">' + a.doneTasks + '<span style="font-size:12px;color:var(--muted)"> done</span></div>' +
+        '<div style="font-size:12px;margin-top:4px;color:' + successColor + '">' + a.successRate.toFixed(0) + '% success</div>' +
+        '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + costFmt(a.totalCost) + ' · ' + costFmt(a.avgCostPerTask) + '/task</div>' +
+        '<div style="font-size:11px;color:var(--muted)">' + avgDuration + ' avg</div>' +
+        '</div>';
+    }).join('');
+  } catch(e) { console.error('loadAgentScorecard:', e); }
+}
+
+// --- Export / Copy Report ---
+async function exportStatsJSON() {
+  try {
+    const [summary, trend, agents] = await Promise.all([
+      fetchJSON('/api/usage/summary?period=week').catch(() => ({})),
+      fetchJSON('/api/tasks/trend?days=7').catch(() => []),
+      fetchJSON('/api/agents/scorecard?days=7').catch(() => ({ agents: [] })),
+    ]);
+    const report = {
+      generated: new Date().toISOString(),
+      period: 'week',
+      summary: summary,
+      taskTrend: trend,
+      agents: agents.agents || [],
+    };
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'tetora-report-' + new Date().toISOString().slice(0,10) + '.json';
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('Report exported');
+  } catch(e) { toast('Export failed: ' + e.message); }
+}
+
+async function copyStatsSummary() {
+  try {
+    const [summary, trend, agents] = await Promise.all([
+      fetchJSON('/api/usage/summary?period=week').catch(() => ({})),
+      fetchJSON('/api/tasks/trend?days=7').catch(() => []),
+      fetchJSON('/api/agents/scorecard?days=7').catch(() => ({ agents: [] })),
+    ]);
+    const doneTasks = trend.reduce((s, d) => s + (d.done || 0), 0);
+    const hoursSaved = doneTasks * 2;
+    const cost = summary.totalCostUsd || 0;
+    const roi = cost > 0 ? (((hoursSaved * 50) - cost) / cost * 100).toFixed(0) : 0;
+    const now = new Date();
+    const weekStart = new Date(now); weekStart.setDate(now.getDate() - 7);
+    const fmt = d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+    let topAgent = '-';
+    const agentList = agents.agents || [];
+    if (agentList.length > 0) {
+      const top = agentList[0];
+      topAgent = top.agent + ' (' + top.doneTasks + ' tasks, ' + costFmt(top.totalCost) + ')';
+    }
+
+    const text = [
+      'Tetora AI Team — Weekly Report (' + fmt(weekStart) + ' - ' + fmt(now) + ')',
+      'Tasks: ' + doneTasks + ' | Cost: ' + costFmt(cost) + ' | Hours Saved: ~' + hoursSaved + 'h',
+      'ROI: ' + roi + '% | Effective Rate: ' + (hoursSaved > 0 ? costFmt(cost / hoursSaved) + '/hr' : '-'),
+      'Top Agent: ' + topAgent,
+    ].join('\n');
+
+    await navigator.clipboard.writeText(text);
+    toast('Summary copied to clipboard');
+  } catch(e) { toast('Copy failed: ' + e.message); }
+}
+
 // Init
+applyDashView();
 loadCostDashboard('today');
-refresh();
+if (currentDashView === 'default' || currentDashView === 'selector') {
+  refresh();
+} else {
+  // Still do a lightweight refresh for top stats, then load view-specific data
+  refresh();
+  loadDashViewData();
+}
 refreshWorkers();
 refreshPrompts();
 refreshMCP();
@@ -9756,7 +10562,7 @@ function dcmSave() {
 }
 
 // --- Theme System ---
-var THEMES = ['default', 'clean', 'material', 'classic', 'nes', 'gameboy', 'amber'];
+var THEMES = ['default', 'clean', 'material', 'boardroom', 'classic', 'nes', 'gameboy', 'amber'];
 function setTheme(name) {
   THEMES.forEach(function(t) { document.body.classList.remove('theme-' + t); });
   if (name && name !== 'default') document.body.classList.add('theme-' + name);

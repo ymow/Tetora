@@ -77,16 +77,18 @@ func (c TaskBoardConfig) maxRetriesOrDefault() int {
 // --- Task Board Engine ---
 
 type TaskBoardEngine struct {
-	dbPath string
-	config TaskBoardConfig
+	dbPath   string
+	config   TaskBoardConfig
 	webhooks []WebhookConfig
+	whSem    chan struct{}
 }
 
 func newTaskBoardEngine(dbPath string, config TaskBoardConfig, webhooks []WebhookConfig) *TaskBoardEngine {
 	return &TaskBoardEngine{
-		dbPath: dbPath,
-		config: config,
+		dbPath:   dbPath,
+		config:   config,
 		webhooks: webhooks,
+		whSem:    make(chan struct{}, 8),
 	}
 }
 
@@ -525,6 +527,14 @@ func (tb *TaskBoardEngine) fireWebhook(event string, payload any) {
 		}
 
 		go func(wh WebhookConfig, payload any) {
+			select {
+			case tb.whSem <- struct{}{}:
+				defer func() { <-tb.whSem }()
+			default:
+				logWarn("webhook semaphore full, dropping webhook", "url", wh.URL, "event", fullEvent)
+				return
+			}
+
 			body := map[string]any{
 				"event":     fullEvent,
 				"data":      payload,
