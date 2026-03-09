@@ -53,6 +53,7 @@ type TaskBoardDispatchConfig struct {
 	StuckThreshold        string  `json:"stuckThreshold,omitempty"`        // max time a task can be in "doing" before reset (default: "2h")
 	MaxConcurrentTasks    int     `json:"maxConcurrentTasks,omitempty"`    // max tasks dispatched per scan cycle (default: 3)
 	BacklogTriageInterval string  `json:"backlogTriageInterval,omitempty"` // interval between backlog triage runs (default: "1h")
+	ReviewLoop            bool    `json:"reviewLoop,omitempty"`            // enable automated Dev↔QA loop (review → feedback → retry, max maxRetries)
 }
 
 type TaskBoardConfig struct {

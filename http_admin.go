@@ -823,6 +823,14 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 				"autoDispatch": cfg.TaskBoard.AutoDispatch.Enabled,
 				"maxRetries":   cfg.TaskBoard.MaxRetries,
 			},
+			"heartbeat": map[string]any{
+				"enabled":          cfg.Heartbeat.Enabled,
+				"interval":         cfg.Heartbeat.intervalOrDefault().String(),
+				"stallThreshold":   cfg.Heartbeat.stallThresholdOrDefault().String(),
+				"timeoutWarnRatio": cfg.Heartbeat.timeoutWarnRatioOrDefault(),
+				"autoCancel":       cfg.Heartbeat.AutoCancel,
+				"notifyOnStall":    cfg.Heartbeat.notifyOnStallOrDefault(),
+			},
 		}
 
 		json.NewEncoder(w).Encode(summary)
@@ -849,6 +857,9 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		allowed := map[string]bool{
 			"taskBoard.enabled":              true,
 			"taskBoard.autoDispatch.enabled":  true,
+			"heartbeat.enabled":              true,
+			"heartbeat.autoCancel":           true,
+			"heartbeat.notifyOnStall":        true,
 		}
 		if !allowed[req.Key] {
 			http.Error(w, fmt.Sprintf(`{"error":"key %q not toggleable"}`, req.Key), http.StatusBadRequest)

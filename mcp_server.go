@@ -189,6 +189,20 @@ func mcpBridgeTools() []mcpBridgeTool {
 				"required": ["message"]
 			}`),
 		},
+		{
+			Name:        "tetora_ask_user",
+			Description: "Ask the user a question via Discord. Use when you need user input. The user will see buttons for options and can also type a custom answer. This blocks until the user responds (up to 6 minutes).",
+			Method:      "POST",
+			Path:        "/api/hooks/ask-user",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"question": {"type": "string", "description": "The question to ask the user"},
+					"options":  {"type": "array", "items": {"type": "string"}, "description": "Optional quick-reply buttons (max 4)"}
+				},
+				"required": ["question"]
+			}`),
+		},
 	}
 }
 
@@ -383,7 +397,12 @@ func (s *mcpBridgeServer) doHTTP(method, path string, args map[string]any) ([]by
 	}
 	req.Header.Set("X-Tetora-Source", "mcp-bridge")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Long-poll endpoints need extended timeout.
+	timeout := 30 * time.Second
+	if strings.Contains(path, "/api/hooks/ask-user") || strings.Contains(path, "/api/hooks/plan-gate") {
+		timeout = 7 * time.Minute
+	}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http request: %w", err)

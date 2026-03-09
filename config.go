@@ -137,6 +137,7 @@ type Config struct {
 	CronReplayHours       int                              `json:"cronReplayHours,omitempty"`        // hours to look back for missed jobs on startup (default 2)
 	Heartbeat             HeartbeatConfig                  `json:"heartbeat,omitempty"`              // --- Agent Heartbeat / Self-healing ---
 	Hooks                 HooksConfig                      `json:"hooks,omitempty"`                  // --- v3: Claude Code Hooks ---
+	PlanGate              PlanGateConfig                   `json:"planGate,omitempty"`                // --- v3: Plan Gate Mode ---
 	MCPBridge             MCPBridgeConfig                  `json:"mcpBridge,omitempty"`               // --- v3: MCP Server Bridge ---
 
 	// Resolved at runtime (not serialized).
@@ -544,11 +545,22 @@ type SmartDispatchConfig struct {
 	DefaultAgent     string           `json:"defaultAgent,omitempty"`     // fallback if no match (default "琉璃")
 	ClassifyBudget  float64          `json:"classifyBudget,omitempty"`  // budget for classification LLM call (default 0.1)
 	ClassifyTimeout string           `json:"classifyTimeout,omitempty"` // timeout for classification (default "30s")
-	Review          bool             `json:"review,omitempty"`          // if true, coordinator reviews output
+	Review          bool             `json:"review,omitempty"`          // if true, reviews output after dispatch
+	ReviewLoop      bool             `json:"reviewLoop,omitempty"`      // if true, runs Dev↔QA retry loop (review → feedback → retry, max maxRetries)
+	MaxRetries      int              `json:"maxRetries,omitempty"`      // max QA retry attempts (default 3)
+	ReviewAgent     string           `json:"reviewAgent,omitempty"`     // agent for review (default: coordinator). set to e.g. "kougyoku" for adversarial QA
 	ReviewBudget    float64          `json:"reviewBudget,omitempty"`    // budget for review LLM call (default 0.2)
 	Rules           []RoutingRule    `json:"rules,omitempty"`           // explicit keyword rules (fast path)
 	Bindings        []RoutingBinding `json:"bindings,omitempty"`        // channel/user bindings (highest priority)
 	Fallback        string           `json:"fallback,omitempty"`        // "smart" (LLM routing) | "coordinator" (always default agent)
+}
+
+// maxRetriesOrDefault returns the configured max retries for the Dev↔QA loop, defaulting to 3.
+func (c SmartDispatchConfig) maxRetriesOrDefault() int {
+	if c.MaxRetries > 0 {
+		return c.MaxRetries
+	}
+	return 3
 }
 
 // RoutingRule is a keyword-based routing rule for fast-path matching.

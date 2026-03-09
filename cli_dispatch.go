@@ -38,6 +38,7 @@ func cmdDispatch(args []string) {
 	notify := false
 	estimate := false
 	decompose := false
+	review := false
 	var prompt string
 
 	i := 0
@@ -93,6 +94,9 @@ func cmdDispatch(args []string) {
 			i++
 		case "--decompose":
 			decompose = true
+			i++
+		case "--review":
+			review = true
 			i++
 		case "--help":
 			printDispatchUsage()
@@ -150,6 +154,9 @@ func cmdDispatch(args []string) {
 	}
 	if permission != "" {
 		task["permissionMode"] = permission
+	}
+	if review {
+		task["reviewLoop"] = true
 	}
 
 	// If agent specified, fetch soul content and inject.
@@ -258,14 +265,29 @@ func cmdDispatch(args []string) {
 		if t.Status != "success" {
 			icon = t.Status
 		}
-		fmt.Fprintf(os.Stderr, "\n[%s] %s ($%.2f, %s)\n", icon, t.Name, t.CostUSD,
-			elapsed.Round(time.Second))
+		suffix := ""
+		if t.Attempts > 0 {
+			qaStatus := "pending"
+			if t.QAApproved != nil {
+				if *t.QAApproved {
+					qaStatus = "passed"
+				} else {
+					qaStatus = "failed"
+				}
+			}
+			suffix = fmt.Sprintf(" [QA:%s, attempts:%d]", qaStatus, t.Attempts)
+		}
+		fmt.Fprintf(os.Stderr, "\n[%s] %s ($%.2f, %s)%s\n", icon, t.Name, t.CostUSD,
+			elapsed.Round(time.Second), suffix)
 
 		if t.Output != "" {
 			fmt.Println(t.Output)
 		}
 		if t.Error != "" {
 			fmt.Fprintf(os.Stderr, "error: %s\n", t.Error)
+		}
+		if t.QAComment != "" {
+			fmt.Fprintf(os.Stderr, "qa: %s\n", t.QAComment)
 		}
 	}
 
@@ -301,6 +323,7 @@ Options:
   --role, -r        Agent name (injects soul prompt + agent model)
   --notify          Send Telegram notification on completion
   --estimate, -e    Show cost estimate without executing (dry-run)
+  --review          Enable Dev↔QA review loop (max 3 retries, auto-escalate)
 
 Examples:
   tetora dispatch "Summarize the README.md"

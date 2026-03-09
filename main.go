@@ -633,7 +633,28 @@ func main() {
 		var heartbeatMon *HeartbeatMonitor
 		if cfg.Heartbeat.Enabled {
 			heartbeatMon = newHeartbeatMonitor(cfg.Heartbeat, state, notifyFn)
+
+			// Wire idle detection: check dispatched tasks + hook workers + user sessions.
+			heartbeatMon.SetIdleCheckFn(func() bool {
+				state.mu.Lock()
+				hasRunning := len(state.running) > 0
+				state.mu.Unlock()
+				if hasRunning {
+					return false
+				}
+				if hookRecv.HasActiveWorkers() {
+					return false
+				}
+				if countUserSessions(cfg.HistoryDB) > 0 {
+					return false
+				}
+				return true
+			})
+
 			go heartbeatMon.Start(ctx)
+
+			// Wire heartbeat into cron engine for idle-trigger jobs.
+			cron.SetHeartbeatMonitor(heartbeatMon)
 		}
 
 		// Proactive engine.

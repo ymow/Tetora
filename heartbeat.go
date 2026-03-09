@@ -61,16 +61,22 @@ type HeartbeatMonitor struct {
 
 	mu    sync.Mutex
 	stats HeartbeatStats
+
+	// Idle tracking.
+	systemIdleCheckFn func() bool // injected idle check function
+	idleMu            sync.RWMutex
+	systemIdleSince   time.Time // when system became idle (zero = not idle)
 }
 
 // HeartbeatStats tracks heartbeat monitor activity.
 type HeartbeatStats struct {
-	CheckCount      int       `json:"checkCount"`      // total scan cycles performed
-	StallsDetected  int       `json:"stallsDetected"`  // total stall events
-	StallsRecovered int       `json:"stallsRecovered"` // stalls that resolved (task produced output again)
-	AutoCancelled   int       `json:"autoCancelled"`   // tasks force-cancelled by heartbeat
-	TimeoutWarnings int       `json:"timeoutWarnings"` // timeout proximity warnings emitted
-	LastCheck       time.Time `json:"lastCheck"`       // timestamp of last scan cycle
+	CheckCount      int        `json:"checkCount"`                // total scan cycles performed
+	StallsDetected  int        `json:"stallsDetected"`            // total stall events
+	StallsRecovered int        `json:"stallsRecovered"`           // stalls that resolved (task produced output again)
+	AutoCancelled   int        `json:"autoCancelled"`             // tasks force-cancelled by heartbeat
+	TimeoutWarnings int        `json:"timeoutWarnings"`           // timeout proximity warnings emitted
+	LastCheck       time.Time  `json:"lastCheck"`                 // timestamp of last scan cycle
+	SystemIdleSince *time.Time `json:"systemIdleSince,omitempty"` // when system entered idle state
 }
 
 func newHeartbeatMonitor(cfg HeartbeatConfig, state *dispatchState, notifyFn func(string)) *HeartbeatMonitor {
@@ -104,11 +110,35 @@ func (h *HeartbeatMonitor) Start(ctx context.Context) {
 	}
 }
 
+// SetIdleCheckFn sets the function used to check system idle state.
+func (h *HeartbeatMonitor) SetIdleCheckFn(fn func() bool) {
+	h.systemIdleCheckFn = fn
+}
+
+// SystemIdleDuration returns how long the system has been continuously idle.
+// Returns 0 if the system is not idle or idle tracking is not configured.
+func (h *HeartbeatMonitor) SystemIdleDuration() time.Duration {
+	h.idleMu.RLock()
+	defer h.idleMu.RUnlock()
+	if h.systemIdleSince.IsZero() {
+		return 0
+	}
+	return time.Since(h.systemIdleSince)
+}
+
 // Stats returns a snapshot of heartbeat statistics.
 func (h *HeartbeatMonitor) Stats() HeartbeatStats {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.stats
+	s := h.stats
+	h.mu.Unlock()
+
+	h.idleMu.RLock()
+	if !h.systemIdleSince.IsZero() {
+		t := h.systemIdleSince
+		s.SystemIdleSince = &t
+	}
+	h.idleMu.RUnlock()
+	return s
 }
 
 // check performs a single heartbeat scan of all running tasks.
@@ -298,5 +328,24 @@ func (h *HeartbeatMonitor) check() {
 				}
 			}
 		}
+	}
+
+	// --- Idle state tracking ---
+	if h.systemIdleCheckFn != nil {
+		idle := h.systemIdleCheckFn()
+		h.idleMu.Lock()
+		if idle {
+			if h.systemIdleSince.IsZero() {
+				h.systemIdleSince = time.Now()
+				logDebug("heartbeat: system entered idle state")
+			}
+		} else {
+			if !h.systemIdleSince.IsZero() {
+				logDebug("heartbeat: system left idle state",
+					"idleDuration", time.Since(h.systemIdleSince).Round(time.Second).String())
+			}
+			h.systemIdleSince = time.Time{}
+		}
+		h.idleMu.Unlock()
 	}
 }

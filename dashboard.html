@@ -2163,6 +2163,33 @@ body:not([class*="theme-"])::after, body.theme-default::after {
     <div id="hook-events-list" class="activity-list" style="max-height:200px;overflow-y:auto"></div>
   </div>
 
+  <!-- Worker Detail Modal -->
+  <div class="modal-overlay" id="worker-detail-modal" onclick="if(event.target===this)closeWorkerDetail()">
+    <div class="modal" style="max-width:550px">
+      <button class="modal-close" onclick="closeWorkerDetail()">&times;</button>
+      <h3 id="wd-title" style="margin:0 0 14px 0">Worker Detail</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;margin-bottom:16px">
+        <div><div style="font-size:11px;color:var(--muted)">State</div><div id="wd-state" style="font-size:13px">-</div></div>
+        <div><div style="font-size:11px;color:var(--muted)">Uptime</div><div id="wd-uptime" style="font-size:13px">-</div></div>
+        <div style="grid-column:1/-1"><div style="font-size:11px;color:var(--muted)">Workdir</div><div id="wd-workdir" style="font-size:13px;word-break:break-all">-</div></div>
+        <div><div style="font-size:11px;color:var(--muted)">Tool Count</div><div id="wd-toolcount" style="font-size:13px">-</div></div>
+        <div><div style="font-size:11px;color:var(--muted)">Last Tool</div><div id="wd-lasttool" style="font-size:13px">-</div></div>
+      </div>
+      <!-- Keyboard Control -->
+      <div style="margin-bottom:14px;padding:10px;background:var(--panel);border:1px solid var(--border);border-radius:6px">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Keyboard Control</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button onclick="sendKeystroke('ArrowUp')" class="pixel-btn" style="flex:1;min-width:60px;padding:8px 0;font-size:16px" title="Arrow Up">⬆</button>
+          <button onclick="sendKeystroke('ArrowDown')" class="pixel-btn" style="flex:1;min-width:60px;padding:8px 0;font-size:16px" title="Arrow Down">⬇</button>
+          <button onclick="sendKeystroke('Return')" class="pixel-btn" style="flex:1;min-width:60px;padding:8px 0;font-size:14px;background:var(--green);color:#000" title="Enter / Select">✅</button>
+          <button onclick="sendKeystroke('Escape')" class="pixel-btn" style="flex:1;min-width:60px;padding:8px 0;font-size:14px;background:var(--red,#e74c3c);color:#fff" title="Escape / Cancel">❌</button>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Event Log</div>
+      <div id="wd-events" class="activity-list" style="max-height:300px;overflow-y:auto"></div>
+    </div>
+  </div>
+
   <!-- Running Tasks -->
   <div class="section" id="running-section" style="display:none">
     <div class="section-header">
@@ -2813,6 +2840,11 @@ body:not([class*="theme-"])::after, body.theme-default::after {
       <div class="section">
         <div class="section-header"><span class="section-title">Security</span></div>
         <div id="settings-security"></div>
+      </div>
+      <!-- Heartbeat -->
+      <div class="section">
+        <div class="section-header"><span class="section-title">Heartbeat</span></div>
+        <div id="settings-heartbeat"></div>
       </div>
       <!-- Task Board -->
       <div class="section">
@@ -10387,6 +10419,7 @@ function refreshSettings() {
       renderSettingsTools(data.tools || {});
       renderSettingsBudgets(data.budgets || {});
       renderSettingsSecurity(data.security || {});
+      renderSettingsHeartbeat(data.heartbeat || {});
       renderSettingsTaskBoard(data.taskBoard || {});
       refreshNotificationsTable();
       refreshDiscordSettings();
@@ -10539,6 +10572,33 @@ function renderSettingsSecurity(data) {
     {label: 'IP Allowlist', value: data.ipAllowlist > 0 ? data.ipAllowlist + ' entries' : 'None'},
     {label: 'Dashboard Auth', value: data.dashboardAuth ? '<span style="color:var(--green)">Enabled</span>' : '<span style="color:var(--muted)">Disabled</span>'}
   ]);
+}
+
+function renderSettingsHeartbeat(data) {
+  var el = document.getElementById('settings-heartbeat');
+  if (!el) return;
+  var makeToggle = function(label, key, enabled) {
+    var color = enabled ? 'var(--green)' : 'var(--muted)';
+    var text = enabled ? 'Enabled' : 'Disabled';
+    return '<div style="background:var(--surface);padding:10px 14px;font-size:13px;color:var(--muted)">' + label + '</div>' +
+      '<div style="background:var(--surface);padding:8px 14px;display:flex;align-items:center;gap:8px">' +
+        '<span style="color:' + color + ';font-size:13px">' + text + '</span>' +
+        '<button class="btn" onclick="toggleConfigKey(\'' + key + '\',' + !enabled + ')" style="padding:2px 10px;font-size:11px">' + (enabled ? 'Disable' : 'Enable') + '</button>' +
+      '</div>';
+  };
+  var makeRow = function(label, value) {
+    return '<div style="background:var(--surface);padding:10px 14px;font-size:13px;color:var(--muted)">' + label + '</div>' +
+      '<div style="background:var(--surface);padding:10px 14px;font-size:13px;font-family:monospace">' + value + '</div>';
+  };
+  var html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border);border:1px solid var(--border);border-radius:8px;overflow:hidden">';
+  html += makeToggle('Heartbeat Monitor', 'heartbeat.enabled', data.enabled);
+  html += makeToggle('Auto-Cancel Stalled', 'heartbeat.autoCancel', data.autoCancel);
+  html += makeToggle('Notify on Stall', 'heartbeat.notifyOnStall', data.notifyOnStall);
+  html += makeRow('Check Interval', data.interval || '30s');
+  html += makeRow('Stall Threshold', data.stallThreshold || '5m');
+  html += makeRow('Timeout Warn Ratio', (data.timeoutWarnRatio || 0.8) * 100 + '%');
+  html += '</div>';
+  el.innerHTML = html;
 }
 
 function renderSettingsTaskBoard(data) {
@@ -10983,7 +11043,8 @@ function refreshWorkers() {
       var stateColor = w.state === 'working' ? 'var(--green)' : w.state === 'approval' ? 'var(--yellow)' : w.state === 'question' ? 'var(--yellow)' : w.state === 'waiting' ? 'var(--accent)' : 'var(--muted)';
       var card = document.createElement('div');
       card.className = 'pixel-panel';
-      card.style.cssText = 'padding:12px';
+      card.style.cssText = 'padding:12px;cursor:pointer';
+      card.onclick = (function(sid, name) { return function() { openWorkerDetail(sid, name); }; })(w.sessionId, w.name);
       card.innerHTML =
         '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
           '<span style="width:8px;height:8px;border-radius:50%;background:' + stateColor + ';flex-shrink:0"></span>' +
@@ -11051,11 +11112,37 @@ function reviewPlan(id, action) {
 function addHookEvent(data) {
   var hookType = data.hookType || 'event';
   var toolName = data.toolName || '';
+  var sessionId = data.sessionId || '';
   var time = new Date().toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
   var detail = toolName ? hookType + ': ' + toolName : hookType;
   hookEventsItems.unshift({detail: detail, time: time});
   if (hookEventsItems.length > HOOK_EVENTS_MAX) hookEventsItems.length = HOOK_EVENTS_MAX;
   renderHookEvents();
+
+  // Push event into open worker detail modal in real-time.
+  if (workerDetailSessionId && sessionId && sessionId.indexOf(workerDetailSessionId) === 0) {
+    var el = document.getElementById('wd-events');
+    var emptyMsg = el.querySelector('[style*="No events"]');
+    if (emptyMsg) el.innerHTML = '';
+    var badge = hookType === 'Stop' ? 'completed' : 'hook';
+    var itemDetail = toolName ? esc(hookType) + ': ' + esc(toolName) : esc(hookType);
+    el.innerHTML += '<div class="activity-item">' +
+      '<span class="activity-type ' + badge + '">' + esc(hookType) + '</span>' +
+      '<span class="activity-detail">' + itemDetail + '</span>' +
+      '<span class="activity-time">' + esc(time) + '</span>' +
+      '</div>';
+    el.scrollTop = el.scrollHeight;
+    if (hookType !== 'Stop') {
+      var tc = document.getElementById('wd-toolcount');
+      if (tc) tc.textContent = (parseInt(tc.textContent) || 0) + 1;
+    }
+    if (hookType === 'Stop') {
+      document.getElementById('wd-state').textContent = 'done';
+    }
+    if (toolName) {
+      document.getElementById('wd-lasttool').textContent = toolName;
+    }
+  }
 }
 
 function renderHookEvents() {
@@ -11075,6 +11162,67 @@ function renderHookEvents() {
       '<span class="activity-time">' + esc(item.time) + '</span>' +
     '</div>';
   }).join('');
+}
+
+// --- Worker Detail Modal ---
+var workerDetailSessionId = null;
+
+function openWorkerDetail(sessionId, name) {
+  workerDetailSessionId = sessionId;
+  document.getElementById('wd-title').textContent = name || 'Worker Detail';
+  document.getElementById('wd-state').textContent = '...';
+  document.getElementById('wd-uptime').textContent = '...';
+  document.getElementById('wd-workdir').textContent = '...';
+  document.getElementById('wd-toolcount').textContent = '...';
+  document.getElementById('wd-lasttool').textContent = '...';
+  document.getElementById('wd-events').innerHTML = '';
+  document.getElementById('worker-detail-modal').classList.add('open');
+
+  fetch(API + '/api/workers/events/' + encodeURIComponent(sessionId))
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      document.getElementById('wd-state').textContent = d.state || '-';
+      document.getElementById('wd-uptime').textContent = d.uptime || '-';
+      document.getElementById('wd-workdir').textContent = d.workdir || '-';
+      document.getElementById('wd-toolcount').textContent = (d.toolCount || 0) + '';
+      document.getElementById('wd-lasttool').textContent = d.lastTool || '-';
+      renderWorkerEvents(d.events || []);
+    })
+    .catch(function() {
+      document.getElementById('wd-events').innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px">Failed to load events</div>';
+    });
+}
+
+function closeWorkerDetail() {
+  workerDetailSessionId = null;
+  document.getElementById('worker-detail-modal').classList.remove('open');
+}
+
+function sendKeystroke(key) {
+  fetch(API + '/api/iterm2/keystroke', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({key: key})
+  }).catch(function(e) { console.error('keystroke failed:', e); });
+}
+
+function renderWorkerEvents(events) {
+  var el = document.getElementById('wd-events');
+  if (!events || events.length === 0) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px">No events yet</div>';
+    return;
+  }
+  el.innerHTML = events.map(function(ev) {
+    var ts = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '';
+    var badge = ev.eventType === 'Stop' ? 'completed' : 'hook';
+    var detail = ev.toolName ? esc(ev.eventType) + ': ' + esc(ev.toolName) : esc(ev.eventType);
+    return '<div class="activity-item">' +
+      '<span class="activity-type ' + badge + '">' + esc(ev.eventType || 'event') + '</span>' +
+      '<span class="activity-detail">' + detail + '</span>' +
+      '<span class="activity-time">' + esc(ts) + '</span>' +
+      '</div>';
+  }).join('');
+  el.scrollTop = el.scrollHeight;
 }
 
 </script>

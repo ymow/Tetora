@@ -17,10 +17,15 @@ import (
 func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity RequestComplexity) {
 	// --- Provider type check ---
 	// If the provider is "claude-code", only inject soul prompt and skip everything else.
+	// Claude Code reads project files (CLAUDE.md, workspace) natively — double injection causes confusion.
 	providerType := ""
 	pName := resolveProviderName(cfg, *task, agentName)
 	if pc, ok := cfg.Providers[pName]; ok {
 		providerType = pc.Type
+	}
+	// Also match by provider name (auto-registered providers have no ProviderConfig entry).
+	if providerType == "" && pName == "claude-code" {
+		providerType = "claude-code"
 	}
 
 	// --- 1. Soul/Agent prompt (always loaded) ---

@@ -104,6 +104,15 @@ type planGateDecision struct {
 	Reason   string
 }
 
+// hookWorkerEvent is a single safe event entry (no sensitive data).
+type hookWorkerEvent struct {
+	Timestamp string `json:"timestamp"`
+	EventType string `json:"eventType"` // "PreToolUse", "PostToolUse", "Stop"
+	ToolName  string `json:"toolName,omitempty"`
+}
+
+const hookWorkerEventsMax = 50
+
 // hookWorkerInfo tracks a Claude Code session detected via hooks.
 type hookWorkerInfo struct {
 	SessionID string
@@ -113,6 +122,7 @@ type hookWorkerInfo struct {
 	FirstSeen time.Time
 	LastSeen  time.Time
 	ToolCount int
+	Events    []hookWorkerEvent // ring buffer, max hookWorkerEventsMax
 }
 
 // hookReceiver processes incoming hook events and routes them to the system.
@@ -461,7 +471,7 @@ func (hr *hookReceiver) handlePreToolUse(event *HookEvent, sessionID string) {
 	logDebug("hooks: PreToolUse", "tool", toolName, "session", sessionID)
 
 	// Track hook worker.
-	hr.trackHookWorker(event, sessionID, "working", toolName)
+	hr.trackHookWorker(event, sessionID, "working", toolName, "PreToolUse")
 }
 
 func (hr *hookReceiver) handlePostToolUse(event *HookEvent, sessionID string) {
@@ -469,7 +479,7 @@ func (hr *hookReceiver) handlePostToolUse(event *HookEvent, sessionID string) {
 	logDebug("hooks: PostToolUse", "tool", toolName, "session", sessionID)
 
 	// Track hook worker.
-	hr.trackHookWorker(event, sessionID, "working", toolName)
+	hr.trackHookWorker(event, sessionID, "working", toolName, "PostToolUse")
 
 	// Check for plan-related tool calls.
 	switch toolName {
@@ -490,7 +500,7 @@ func (hr *hookReceiver) handleStop(event *HookEvent, sessionID string) {
 	logInfo("hooks: Stop", "reason", reason, "session", sessionID)
 
 	// Mark hook worker as done.
-	hr.trackHookWorker(event, sessionID, "done", "")
+	hr.trackHookWorker(event, sessionID, "done", "", "Stop")
 
 	// Publish stop event.
 	if hr.broker != nil {
@@ -705,6 +715,26 @@ func (s *Server) handlePlanGate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// --- Keyboard mode: allow immediately, send Discord keyboard buttons ---
+	if cfg.PlanGate.Mode == "keyboard" {
+		logInfo("plan gate: keyboard mode, allowing immediately", "session", sessionID)
+
+		// Send Discord keyboard control buttons asynchronously.
+		if bot := cfg.discordBot; bot != nil {
+			go planGateKeyboardButtons(bot, sessionID, planText)
+		}
+
+		// Immediately allow ExitPlanMode to proceed (terminal UI appears).
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"hookSpecificOutput": map[string]any{
+				"hookEventName":      "PreToolUse",
+				"permissionDecision": "allow",
+			},
+		})
+		return
+	}
+
 	// Generate gate ID.
 	sessionShort := sessionID
 	if len(sessionShort) > 8 {
@@ -750,6 +780,12 @@ func (s *Server) handlePlanGate(w http.ResponseWriter, r *http.Request) {
 		bot.interactions.register(&pendingInteraction{
 			CustomID:  customApprove,
 			CreatedAt: time.Now(),
+			Response: &discordInteractionResponse{
+				Type: interactionResponseUpdateMessage,
+				Data: &discordInteractionResponseData{
+					Content: "✅ Plan approved.",
+				},
+			},
 			Callback: func(data discordInteractionData) {
 				if cfg.HistoryDB != "" {
 					updatePlanReviewStatus(cfg.HistoryDB, gateID, "approved", "discord", "")
@@ -763,6 +799,12 @@ func (s *Server) handlePlanGate(w http.ResponseWriter, r *http.Request) {
 		bot.interactions.register(&pendingInteraction{
 			CustomID:  customReject,
 			CreatedAt: time.Now(),
+			Response: &discordInteractionResponse{
+				Type: interactionResponseUpdateMessage,
+				Data: &discordInteractionResponseData{
+					Content: "❌ Plan rejected.",
+				},
+			},
 			Callback: func(data discordInteractionData) {
 				if cfg.HistoryDB != "" {
 					updatePlanReviewStatus(cfg.HistoryDB, gateID, "rejected", "discord", "")
@@ -980,7 +1022,7 @@ func (s *Server) handleAskUser(w http.ResponseWriter, r *http.Request) {
 // --- Hook-Based Worker Tracking ---
 
 // trackHookWorker creates or updates a hook worker entry.
-func (hr *hookReceiver) trackHookWorker(event *HookEvent, sessionID string, state, toolName string) {
+func (hr *hookReceiver) trackHookWorker(event *HookEvent, sessionID string, state, toolName, eventType string) {
 	if sessionID == "" {
 		return
 	}
@@ -1007,6 +1049,19 @@ func (hr *hookReceiver) trackHookWorker(event *HookEvent, sessionID string, stat
 	if cwd != "" {
 		w.Cwd = cwd
 	}
+
+	// Record safe event (no sensitive data).
+	if eventType != "" {
+		entry := hookWorkerEvent{
+			Timestamp: time.Now().Format(time.RFC3339),
+			EventType: eventType,
+			ToolName:  toolName,
+		}
+		w.Events = append(w.Events, entry)
+		if len(w.Events) > hookWorkerEventsMax {
+			w.Events = w.Events[len(w.Events)-hookWorkerEventsMax:]
+		}
+	}
 }
 
 // ListHookWorkers returns all hook-tracked workers.
@@ -1019,6 +1074,33 @@ func (hr *hookReceiver) ListHookWorkers() []*hookWorkerInfo {
 		out = append(out, w)
 	}
 	return out
+}
+
+// FindHookWorkerByPrefix returns a worker matching the session ID prefix, plus a snapshot of its events.
+func (hr *hookReceiver) FindHookWorkerByPrefix(prefix string) (*hookWorkerInfo, []hookWorkerEvent) {
+	hr.hookWorkersMu.RLock()
+	defer hr.hookWorkersMu.RUnlock()
+
+	for sid, w := range hr.hookWorkers {
+		if strings.HasPrefix(sid, prefix) {
+			events := make([]hookWorkerEvent, len(w.Events))
+			copy(events, w.Events)
+			return w, events
+		}
+	}
+	return nil, nil
+}
+
+// HasActiveWorkers returns true if any hook worker is in "working" state.
+func (hr *hookReceiver) HasActiveWorkers() bool {
+	hr.hookWorkersMu.RLock()
+	defer hr.hookWorkersMu.RUnlock()
+	for _, w := range hr.hookWorkers {
+		if w.State == "working" {
+			return true
+		}
+	}
+	return false
 }
 
 // cleanupStaleHookWorkers removes hook workers not seen in 10 minutes.
@@ -1038,6 +1120,115 @@ func (hr *hookReceiver) cleanupStaleHookWorkers() {
 // HooksConfig holds configuration for the hooks event receiver.
 type HooksConfig struct {
 	Enabled bool `json:"enabled,omitempty"` // default: true when hooks are installed
+}
+
+// PlanGateConfig configures plan gate behavior.
+type PlanGateConfig struct {
+	Mode string `json:"mode,omitempty"` // "hook" (default): blocking approve/deny; "keyboard": allow + Discord keyboard control
+}
+
+// --- Plan Gate Keyboard Mode ---
+
+// planGateKeyboardButtons sends Discord buttons for keyboard control of iTerm2.
+// Called asynchronously in keyboard mode after ExitPlanMode is allowed.
+func planGateKeyboardButtons(bot *DiscordBot, sessionID, planText string) {
+	notifyCh := bot.notifyChannelID()
+	if notifyCh == "" {
+		return
+	}
+
+	gateID := fmt.Sprintf("pgkb-%d", time.Now().UnixNano())
+
+	// Button custom IDs.
+	upID := "pgkb_up:" + gateID
+	downID := "pgkb_down:" + gateID
+	selectID := "pgkb_select:" + gateID
+	cancelID := "pgkb_cancel:" + gateID
+
+	// Register reusable buttons for Up/Down (can click multiple times).
+	bot.interactions.register(&pendingInteraction{
+		CustomID:  upID,
+		CreatedAt: time.Now(),
+		Reusable:  true,
+		Callback: func(data discordInteractionData) {
+			if err := sendITerm2Keystroke("ArrowUp"); err != nil {
+				logWarn("plan gate keyboard: up failed", "error", err)
+			}
+		},
+	})
+	bot.interactions.register(&pendingInteraction{
+		CustomID:  downID,
+		CreatedAt: time.Now(),
+		Reusable:  true,
+		Callback: func(data discordInteractionData) {
+			if err := sendITerm2Keystroke("ArrowDown"); err != nil {
+				logWarn("plan gate keyboard: down failed", "error", err)
+			}
+		},
+	})
+
+	// Select (Enter) — send keystroke then cleanup.
+	bot.interactions.register(&pendingInteraction{
+		CustomID:  selectID,
+		CreatedAt: time.Now(),
+		Response: &discordInteractionResponse{
+			Type: interactionResponseUpdateMessage,
+			Data: &discordInteractionResponseData{
+				Content: "✅ Selection confirmed.",
+			},
+		},
+		Callback: func(data discordInteractionData) {
+			if err := sendITerm2Keystroke("Return"); err != nil {
+				logWarn("plan gate keyboard: select failed", "error", err)
+			}
+			// Cleanup reusable buttons.
+			bot.interactions.remove(upID)
+			bot.interactions.remove(downID)
+		},
+	})
+
+	// Cancel (Escape) — send keystroke then cleanup.
+	bot.interactions.register(&pendingInteraction{
+		CustomID:  cancelID,
+		CreatedAt: time.Now(),
+		Response: &discordInteractionResponse{
+			Type: interactionResponseUpdateMessage,
+			Data: &discordInteractionResponseData{
+				Content: "❌ Cancelled.",
+			},
+		},
+		Callback: func(data discordInteractionData) {
+			if err := sendITerm2Keystroke("Escape"); err != nil {
+				logWarn("plan gate keyboard: cancel failed", "error", err)
+			}
+			// Cleanup reusable buttons.
+			bot.interactions.remove(upID)
+			bot.interactions.remove(downID)
+		},
+	})
+
+	// Build message content.
+	content := "**Plan Gate — Keyboard Control**"
+	if planText != "" {
+		preview := planText
+		if len(preview) > 500 {
+			preview = preview[:500] + "\n... (truncated)"
+		}
+		content += "\n```\n" + preview + "\n```"
+	}
+	content += "\nUse buttons to navigate the terminal selection:"
+
+	components := []discordComponent{
+		discordActionRow(
+			discordButton(upID, "⬆ Up", buttonStyleSecondary),
+			discordButton(downID, "⬇ Down", buttonStyleSecondary),
+			discordButton(selectID, "✅ Select", buttonStyleSuccess),
+			discordButton(cancelID, "❌ Cancel", buttonStyleDanger),
+		),
+	}
+
+	bot.sendMessageWithComponents(notifyCh, content, components)
+	logInfo("plan gate: keyboard buttons sent", "gateId", gateID, "session", sessionID)
 }
 
 // --- Auth bypass for hooks endpoint ---

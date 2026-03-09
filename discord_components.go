@@ -156,6 +156,7 @@ type pendingInteraction struct {
 	AllowedIDs    []string                    // restrict to specific user IDs (empty = allow all)
 	Reusable      bool                        // if true, don't remove after first use
 	ModalResponse *discordInteractionResponse // if set, respond with this modal instead of deferred update
+	Response      *discordInteractionResponse // if set, use this instead of deferred update (e.g. type 7 message update)
 }
 
 func newDiscordInteractionState() *discordInteractionState {
@@ -497,9 +498,11 @@ func handleComponentInteraction(ctx context.Context, db *DiscordBot, w http.Resp
 				db.interactions.remove(data.CustomID)
 			}
 
-			// Respond with modal if configured, otherwise deferred update.
+			// Respond: custom Response → modal → deferred update.
 			w.Header().Set("Content-Type", "application/json")
-			if pi.ModalResponse != nil {
+			if pi.Response != nil {
+				json.NewEncoder(w).Encode(*pi.Response)
+			} else if pi.ModalResponse != nil {
 				json.NewEncoder(w).Encode(*pi.ModalResponse)
 			} else {
 				json.NewEncoder(w).Encode(discordInteractionResponse{

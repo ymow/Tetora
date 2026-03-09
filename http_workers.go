@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -16,11 +17,14 @@ func (s *Server) registerWorkersRoutes(mux *http.ServeMux) {
 		w.Header().Set("Content-Type", "application/json")
 
 		type workerInfo struct {
-			Name    string `json:"name"`
-			State   string `json:"state"`
-			Workdir string `json:"workdir"`
-			Uptime  string `json:"uptime"`
-			Source  string `json:"source"`
+			SessionId string `json:"sessionId"`
+			Name      string `json:"name"`
+			State     string `json:"state"`
+			Workdir   string `json:"workdir"`
+			Uptime    string `json:"uptime"`
+			ToolCount int    `json:"toolCount"`
+			LastTool  string `json:"lastTool,omitempty"`
+			Source    string `json:"source"`
 		}
 		var out []workerInfo
 
@@ -36,11 +40,14 @@ func (s *Server) registerWorkersRoutes(mux *http.ServeMux) {
 					sessionShort = sessionShort[:12]
 				}
 				out = append(out, workerInfo{
-					Name:    "hook-" + sessionShort,
-					State:   hw.State,
-					Workdir: hw.Cwd,
-					Uptime:  time.Since(hw.FirstSeen).Round(time.Second).String(),
-					Source:  "hooks",
+					SessionId: sessionShort,
+					Name:      "hook-" + sessionShort,
+					State:     hw.State,
+					Workdir:   hw.Cwd,
+					Uptime:    time.Since(hw.FirstSeen).Round(time.Second).String(),
+					ToolCount: hw.ToolCount,
+					LastTool:  hw.LastTool,
+					Source:    "hooks",
 				})
 			}
 		}
@@ -49,6 +56,43 @@ func (s *Server) registerWorkersRoutes(mux *http.ServeMux) {
 			out = []workerInfo{}
 		}
 		json.NewEncoder(w).Encode(map[string]any{"workers": out, "count": len(out)})
+	})
+
+	// GET /api/workers/{id}/events — event log for a specific worker.
+	mux.HandleFunc("/api/workers/events/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		// Path: /api/workers/events/{sessionIdPrefix}
+		idPrefix := strings.TrimPrefix(r.URL.Path, "/api/workers/events/")
+		if idPrefix == "" {
+			http.NotFound(w, r)
+			return
+		}
+
+		if s.hookReceiver == nil {
+			json.NewEncoder(w).Encode(map[string]any{"events": []any{}})
+			return
+		}
+
+		worker, events := s.hookReceiver.FindHookWorkerByPrefix(idPrefix)
+		if worker == nil {
+			json.NewEncoder(w).Encode(map[string]any{"events": []any{}})
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"sessionId": idPrefix,
+			"state":     worker.State,
+			"workdir":   worker.Cwd,
+			"toolCount": worker.ToolCount,
+			"lastTool":  worker.LastTool,
+			"uptime":    time.Since(worker.FirstSeen).Round(time.Second).String(),
+			"events":    events,
+		})
 	})
 
 	// GET /api/workers/agents — list agents with their provider info.
@@ -123,5 +167,30 @@ func (s *Server) registerWorkersRoutes(mux *http.ServeMux) {
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
+	})
+
+	// POST /api/iterm2/keystroke — send a keystroke to iTerm2.
+	mux.HandleFunc("/api/iterm2/keystroke", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		var body struct {
+			Key string `json:"key"` // ArrowUp, ArrowDown, Return, Escape
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "key is required"})
+			return
+		}
+
+		if err := sendITerm2Keystroke(body.Key); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"ok": "true", "key": body.Key})
 	})
 }

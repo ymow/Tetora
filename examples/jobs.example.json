@@ -62,9 +62,10 @@
       "id": "self-improve",
       "name": "Self-Improvement",
       "enabled": true,
-      "schedule": "0 3 */2 * *",
+      "trigger": "idle",
+      "idleMinMinutes": 30,
+      "cooldownHours": 20,
       "tz": "Asia/Taipei",
-      "idleMinHours": 2,
       "task": {
         "prompt": "You are a self-improvement agent for the Tetora AI orchestration system.\n\nAnalyze the activity digest below. The digest includes existing Skills, Rules, and Memory —\ndo NOT create anything that already exists.\n\n## Instructions\n1. Identify repeated patterns (3+ occurrences), low-score reflections, recurring failures\n2. For each actionable improvement, CREATE the file directly:\n   - **Rule**: Create `rules/{name}.md` — governance rules auto-injected into all agents\n   - **Memory**: Create/update `memory/{key}.md` — shared observations\n   - **Skill**: Create `skills/{name}/metadata.json` with `\"approved\": false` — requires human review\n3. Only apply HIGH and MEDIUM priority improvements\n4. Keep files concise and actionable\n5. Report what you created and why\n\nIf insufficient data for improvements, say so and exit.\n\n---\n\n{{review.digest:7}}",
         "model": "sonnet",

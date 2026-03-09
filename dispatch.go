@@ -42,6 +42,7 @@ type Task struct {
 	Resume         bool     `json:"resume,omitempty"`         // use --continue (resume existing CLI session)
 	PersistSession bool     `json:"persistSession,omitempty"` // don't add --no-session-persistence
 	Agent           string   `json:"agent,omitempty"`    // role name for smart dispatch
+	ReviewLoop     bool     `json:"reviewLoop,omitempty"` // enable Dev↔QA retry loop for this task
 	Source         string   `json:"source,omitempty"`  // "dispatch", "cron", "ask", "route:*"
 	TraceID        string   `json:"traceId,omitempty"` // trace ID for request correlation
 	Depth          int      `json:"depth,omitempty"`    // --- P13.3: Nested Sub-Agents --- nesting depth (0 = top-level)
@@ -73,6 +74,10 @@ type TaskResult struct {
 	TrustLevel   string `json:"trustLevel,omitempty"`
 	Agent        string `json:"agent,omitempty"`
 	SlotWarning  string `json:"slotWarning,omitempty"`
+	// Dev↔QA loop fields (populated when ReviewLoop is enabled).
+	QAApproved *bool  `json:"qaApproved,omitempty"` // nil=no review, true=passed, false=failed
+	QAComment  string `json:"qaComment,omitempty"`  // reviewer feedback
+	Attempts   int    `json:"attempts,omitempty"`   // total execution attempts (0=no loop)
 }
 
 type DispatchResult struct {
@@ -686,13 +691,23 @@ func dispatch(ctx context.Context, cfg *Config, tasks []Task, state *dispatchSta
 				}
 				defer cfg.slotPressureGuard.ReleaseSlot()
 				defer func() { <-s }()
-				r := runTask(ctx, cfg, t, state)
+				var r TaskResult
+				if t.ReviewLoop {
+					r = dispatchDevQALoop(ctx, cfg, t, state, sem, childSem)
+				} else {
+					r = runTask(ctx, cfg, t, state)
+				}
 				r.SlotWarning = ar.Warning
 				results <- r
 			} else {
 				s <- struct{}{}
 				defer func() { <-s }()
-				r := runTask(ctx, cfg, t, state)
+				var r TaskResult
+				if t.ReviewLoop {
+					r = dispatchDevQALoop(ctx, cfg, t, state, sem, childSem)
+				} else {
+					r = runTask(ctx, cfg, t, state)
+				}
 				results <- r
 			}
 		}(task)
@@ -1306,6 +1321,92 @@ func runTask(ctx context.Context, cfg *Config, task Task, state *dispatchState) 
 	}
 
 	return result
+}
+
+// --- Dispatch Dev↔QA Loop ---
+
+// dispatchDevQALoop runs the Dev↔QA retry loop for the main dispatch path.
+// On each attempt: execute task → QA review → (pass → done) | (fail → record failure → inject feedback → retry).
+// After maxRetries QA failures, the task is escalated (returned with QAApproved=false).
+//
+// Uses SmartDispatch config for reviewer agent and max retries.
+// Skill failure injection is integrated: QA rejections are recorded and loaded on retry.
+func dispatchDevQALoop(ctx context.Context, cfg *Config, task Task, state *dispatchState, sem, childSem chan struct{}) TaskResult {
+	maxRetries := cfg.SmartDispatch.maxRetriesOrDefault() // default 3
+	originalPrompt := task.Prompt
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Step 1: Dev execution.
+		result := runTask(ctx, cfg, task, state)
+
+		// If execution itself failed (crash/timeout/empty output), exit loop immediately.
+		if result.Status != "success" {
+			result.Attempts = attempt + 1
+			return result
+		}
+		if strings.TrimSpace(result.Output) == "" {
+			result.Attempts = attempt + 1
+			return result
+		}
+
+		// Step 2: QA review.
+		reviewOK, reviewComment := reviewOutput(ctx, cfg, originalPrompt, result.Output, task.Agent, sem, childSem)
+		if reviewOK {
+			approved := true
+			result.QAApproved = &approved
+			result.QAComment = reviewComment
+			result.Attempts = attempt + 1
+			logInfoCtx(ctx, "dispatchDevQA: review passed", "agent", task.Agent, "attempt", attempt+1)
+			return result
+		}
+
+		// QA failed.
+		logInfoCtx(ctx, "dispatchDevQA: review failed, injecting feedback",
+			"agent", task.Agent, "attempt", attempt+1, "maxAttempts", maxRetries+1,
+			"comment", truncate(reviewComment, 200))
+
+		// Record QA rejection as skill failure for future context injection.
+		qaFailMsg := fmt.Sprintf("[QA rejection attempt %d] %s", attempt+1, reviewComment)
+		skills := selectSkills(cfg, task)
+		for _, s := range skills {
+			appendSkillFailure(cfg, s.Name, task.Name, task.Agent, qaFailMsg)
+		}
+
+		if attempt == maxRetries {
+			// All retries exhausted — escalate.
+			logWarnCtx(ctx, "dispatchDevQA: max retries exhausted, escalating",
+				"agent", task.Agent, "attempts", maxRetries+1)
+			rejected := false
+			result.QAApproved = &rejected
+			result.QAComment = fmt.Sprintf("Dev↔QA loop exhausted (%d attempts): %s", maxRetries+1, reviewComment)
+			result.Attempts = attempt + 1
+			return result
+		}
+
+		// Step 3: Rebuild prompt with failure context + QA feedback for retry.
+		task.Prompt = originalPrompt
+
+		// Inject accumulated skill failures.
+		for _, s := range skills {
+			failures := loadSkillFailuresByName(cfg, s.Name)
+			if failures != "" {
+				task.Prompt += fmt.Sprintf("\n\n<skill-failures name=\"%s\">\n%s\n</skill-failures>", s.Name, failures)
+			}
+		}
+
+		// Inject QA reviewer's specific feedback.
+		task.Prompt += fmt.Sprintf("\n\n## QA Review Feedback (Attempt %d)\n", attempt+1)
+		task.Prompt += "The QA reviewer rejected the output. Issues found:\n"
+		task.Prompt += reviewComment
+		task.Prompt += fmt.Sprintf("\n\nAddress ALL issues above. This is retry %d of %d.\n", attempt+2, maxRetries+1)
+
+		// Fresh IDs for retry (no session bleed between attempts).
+		task.ID = newUUID()
+		task.SessionID = newUUID()
+	}
+
+	// Unreachable, but satisfy the compiler.
+	return TaskResult{}
 }
 
 // --- Retry / Reroute ---

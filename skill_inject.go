@@ -186,6 +186,16 @@ func buildSkillsPrompt(cfg *Config, task Task, complexity RequestComplexity) str
 				skill.Name, strings.TrimSpace(string(doc))))
 			docUsed += len(doc)
 		}
+
+		// --- Tier 3: Skill failure context injection ---
+		for _, skill := range skills {
+			failures := loadSkillFailuresByName(cfg, skill.Name)
+			if failures == "" {
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("\n<skill-failures name=\"%s\">\n%s\n</skill-failures>\n",
+				skill.Name, failures))
+		}
 	}
 
 	return sb.String()

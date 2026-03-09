@@ -431,10 +431,25 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 
 	start := time.Now()
 	var result TaskResult
-	if usedWorkflow {
-		result = d.runTaskWithWorkflow(ctx, t, task, workflowName)
+	qaApproved := false
+
+	if d.engine.config.AutoDispatch.ReviewLoop {
+		// Dev↔QA loop: execute → review → retry with feedback (max N retries).
+		loopResult := d.devQALoop(ctx, t, task, usedWorkflow, workflowName)
+		result = loopResult.Result
+		qaApproved = loopResult.QAApproved
+		// Use accumulated cost from all attempts.
+		result.CostUSD = loopResult.TotalCost
+		if loopResult.Attempts > 1 {
+			logInfo("devQA loop summary", "task", t.ID, "attempts", loopResult.Attempts,
+				"approved", qaApproved, "totalCost", loopResult.TotalCost)
+		}
 	} else {
-		result = runSingleTask(ctx, d.cfg, task, d.sem, d.childSem, t.Assignee)
+		if usedWorkflow {
+			result = d.runTaskWithWorkflow(ctx, t, task, workflowName)
+		} else {
+			result = runSingleTask(ctx, d.cfg, task, d.sem, d.childSem, t.Assignee)
+		}
 	}
 	duration := time.Since(start)
 
@@ -471,9 +486,10 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 			"[auto-flag] Task completed with empty output. Marked failed for investigation.")
 	}
 
-	// Review gate: dispatch 結束一律進 review，由人工或 review agent 確認後再標 done。
-	// 同時將 assignee 切回 ruri，讓琉璃負責 review 確認。
-	if newStatus == "done" && t.Status != "review" {
+	// Review gate:
+	// If Dev↔QA loop approved the output → go directly to "done" (QA already passed).
+	// Otherwise → route to "review" for human/manual review.
+	if newStatus == "done" && !qaApproved && t.Status != "review" {
 		newStatus = "review"
 		t.Assignee = "ruri"
 	}
@@ -579,9 +595,210 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 
 		logWarn("taskboard dispatch: task failed", "id", t.ID, "error", result.Error)
 
+		// Record failure to skill-specific failures.md for future context injection.
+		d.postTaskSkillFailures(t, task, result.Error)
+
 		// Auto-retry if enabled.
 		d.engine.AutoRetryFailed()
 	}
+}
+
+// --- Dev↔QA Loop ---
+
+// devQALoopResult holds the outcome of the Dev↔QA retry loop.
+type devQALoopResult struct {
+	Result     TaskResult
+	QAApproved bool   // true if QA review passed
+	Attempts   int    // total execution attempts
+	TotalCost  float64 // accumulated cost across all attempts (dev + QA)
+}
+
+// devQALoop executes a task and runs automated QA review in a loop.
+// If QA fails, the reviewer's feedback is injected into the prompt and the task is retried.
+// After maxRetries QA failures, the task is escalated to human review.
+//
+// Failure injection integration:
+//   - QA rejections are recorded to skill failures.md so future executions learn from them.
+//   - On retry, existing skill failures are loaded and injected into the prompt.
+//
+// Flow: Dev execute → QA review → (pass → done) | (fail → record failure → inject feedback + failures → retry)
+func (d *TaskBoardDispatcher) devQALoop(ctx context.Context, t TaskBoard, task Task, usedWorkflow bool, workflowName string) devQALoopResult {
+	maxRetries := d.engine.config.maxRetriesOrDefault() // default 3
+
+	reviewer := d.engine.config.AutoDispatch.ReviewAgent
+	if reviewer == "" {
+		reviewer = "ruri"
+	}
+
+	// Preserve the original prompt so QA feedback doesn't compound across retries.
+	originalPrompt := task.Prompt
+
+	var accumulated float64
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Step 1: Dev execution.
+		var result TaskResult
+		if usedWorkflow {
+			result = d.runTaskWithWorkflow(ctx, t, task, workflowName)
+		} else {
+			result = runSingleTask(ctx, d.cfg, task, d.sem, d.childSem, t.Assignee)
+		}
+		accumulated += result.CostUSD
+
+		// If execution itself failed (crash/timeout/empty output), exit loop.
+		// The caller's existing AutoRetryFailed path handles execution failures.
+		if result.Status != "success" {
+			return devQALoopResult{Result: result, Attempts: attempt + 1, TotalCost: accumulated}
+		}
+		if strings.TrimSpace(result.Output) == "" {
+			return devQALoopResult{Result: result, Attempts: attempt + 1, TotalCost: accumulated}
+		}
+
+		// Step 2: QA review.
+		reviewOK, reviewComment, reviewCost := d.reviewTaskOutput(ctx, originalPrompt, result.Output, t.Assignee, reviewer)
+		accumulated += reviewCost
+
+		if reviewOK {
+			logInfo("devQA: review passed", "task", t.ID, "attempt", attempt+1)
+			d.engine.AddComment(t.ID, reviewer,
+				fmt.Sprintf("[QA PASS] (attempt %d/%d) %s", attempt+1, maxRetries+1, reviewComment))
+			return devQALoopResult{Result: result, QAApproved: true, Attempts: attempt + 1, TotalCost: accumulated}
+		}
+
+		// QA failed.
+		logInfo("devQA: review failed, injecting feedback",
+			"task", t.ID, "attempt", attempt+1, "maxAttempts", maxRetries+1, "comment", truncate(reviewComment, 200))
+
+		d.engine.AddComment(t.ID, reviewer,
+			fmt.Sprintf("[QA FAIL] (attempt %d/%d) %s", attempt+1, maxRetries+1, reviewComment))
+
+		// Record QA rejection as skill failure for future context injection.
+		qaFailMsg := fmt.Sprintf("[QA rejection attempt %d] %s", attempt+1, reviewComment)
+		d.postTaskSkillFailures(t, task, qaFailMsg)
+
+		if attempt == maxRetries {
+			// All retries exhausted — escalate.
+			d.engine.AddComment(t.ID, "system",
+				fmt.Sprintf("[ESCALATE] Dev↔QA loop exhausted (%d attempts). Escalating to human review.", maxRetries+1))
+			logWarn("devQA: max retries exhausted, escalating", "task", t.ID, "attempts", maxRetries+1)
+			return devQALoopResult{Result: result, Attempts: attempt + 1, TotalCost: accumulated}
+		}
+
+		// Step 3: Rebuild prompt with QA feedback + skill failure context for retry.
+		task.Prompt = originalPrompt
+
+		// Inject accumulated skill failures (includes QA rejections just recorded).
+		if failureCtx := d.loadSkillFailureContext(task); failureCtx != "" {
+			task.Prompt += "\n\n## Previous Failure Context\n"
+			task.Prompt += failureCtx
+		}
+
+		// Inject QA reviewer's specific feedback for this attempt.
+		task.Prompt += fmt.Sprintf("\n\n## QA Review Feedback (Attempt %d)\n", attempt+1)
+		task.Prompt += "The QA reviewer rejected the output. Issues found:\n"
+		task.Prompt += reviewComment
+		task.Prompt += fmt.Sprintf("\n\nAddress ALL issues above. This is retry %d of %d.\n", attempt+2, maxRetries+1)
+
+		// New IDs for the retry execution (fresh session, no session bleed).
+		task.ID = newUUID()
+		task.SessionID = newUUID()
+	}
+
+	// Unreachable, but satisfy the compiler.
+	return devQALoopResult{}
+}
+
+// loadSkillFailureContext loads failure context for all skills matching the task.
+// Returns the combined failure context string, or empty if none.
+func (d *TaskBoardDispatcher) loadSkillFailureContext(task Task) string {
+	skills := selectSkills(d.cfg, task)
+	if len(skills) == 0 {
+		return ""
+	}
+
+	var parts []string
+	for _, s := range skills {
+		failures := loadSkillFailuresByName(d.cfg, s.Name)
+		if failures == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("### Skill: %s\n%s", s.Name, failures))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+
+	combined := strings.Join(parts, "\n\n")
+	if len(combined) > skillFailuresMaxInject {
+		combined = combined[:skillFailuresMaxInject] + "\n... (truncated)"
+	}
+	return combined
+}
+
+// reviewTaskOutput asks the configured review agent to evaluate task output quality.
+// Uses the taskboard's ReviewAgent config with fallback to SmartDispatch.ReviewAgent.
+// Returns (approved, comment, costUSD).
+func (d *TaskBoardDispatcher) reviewTaskOutput(ctx context.Context, originalPrompt, output, agentRole, reviewer string) (bool, string, float64) {
+	reviewPrompt := fmt.Sprintf(
+		`You are a QA reviewer. Review this agent output for quality, correctness, and completeness.
+
+Original request: %s
+
+Agent (%s) output:
+%s
+
+Evaluate:
+1. Does the output correctly address the original request?
+2. Is the implementation complete (no TODO/placeholder/stub left)?
+3. Are there any obvious bugs, security issues, or missing error handling?
+
+Reply with ONLY a JSON object:
+{"ok":true,"comment":"brief comment"} or {"ok":false,"comment":"specific issues that must be fixed"}`,
+		truncate(originalPrompt, 500),
+		agentRole,
+		truncate(output, 3000),
+	)
+
+	task := Task{
+		Prompt:  reviewPrompt,
+		Timeout: "60s",
+		Budget:  d.cfg.SmartDispatch.ReviewBudget,
+		Source:  "devqa-review",
+	}
+	fillDefaults(d.cfg, &task)
+
+	// Apply reviewer's soul prompt and model.
+	if soulPrompt, err := loadAgentPrompt(d.cfg, reviewer); err == nil && soulPrompt != "" {
+		task.SystemPrompt = soulPrompt
+	}
+	if rc, ok := d.cfg.Agents[reviewer]; ok {
+		if rc.Model != "" {
+			task.Model = rc.Model
+		}
+		if rc.PermissionMode != "" {
+			task.PermissionMode = rc.PermissionMode
+		}
+	}
+
+	result := runSingleTask(ctx, d.cfg, task, d.sem, d.childSem, reviewer)
+	if result.Status != "success" {
+		return true, "review skipped (execution error)", result.CostUSD
+	}
+
+	// Parse review JSON.
+	start := strings.Index(result.Output, "{")
+	end := strings.LastIndex(result.Output, "}")
+	if start >= 0 && end > start {
+		var review struct {
+			OK      bool   `json:"ok"`
+			Comment string `json:"comment"`
+		}
+		if json.Unmarshal([]byte(result.Output[start:end+1]), &review) == nil {
+			return review.OK, review.Comment, result.CostUSD
+		}
+	}
+
+	return true, "review parse error", result.CostUSD
 }
 
 // estimateTimeoutSem is a dedicated semaphore for timeout estimation LLM calls.
@@ -1435,4 +1652,22 @@ If no problems found, respond with exactly: {"problems": [], "followup": []}`, t
 	}
 
 	logInfo("postTaskProblemScan: scan complete", "task", t.ID, "problems", len(sr.Problems), "followups", created)
+}
+
+// postTaskSkillFailures records the failure to each skill's failures.md
+// so that subsequent executions of the same skill get injected failure context.
+func (d *TaskBoardDispatcher) postTaskSkillFailures(t TaskBoard, task Task, errMsg string) {
+	if errMsg == "" {
+		return
+	}
+
+	skills := selectSkills(d.cfg, task)
+	if len(skills) == 0 {
+		return
+	}
+
+	for _, s := range skills {
+		appendSkillFailure(d.cfg, s.Name, t.Title, t.Assignee, errMsg)
+		logDebug("skill failure recorded", "skill", s.Name, "task", t.ID)
+	}
 }

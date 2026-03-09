@@ -35,8 +35,11 @@ type CronJobConfig struct {
 	OnFailure       []string       `json:"onFailure,omitempty"`       // job IDs to trigger on failure
 	RequireApproval bool           `json:"requireApproval,omitempty"` // true = wait for human approval before running
 	ApprovalTimeout string         `json:"approvalTimeout,omitempty"` // e.g. "10m"; default "10m"
-	IdleMinHours    int            `json:"idleMinHours,omitempty"`    // >0: only trigger when system idle for N hours
-	MaxConcurrentRuns int          `json:"maxConcurrentRuns,omitempty"` // max simultaneous instances of this job (default 1)
+	IdleMinHours      int            `json:"idleMinHours,omitempty"`      // >0: only trigger when system idle for N hours
+	MaxConcurrentRuns int            `json:"maxConcurrentRuns,omitempty"` // max simultaneous instances of this job (default 1)
+	Trigger           string         `json:"trigger,omitempty"`           // "idle" = idle-triggered mode (no schedule needed)
+	IdleMinMinutes    int            `json:"idleMinMinutes,omitempty"`    // idle trigger: fire after N minutes idle (default 30)
+	CooldownHours     float64        `json:"cooldownHours,omitempty"`     // idle trigger: min hours between triggers (default 20)
 }
 
 type CronTaskConfig struct {
@@ -114,6 +117,8 @@ type CronEngine struct {
 
 	diskWarnLogged bool
 
+	heartbeatMon *HeartbeatMonitor // for idle-trigger jobs
+
 	lastDigestDate string // "2006-01-02" — prevents firing more than once per day
 
 	// Idle detection cache (avoids querying DB every tick).
@@ -144,6 +149,11 @@ func newCronEngine(cfg *Config, sem, childSem chan struct{}, notifyFn func(strin
 		notifyFn: notifyFn,
 		stopCh:   make(chan struct{}),
 	}
+}
+
+// SetHeartbeatMonitor wires the heartbeat monitor for idle-trigger jobs.
+func (ce *CronEngine) SetHeartbeatMonitor(h *HeartbeatMonitor) {
+	ce.heartbeatMon = h
 }
 
 // checkJobsReload checks if jobs.json was modified and reloads if needed.
@@ -214,12 +224,6 @@ func (ce *CronEngine) loadJobs() error {
 
 	ce.jobs = nil
 	for _, jc := range jf.Jobs {
-		expr, err := parseCronExpr(jc.Schedule)
-		if err != nil {
-			logWarn("cron skip job, bad schedule", "jobId", jc.ID, "schedule", jc.Schedule, "error", err)
-			continue
-		}
-
 		loc := time.Local
 		if jc.TZ != "" {
 			if l, err := time.LoadLocation(jc.TZ); err == nil {
@@ -227,6 +231,22 @@ func (ce *CronEngine) loadJobs() error {
 			} else {
 				logWarn("cron job bad timezone, using local", "jobId", jc.ID, "tz", jc.TZ)
 			}
+		}
+
+		// Idle-trigger jobs don't need a cron schedule expression.
+		if jc.Trigger == "idle" {
+			j := &cronJob{
+				CronJobConfig: jc,
+				loc:           loc,
+			}
+			ce.jobs = append(ce.jobs, j)
+			continue
+		}
+
+		expr, err := parseCronExpr(jc.Schedule)
+		if err != nil {
+			logWarn("cron skip job, bad schedule", "jobId", jc.ID, "schedule", jc.Schedule, "error", err)
+			continue
 		}
 
 		j := &cronJob{
@@ -532,6 +552,45 @@ func (ce *CronEngine) tick(ctx context.Context) {
 
 	for _, j := range ce.jobs {
 		if !j.Enabled {
+			continue
+		}
+
+		// Idle-trigger jobs: evaluated purely on idle duration, no cron expression.
+		if j.Trigger == "idle" {
+			if ce.heartbeatMon == nil {
+				continue
+			}
+			if j.runCount >= j.effectiveMaxConcurrentRuns() {
+				continue
+			}
+			cooldown := j.CooldownHours
+			if cooldown <= 0 {
+				cooldown = 20
+			}
+			if !j.lastRun.IsZero() && time.Since(j.lastRun) < time.Duration(cooldown*float64(time.Hour)) {
+				continue
+			}
+			minIdle := j.IdleMinMinutes
+			if minIdle <= 0 {
+				minIdle = 30
+			}
+			idleDur := ce.heartbeatMon.SystemIdleDuration()
+			if idleDur < time.Duration(minIdle)*time.Minute {
+				continue
+			}
+			logInfo("cron: idle trigger firing",
+				"jobId", j.ID, "name", j.Name,
+				"idleMinutes", int(idleDur.Minutes()),
+				"threshold", minIdle)
+			j.runCount++
+			j.running = true
+			jobCtx, jobCancel := context.WithCancel(ctx)
+			j.cancelFn = jobCancel
+			ce.jobWg.Add(1)
+			go func(j *cronJob) {
+				defer ce.jobWg.Done()
+				ce.runJob(jobCtx, j)
+			}(j)
 			continue
 		}
 
@@ -1215,6 +1274,9 @@ func (ce *CronEngine) ListJobs() []CronJobInfo {
 			OnSuccess:         j.OnSuccess,
 			OnFailure:         j.OnFailure,
 			IdleMinHours:      j.IdleMinHours,
+			Trigger:           j.Trigger,
+			IdleMinMinutes:    j.IdleMinMinutes,
+			CooldownHours:     j.CooldownHours,
 		}
 		if j.running && !j.runStart.IsZero() {
 			info.RunStart = j.runStart
@@ -1250,8 +1312,11 @@ type CronJobInfo struct {
 	Errors     int       `json:"errors"`
 	OnSuccess    []string  `json:"onSuccess,omitempty"`
 	OnFailure    []string  `json:"onFailure,omitempty"`
-	IdleMinHours int       `json:"idleMinHours,omitempty"`
-	RunStart     time.Time `json:"runStart,omitempty"`
+	IdleMinHours   int       `json:"idleMinHours,omitempty"`
+	Trigger        string    `json:"trigger,omitempty"`
+	IdleMinMinutes int       `json:"idleMinMinutes,omitempty"`
+	CooldownHours  float64   `json:"cooldownHours,omitempty"`
+	RunStart       time.Time `json:"runStart,omitempty"`
 	RunElapsed string    `json:"runElapsed,omitempty"`
 	RunTimeout string    `json:"runTimeout,omitempty"`
 	RunModel   string    `json:"runModel,omitempty"`
@@ -1693,7 +1758,7 @@ func (ce *CronEngine) startupReplay(ctx context.Context) {
 			continue
 		}
 		// Skip jobs that shouldn't run unsupervised.
-		if j.IdleMinHours > 0 || j.RequireApproval {
+		if j.IdleMinHours > 0 || j.RequireApproval || j.Trigger == "idle" {
 			continue
 		}
 		// Skip built-in special jobs with custom dispatch logic.

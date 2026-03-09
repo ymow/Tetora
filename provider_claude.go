@@ -88,6 +88,18 @@ func (p *ClaudeProvider) Execute(ctx context.Context, req ProviderRequest) (*Pro
 		ProviderMs: result.ProviderMs,
 	}
 
+	// Budget soft-limit: log when cost exceeds per-task budget without stopping.
+	if req.Budget > 0 && pr.CostUSD >= req.Budget {
+		promptPreview := req.Prompt
+		if len(promptPreview) > 120 {
+			promptPreview = promptPreview[:120]
+		}
+		logWarn("task exceeded budget soft-limit (completed normally)",
+			"budget", req.Budget, "spent", pr.CostUSD,
+			"model", req.Model, "prompt_preview", promptPreview,
+		)
+	}
+
 	// Handle timeout/cancellation.
 	if ctx.Err() == context.DeadlineExceeded {
 		pr.IsError = true

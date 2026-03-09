@@ -11,7 +11,7 @@ import (
 
 func cmdSkill(args []string) {
 	if len(args) == 0 {
-		fmt.Println("Usage: tetora skill <list|run|test|store|approve|reject|install|search|scan> [name]")
+		fmt.Println("Usage: tetora skill <list|run|test|store|approve|reject|install|search|scan|init> [name]")
 		fmt.Println()
 		fmt.Println("Commands:")
 		fmt.Println("  list                                   List all skills (config + file-based)")
@@ -23,6 +23,7 @@ func cmdSkill(args []string) {
 		fmt.Println("  install <url>                          Install a skill from URL")
 		fmt.Println("  search  <query>                        Search skill registry")
 		fmt.Println("  scan    <name>                         Security scan a skill")
+		fmt.Println("  init   [name]                          AI interview to generate SKILL.md")
 		return
 	}
 	switch args[0] {
@@ -72,6 +73,12 @@ func cmdSkill(args []string) {
 			os.Exit(1)
 		}
 		skillScanCmd(args[1])
+	case "init":
+		nameArg := ""
+		if len(args) >= 2 {
+			nameArg = args[1]
+		}
+		skillInitCmd(nameArg)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown skill action: %s\n", args[0])
 		os.Exit(1)

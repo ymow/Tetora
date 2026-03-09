@@ -1,6 +1,6 @@
 export PATH := /usr/local/Cellar/go/1.26.0/bin:$(PATH)
 
-VERSION  := 2.0.0.1
+VERSION  := 2.0.0.20
 BINARY   := tetora
 INSTALL  := $(HOME)/.tetora/bin
 LDFLAGS  := -s -w -X main.tetoraVersion=$(VERSION)
@@ -13,6 +13,7 @@ build:
 
 dev:
 	go build -ldflags "$(LDFLAGS)" -o $(INSTALL)/$(BINARY) .
+	@codesign -s - -f -i com.takumalee.tetora $(INSTALL)/$(BINARY) 2>/dev/null || true
 
 reload: dev
 	$(INSTALL)/$(BINARY) stop 2>/dev/null || true
@@ -38,6 +39,7 @@ install: build
 		fi; \
 	fi
 	cp $(BINARY) $(INSTALL)/$(BINARY)
+	@codesign -s - -f -i com.takumalee.tetora $(INSTALL)/$(BINARY) 2>/dev/null || true
 	$(INSTALL)/$(BINARY) start 2>/dev/null || true
 	@sleep 1
 	@if lsof -ti :8991 >/dev/null 2>&1; then \
@@ -71,6 +73,7 @@ bump:
 	echo "Bumping $$CURRENT → $$NEXT (dev)"; \
 	sed -i '' "s/^VERSION  := .*/VERSION  := $$NEXT/" Makefile; \
 	go build -ldflags "-s -w -X main.tetoraVersion=$$NEXT" -o $(INSTALL)/$(BINARY) .; \
+	codesign -s - -f -i com.takumalee.tetora $(INSTALL)/$(BINARY) 2>/dev/null || true; \
 	$(INSTALL)/$(BINARY) stop 2>/dev/null || true; \
 	sleep 1; \
 	if lsof -ti :8991 >/dev/null 2>&1; then \
