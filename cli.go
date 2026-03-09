@@ -49,7 +49,7 @@ Commands:
   security <action>  Security scanning (scan|baseline)
   plugin <action>    Manage external plugins (list|start|stop)
   access <action>    Manage agent directory access (list|add|remove)
-  import <source>    Import data (openclaw|config)
+  import <source>    Import data (config)
   release            Build, tag, and publish a release (atomic pipeline)
   upgrade            Upgrade to the latest version
   backup             Create backup of tetora data

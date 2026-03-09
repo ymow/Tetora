@@ -10,13 +10,6 @@ type initStrings struct {
 	OverwritePrompt string
 	Aborted         string
 
-	// OpenClaw migration
-	OpenClawDetected     string
-	OpenClawImport       string
-	OpenClawImported     string
-	OpenClawMigrateNote1 string
-	OpenClawMigrateNote2 string
-
 	// Main title
 	Title string
 
@@ -81,7 +74,6 @@ type initStrings struct {
 	Step4Title string
 
 	// Agent creation
-	CreateRoleOCPrompt    string
 	CreateRolePrompt      string
 	RoleNamePrompt        string
 	ArchetypeTitle        string
@@ -129,12 +121,6 @@ var initTranslations = map[string]initStrings{
 		ConfigExists:    "Config already exists:",
 		OverwritePrompt: "Overwrite? [y/N]:",
 		Aborted:         "Aborted.",
-
-		OpenClawDetected:     "OpenClaw installation detected at",
-		OpenClawImport:       "Import basic config from OpenClaw? [Y/n]:",
-		OpenClawImported:     "Imported %d config fields",
-		OpenClawMigrateNote1: "For full workspace migration (roles, memory, skills, etc.),",
-		OpenClawMigrateNote2: "run after setup: tetora import openclaw",
 
 		Title: "=== Tetora Quick Setup ===",
 
@@ -203,7 +189,6 @@ var initTranslations = map[string]initStrings{
 
 		Step4Title: "Step 4/4: Generating config...",
 
-		CreateRoleOCPrompt:    "OpenClaw agents can be imported later with: tetora import openclaw\n  Create a new agent now instead? [y/N]:",
 		CreateRolePrompt:      "Create a first agent? [Y/n]:",
 		RoleNamePrompt:        "Agent name",
 		ArchetypeTitle:        "Start from a template?",
@@ -245,12 +230,6 @@ var initTranslations = map[string]initStrings{
 		ConfigExists:    "設定檔已存在:",
 		OverwritePrompt: "要覆蓋嗎？[y/N]:",
 		Aborted:         "已取消。",
-
-		OpenClawDetected:     "偵測到 OpenClaw 安裝位置：",
-		OpenClawImport:       "從 OpenClaw 匯入基本設定？[Y/n]:",
-		OpenClawImported:     "已匯入 %d 個設定欄位",
-		OpenClawMigrateNote1: "若需完整工作區遷移（角色、記憶、技能等），",
-		OpenClawMigrateNote2: "請在設定完成後執行：tetora import openclaw",
 
 		Title: "=== Tetora 快速設定 ===",
 
@@ -319,7 +298,6 @@ var initTranslations = map[string]initStrings{
 
 		Step4Title: "步驟 4/4：產生設定檔中...",
 
-		CreateRoleOCPrompt:    "OpenClaw 代理可稍後執行：tetora import openclaw 匯入\n  現在要建立新代理嗎？[y/N]:",
 		CreateRolePrompt:      "建立第一個代理？[Y/n]:",
 		RoleNamePrompt:        "代理名稱",
 		ArchetypeTitle:        "從範本開始？",
@@ -361,12 +339,6 @@ var initTranslations = map[string]initStrings{
 		ConfigExists:    "設定ファイルが既に存在します:",
 		OverwritePrompt: "上書きしますか？[y/N]:",
 		Aborted:         "キャンセルしました。",
-
-		OpenClawDetected:     "OpenClaw のインストールを検出しました:",
-		OpenClawImport:       "OpenClaw から基本設定をインポートしますか？[Y/n]:",
-		OpenClawImported:     "%d 個の設定フィールドをインポートしました",
-		OpenClawMigrateNote1: "ワークスペース全体のマイグレーション（ロール、メモリ、スキルなど）は、",
-		OpenClawMigrateNote2: "セットアップ後に実行してください: tetora import openclaw",
 
 		Title: "=== Tetora クイックセットアップ ===",
 
@@ -435,7 +407,6 @@ var initTranslations = map[string]initStrings{
 
 		Step4Title: "ステップ 4/4: 設定ファイルを生成中...",
 
-		CreateRoleOCPrompt:    "OpenClaw のエージェントは後で tetora import openclaw でインポートできます\n  今すぐ新しいエージェントを作成しますか？[y/N]:",
 		CreateRolePrompt:      "最初のエージェントを作成しますか？[Y/n]:",
 		RoleNamePrompt:        "エージェント名",
 		ArchetypeTitle:        "テンプレートから始めますか？",
@@ -477,12 +448,6 @@ var initTranslations = map[string]initStrings{
 		ConfigExists:    "설정 파일이 이미 존재합니다:",
 		OverwritePrompt: "덮어쓰시겠습니까? [y/N]:",
 		Aborted:         "취소되었습니다.",
-
-		OpenClawDetected:     "OpenClaw 설치가 감지되었습니다:",
-		OpenClawImport:       "OpenClaw에서 기본 설정을 가져오시겠습니까? [Y/n]:",
-		OpenClawImported:     "%d 개의 설정 필드를 가져왔습니다",
-		OpenClawMigrateNote1: "전체 워크스페이스 마이그레이션(역할, 메모리, 스킬 등)은",
-		OpenClawMigrateNote2: "설정 완료 후 실행하세요: tetora import openclaw",
 
 		Title: "=== Tetora 빠른 설정 ===",
 
@@ -551,7 +516,6 @@ var initTranslations = map[string]initStrings{
 
 		Step4Title: "4/4단계: 설정 생성 중...",
 
-		CreateRoleOCPrompt:    "OpenClaw 에이전트는 나중에 tetora import openclaw로 가져올 수 있습니다\n  지금 새 에이전트를 만드시겠습니까? [y/N]:",
 		CreateRolePrompt:      "첫 번째 에이전트를 만드시겠습니까? [Y/n]:",
 		RoleNamePrompt:        "에이전트 이름",
 		ArchetypeTitle:        "템플릿으로 시작하시겠습니까?",
@@ -593,12 +557,6 @@ var initTranslations = map[string]initStrings{
 		ConfigExists:    "Konfiguration existiert bereits:",
 		OverwritePrompt: "Überschreiben? [y/N]:",
 		Aborted:         "Abgebrochen.",
-
-		OpenClawDetected:     "OpenClaw-Installation gefunden unter",
-		OpenClawImport:       "Basiskonfiguration von OpenClaw importieren? [Y/n]:",
-		OpenClawImported:     "%d Konfigurationsfelder importiert",
-		OpenClawMigrateNote1: "Für die vollständige Workspace-Migration (Rollen, Speicher, Skills usw.),",
-		OpenClawMigrateNote2: "nach dem Setup ausführen: tetora import openclaw",
 
 		Title: "=== Tetora Schnelleinrichtung ===",
 
@@ -667,7 +625,6 @@ var initTranslations = map[string]initStrings{
 
 		Step4Title: "Schritt 4/4: Konfiguration wird erstellt...",
 
-		CreateRoleOCPrompt:    "OpenClaw-Agenten können später importiert werden: tetora import openclaw\n  Jetzt einen neuen Agenten erstellen? [y/N]:",
 		CreateRolePrompt:      "Ersten Agenten erstellen? [Y/n]:",
 		RoleNamePrompt:        "Agentenname",
 		ArchetypeTitle:        "Von einer Vorlage starten?",
@@ -709,12 +666,6 @@ var initTranslations = map[string]initStrings{
 		ConfigExists:    "La configuración ya existe:",
 		OverwritePrompt: "¿Sobrescribir? [y/N]:",
 		Aborted:         "Cancelado.",
-
-		OpenClawDetected:     "Instalación de OpenClaw detectada en",
-		OpenClawImport:       "¿Importar configuración básica de OpenClaw? [Y/n]:",
-		OpenClawImported:     "Se importaron %d campos de configuración",
-		OpenClawMigrateNote1: "Para la migración completa del espacio de trabajo (roles, memoria, habilidades, etc.),",
-		OpenClawMigrateNote2: "ejecute después de la configuración: tetora import openclaw",
 
 		Title: "=== Configuración rápida de Tetora ===",
 
@@ -783,7 +734,6 @@ var initTranslations = map[string]initStrings{
 
 		Step4Title: "Paso 4/4: Generando configuración...",
 
-		CreateRoleOCPrompt:    "Los agentes de OpenClaw se pueden importar más tarde con: tetora import openclaw\n  ¿Crear un nuevo agente ahora? [y/N]:",
 		CreateRolePrompt:      "¿Crear un primer agente? [Y/n]:",
 		RoleNamePrompt:        "Nombre del agente",
 		ArchetypeTitle:        "¿Empezar desde una plantilla?",
@@ -825,12 +775,6 @@ var initTranslations = map[string]initStrings{
 		ConfigExists:    "La configuration existe déjà:",
 		OverwritePrompt: "Écraser? [y/N]:",
 		Aborted:         "Annulé.",
-
-		OpenClawDetected:     "Installation OpenClaw détectée à",
-		OpenClawImport:       "Importer la configuration de base depuis OpenClaw? [Y/n]:",
-		OpenClawImported:     "%d champs de configuration importés",
-		OpenClawMigrateNote1: "Pour la migration complète de l'espace de travail (rôles, mémoire, compétences, etc.),",
-		OpenClawMigrateNote2: "exécutez après la configuration: tetora import openclaw",
 
 		Title: "=== Configuration rapide de Tetora ===",
 
@@ -899,7 +843,6 @@ var initTranslations = map[string]initStrings{
 
 		Step4Title: "Étape 4/4: Génération de la configuration...",
 
-		CreateRoleOCPrompt:    "Les agents OpenClaw peuvent être importés plus tard avec: tetora import openclaw\n  Créer un nouvel agent maintenant? [y/N]:",
 		CreateRolePrompt:      "Créer un premier agent? [Y/n]:",
 		RoleNamePrompt:        "Nom de l'agent",
 		ArchetypeTitle:        "Commencer à partir d'un modèle?",
@@ -941,12 +884,6 @@ var initTranslations = map[string]initStrings{
 		ConfigExists:    "Konfigurasi sudah ada:",
 		OverwritePrompt: "Timpa? [y/N]:",
 		Aborted:         "Dibatalkan.",
-
-		OpenClawDetected:     "Instalasi OpenClaw terdeteksi di",
-		OpenClawImport:       "Impor konfigurasi dasar dari OpenClaw? [Y/n]:",
-		OpenClawImported:     "Berhasil mengimpor %d bidang konfigurasi",
-		OpenClawMigrateNote1: "Untuk migrasi workspace lengkap (peran, memori, keahlian, dll.),",
-		OpenClawMigrateNote2: "jalankan setelah setup: tetora import openclaw",
 
 		Title: "=== Pengaturan Cepat Tetora ===",
 
@@ -1015,7 +952,6 @@ var initTranslations = map[string]initStrings{
 
 		Step4Title: "Langkah 4/4: Membuat konfigurasi...",
 
-		CreateRoleOCPrompt:    "Agen OpenClaw dapat diimpor nanti dengan: tetora import openclaw\n  Buat agen baru sekarang? [y/N]:",
 		CreateRolePrompt:      "Buat agen pertama? [Y/n]:",
 		RoleNamePrompt:        "Nama agen",
 		ArchetypeTitle:        "Mulai dari template?",
@@ -1057,12 +993,6 @@ var initTranslations = map[string]initStrings{
 		ConfigExists:    "Mayroon nang configuration:",
 		OverwritePrompt: "I-overwrite? [y/N]:",
 		Aborted:         "Kinansela.",
-
-		OpenClawDetected:     "Natuklasan ang OpenClaw sa",
-		OpenClawImport:       "I-import ang basic config mula sa OpenClaw? [Y/n]:",
-		OpenClawImported:     "Na-import ang %d config fields",
-		OpenClawMigrateNote1: "Para sa kumpletong workspace migration (mga role, memory, skills, atbp.),",
-		OpenClawMigrateNote2: "patakbuhin pagkatapos ng setup: tetora import openclaw",
 
 		Title: "=== Mabilis na Setup ng Tetora ===",
 
@@ -1131,7 +1061,6 @@ var initTranslations = map[string]initStrings{
 
 		Step4Title: "Hakbang 4/4: Ginagawa ang config...",
 
-		CreateRoleOCPrompt:    "Maaaring i-import ang mga OpenClaw agent mamaya gamit ang: tetora import openclaw\n  Gumawa ng bagong agent ngayon? [y/N]:",
 		CreateRolePrompt:      "Gumawa ng unang agent? [Y/n]:",
 		RoleNamePrompt:        "Pangalan ng agent",
 		ArchetypeTitle:        "Magsimula mula sa template?",
@@ -1173,12 +1102,6 @@ var initTranslations = map[string]initStrings{
 		ConfigExists:    "มีไฟล์ config อยู่แล้ว:",
 		OverwritePrompt: "เขียนทับ? [y/N]:",
 		Aborted:         "ยกเลิกแล้ว",
-
-		OpenClawDetected:     "พบการติดตั้ง OpenClaw ที่",
-		OpenClawImport:       "นำเข้า config พื้นฐานจาก OpenClaw? [Y/n]:",
-		OpenClawImported:     "นำเข้า %d ฟิลด์ config แล้ว",
-		OpenClawMigrateNote1: "สำหรับการย้าย workspace ทั้งหมด (roles, memory, skills ฯลฯ),",
-		OpenClawMigrateNote2: "รันหลังการตั้งค่า: tetora import openclaw",
 
 		Title: "=== ตั้งค่า Tetora อย่างรวดเร็ว ===",
 
@@ -1247,7 +1170,6 @@ var initTranslations = map[string]initStrings{
 
 		Step4Title: "ขั้นตอน 4/4: กำลังสร้าง config...",
 
-		CreateRoleOCPrompt:    "สามารถนำเข้า agents ของ OpenClaw ภายหลังด้วย: tetora import openclaw\n  สร้าง agent ใหม่ตอนนี้? [y/N]:",
 		CreateRolePrompt:      "สร้าง agent แรก? [Y/n]:",
 		RoleNamePrompt:        "ชื่อ agent",
 		ArchetypeTitle:        "เริ่มจาก template?",

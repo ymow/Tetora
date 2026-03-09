@@ -133,13 +133,11 @@ func main() {
 		case "dashboard":
 			cmdOpenDashboard()
 			return
-		case "migrate": // --- P21.8: OpenClaw Migration Tool + P27.2: Encrypt ---
-			if len(os.Args) > 2 && os.Args[2] == "openclaw" {
-				cmdMigrateOpenClaw(os.Args[3:])
-			} else if len(os.Args) > 2 && os.Args[2] == "encrypt" {
+		case "migrate": // --- P27.2: Encrypt ---
+			if len(os.Args) > 2 && os.Args[2] == "encrypt" {
 				cmdMigrateEncrypt()
 			} else {
-				fmt.Fprintln(os.Stderr, "Usage: tetora migrate <openclaw|encrypt>")
+				fmt.Fprintln(os.Stderr, "Usage: tetora migrate <encrypt>")
 				os.Exit(1)
 			}
 			return
@@ -152,16 +150,14 @@ func main() {
 		case "import":
 			if len(os.Args) > 2 {
 				switch os.Args[2] {
-				case "openclaw":
-					cmdImportOpenClaw()
 				case "config":
 					cmdImportConfig(os.Args[3:])
 				default:
-					fmt.Fprintln(os.Stderr, "Usage: tetora import <openclaw|config>")
+					fmt.Fprintln(os.Stderr, "Usage: tetora import <config>")
 					os.Exit(1)
 				}
 			} else {
-				fmt.Fprintln(os.Stderr, "Usage: tetora import <openclaw|config>")
+				fmt.Fprintln(os.Stderr, "Usage: tetora import <config>")
 				os.Exit(1)
 			}
 			return

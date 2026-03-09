@@ -966,11 +966,6 @@ func tryLoadConfig(path string) (*Config, error) {
 	}
 	cfg.tlsEnabled = cfg.TLS.CertFile != "" && cfg.TLS.KeyFile != ""
 
-	// Resolve Telegram token from OpenClaw config if empty.
-	if cfg.Telegram.BotToken == "" {
-		cfg.Telegram.BotToken = readOpenClawTelegramToken()
-	}
-
 	// Resolve $ENV_VAR references in secret fields.
 	cfg.resolveSecrets()
 
@@ -1354,22 +1349,3 @@ func tryLoadConfigForVersioning(configPath string) *Config {
 	return &cfg
 }
 
-func readOpenClawTelegramToken() string {
-	home, _ := os.UserHomeDir()
-	path := filepath.Join(home, ".openclaw", "openclaw.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	var oc struct {
-		Channels struct {
-			Telegram struct {
-				BotToken string `json:"botToken"`
-			} `json:"telegram"`
-		} `json:"channels"`
-	}
-	if json.Unmarshal(data, &oc) == nil {
-		return oc.Channels.Telegram.BotToken
-	}
-	return ""
-}

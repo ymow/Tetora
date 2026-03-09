@@ -241,38 +241,6 @@ func cmdInit() {
 		fmt.Println()
 	}
 
-	// --- OpenClaw Detection ---
-	migCfg := &Config{baseDir: configDir}
-	var ocMigrated bool
-	var ocReport *MigrationReport
-	ocDir := detectOpenClaw()
-	if ocDir != "" {
-		fmt.Printf("%s %s\n", L.OpenClawDetected, ocDir)
-		fmt.Printf("  %s ", L.OpenClawImport)
-		scanner.Scan()
-		ans := strings.ToLower(strings.TrimSpace(scanner.Text()))
-		if ans != "n" {
-			// Extract only basic config fields (tokens, model).
-			include := parseIncludeList("config")
-			report, err := migrateOpenClaw(migCfg, ocDir, false, include, false)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  Migration error: %v\n", err)
-			} else {
-				ocMigrated = true
-				ocReport = report
-				fmt.Printf("  "+L.OpenClawImported+"\n", report.ConfigMerged)
-				for _, w := range report.Warnings {
-					fmt.Printf("  ! %s\n", w)
-				}
-			}
-			fmt.Println()
-			fmt.Printf("  %s\n", L.OpenClawMigrateNote1)
-			fmt.Printf("  %s\n", L.OpenClawMigrateNote2)
-			fmt.Println()
-		}
-	}
-	_ = ocReport // used below if ocMigrated
-
 	fmt.Println(L.Title)
 	fmt.Println()
 
@@ -325,26 +293,6 @@ func cmdInit() {
 		slackSigningSecret = prompt(L.SlackSigningSecretPrompt, "")
 	}
 
-	// Apply OpenClaw values as defaults.
-	if ocMigrated {
-		if botToken == "" && migCfg.Telegram.BotToken != "" {
-			botToken = migCfg.Telegram.BotToken
-			fmt.Printf("  (using Telegram token from OpenClaw: %s****)\n", botToken[:4])
-		}
-		if chatID == 0 && migCfg.Telegram.ChatID != 0 {
-			chatID = migCfg.Telegram.ChatID
-			fmt.Printf("  (using Telegram chat ID from OpenClaw: %d)\n", chatID)
-		}
-		if discordToken == "" && migCfg.Discord.BotToken != "" {
-			discordToken = migCfg.Discord.BotToken
-			fmt.Printf("  (using Discord token from OpenClaw)\n")
-		}
-		if slackToken == "" && migCfg.Slack.BotToken != "" {
-			slackToken = migCfg.Slack.BotToken
-			fmt.Printf("  (using Slack token from OpenClaw)\n")
-		}
-	}
-
 	// --- Step 2: Provider ---
 	fmt.Println()
 	fmt.Println(L.Step2Title)
@@ -382,13 +330,6 @@ func cmdInit() {
 		openaiEndpoint = prompt(L.OpenAIEndpointPrompt, "https://api.openai.com/v1")
 		openaiAPIKey = prompt(L.OpenAIKeyPrompt, "")
 		defaultModel = prompt(L.DefaultModelPrompt, "gpt-4o")
-	}
-
-	if ocMigrated {
-		if defaultModel == "" && migCfg.DefaultModel != "" {
-			defaultModel = migCfg.DefaultModel
-			fmt.Printf("  (using model from OpenClaw: %s)\n", defaultModel)
-		}
 	}
 
 	// --- Step 3: Directory Access ---
@@ -585,9 +526,6 @@ func cmdInit() {
 	fmt.Printf("%s %s\n", L.APITokenLabel, apiToken)
 	fmt.Println(L.APITokenNote)
 
-	// OpenClaw workspace/agents migration is now handled by `tetora import openclaw`.
-	_ = ocMigrated
-
 	// --- Optional: Create agents ---
 	var createdAgents []string
 	var initDefaultAgent string
@@ -700,14 +638,7 @@ You are {{.RoleName}}, a specialized AI agent in the Tetora orchestration system
 		return agentName
 	}
 
-	if ocMigrated {
-		fmt.Println()
-		fmt.Print("  " + L.CreateRoleOCPrompt + " ")
-		scanner.Scan()
-		if strings.ToLower(strings.TrimSpace(scanner.Text())) != "y" {
-			goto afterRole
-		}
-	} else {
+	{
 		fmt.Println()
 		fmt.Print("  " + L.CreateRolePrompt + " ")
 		scanner.Scan()
@@ -864,8 +795,6 @@ func updateConfigDiscordRoutes(configPath, channelID, role string) {
 		raw["discord"] = discord
 	})
 }
-
-// cmdImportOpenClaw is now defined in import_openclaw.go (3-stage pipeline).
 
 func detectClaude() string {
 	// Prefer Homebrew path, then npm, then PATH lookup.
