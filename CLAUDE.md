@@ -74,3 +74,16 @@ Agent 應自我檢查，避免以下寫入錯誤：
 - `workspace/knowledge/` — reference material (50KB guard, auto-injected)
 - `workspace/skills/` — reusable procedures, loaded by prompt matching
 - `agents/{name}/SOUL.md` — per-role personality (NOT shared)
+
+## Regression Guard（回歸防護）
+
+**核心檔案改動前，必讀 `~/.tetora/workspace/tasks/fragile-points.md`。**
+
+規則詳見 `~/.tetora/workspace/rules/regression-guard.md`，摘要：
+
+1. **改動前**：讀 fragile-points.md，檢查即將改的檔案有沒有 fragile point
+2. **改動後**：如果命中 fragile point → 執行該 point 的「驗證方法」
+3. **修 bug 後**：登記到 fragile-points.md（必做）
+4. **壞 3 次以上**：考慮寫 integration test 或 CI gate
+
+適用檔案：dashboard.html, tool_*.go, dispatch.go, session.go, taskboard_dispatch.go, main.go
