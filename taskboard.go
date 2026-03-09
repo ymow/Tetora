@@ -52,6 +52,7 @@ type TaskBoardDispatchConfig struct {
 	DefaultAgent          string  `json:"defaultAgent,omitempty"`          // fallback agent for unassigned todo tasks
 	BacklogAgent          string  `json:"backlogAgent,omitempty"`          // agent for backlog triage (default: "ruri")
 	ReviewAgent           string  `json:"reviewAgent,omitempty"`           // agent for review verification (default: "ruri")
+	EscalateAssignee      string  `json:"escalateAssignee,omitempty"`      // assign review-rejected tasks to this user (default: "takuma")
 	StuckThreshold        string  `json:"stuckThreshold,omitempty"`        // max time a task can be in "doing" before reset (default: "2h")
 	MaxConcurrentTasks    int     `json:"maxConcurrentTasks,omitempty"`    // max tasks dispatched per scan cycle (default: 3)
 	BacklogTriageInterval string  `json:"backlogTriageInterval,omitempty"` // interval between backlog triage runs (default: "1h")
