@@ -161,7 +161,7 @@ func (p *ClaudeProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, re
 		switch msg.Type {
 		case "assistant":
 			if msg.Message != nil {
-				for _, block := range msg.Message.Content {
+				for _, block := range msg.Message.ContentBlocks() {
 					switch block.Type {
 					case "text":
 						if req.EventCh != nil && block.Text != "" {
@@ -198,7 +198,7 @@ func (p *ClaudeProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, re
 			}
 		case "user":
 			if msg.Message != nil {
-				for _, block := range msg.Message.Content {
+				for _, block := range msg.Message.ContentBlocks() {
 					if block.Type == "tool_result" && req.EventCh != nil {
 						// Truncate tool result content for SSE.
 						contentStr := ""
@@ -283,7 +283,7 @@ func buildResultFromStream(resultMsg *claudeStreamMsg, stderr []byte, exitCode i
 		IsError:   resultMsg.IsError,
 	}
 	if resultMsg.Usage != nil {
-		pr.TokensIn = resultMsg.Usage.InputTokens
+		pr.TokensIn = resultMsg.Usage.TotalInputTokens()
 		pr.TokensOut = resultMsg.Usage.OutputTokens
 	}
 	pr.ProviderMs = resultMsg.DurationMs
@@ -402,8 +402,16 @@ type claudeOutput struct {
 
 // claudeUsage holds token usage reported by the Claude CLI.
 type claudeUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+}
+
+// TotalInputTokens returns the sum of all input token categories
+// (direct + cache creation + cache read).
+func (u *claudeUsage) TotalInputTokens() int {
+	return u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
 }
 
 // claudeStreamMsg represents a single line from `--output-format stream-json`.
@@ -422,8 +430,21 @@ type claudeStreamMsg struct {
 }
 
 type claudeMsg struct {
-	Role    string               `json:"role"`
-	Content []claudeContentBlock `json:"content"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"` // string or []claudeContentBlock; use json.RawMessage to avoid parse failures
+}
+
+// ContentBlocks parses Content as []claudeContentBlock. Returns nil if content
+// is a plain string or unparseable (e.g. system/rate_limit_event messages).
+func (m *claudeMsg) ContentBlocks() []claudeContentBlock {
+	if m == nil || len(m.Content) == 0 {
+		return nil
+	}
+	var blocks []claudeContentBlock
+	if err := json.Unmarshal(m.Content, &blocks); err != nil {
+		return nil
+	}
+	return blocks
 }
 
 type claudeContentBlock struct {
@@ -437,30 +458,37 @@ type claudeContentBlock struct {
 }
 
 // parseClaudeOutput parses Claude CLI JSON output into a TaskResult.
+// Handles two formats:
+//   - Legacy single object: {"type":"result", "result":"...", "total_cost_usd":...}
+//   - Array format (CLI v2.1+): [{"type":"system",...}, ..., {"type":"result",...}]
 func parseClaudeOutput(stdout, stderr []byte, exitCode int) TaskResult {
 	var co claudeOutput
 	result := TaskResult{ExitCode: exitCode}
 
-	if err := json.Unmarshal(stdout, &co); err == nil {
-		result.Output = co.Result
-		result.CostUSD = co.CostUSD
-		result.SessionID = co.SessionID
-		result.ProviderMs = co.DurationMs
-		if co.Usage != nil {
-			result.TokensIn = co.Usage.InputTokens
-			result.TokensOut = co.Usage.OutputTokens
+	if err := json.Unmarshal(stdout, &co); err == nil && co.Type != "" {
+		return buildResultFromParsed(co, result)
+	}
+
+	// Try array format: Claude CLI v2.1+ outputs a JSON array of stream messages
+	// when using --output-format json. Find the "result" entry.
+	var msgs []claudeStreamMsg
+	if err := json.Unmarshal(stdout, &msgs); err == nil && len(msgs) > 0 {
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].Type == "result" {
+				co = claudeOutput{
+					Type:       msgs[i].Type,
+					Subtype:    msgs[i].Subtype,
+					Result:     msgs[i].Result,
+					IsError:    msgs[i].IsError,
+					DurationMs: msgs[i].DurationMs,
+					CostUSD:    msgs[i].CostUSD,
+					SessionID:  msgs[i].SessionID,
+					NumTurns:   msgs[i].NumTurns,
+					Usage:      msgs[i].Usage,
+				}
+				return buildResultFromParsed(co, result)
+			}
 		}
-		if co.IsError {
-			result.Status = "error"
-			result.Error = co.Subtype
-		} else if result.TokensIn == 0 && result.TokensOut == 0 && co.CostUSD == 0 && strings.TrimSpace(co.Result) == "" {
-			// Empty run: CLI exited cleanly but never called the API.
-			result.Status = "error"
-			result.Error = "empty run: CLI returned success but no tokens were consumed"
-		} else {
-			result.Status = "success"
-		}
-		return result
 	}
 
 	// Fallback: treat raw output as text.
@@ -472,6 +500,29 @@ func parseClaudeOutput(stdout, stderr []byte, exitCode int) TaskResult {
 			errStr = errStr[:500]
 		}
 		result.Error = errStr
+	} else {
+		result.Status = "success"
+	}
+	return result
+}
+
+// buildResultFromParsed populates a TaskResult from a successfully parsed claudeOutput.
+func buildResultFromParsed(co claudeOutput, result TaskResult) TaskResult {
+	result.Output = co.Result
+	result.CostUSD = co.CostUSD
+	result.SessionID = co.SessionID
+	result.ProviderMs = co.DurationMs
+	if co.Usage != nil {
+		result.TokensIn = co.Usage.TotalInputTokens()
+		result.TokensOut = co.Usage.OutputTokens
+	}
+	if co.IsError {
+		result.Status = "error"
+		result.Error = co.Subtype
+	} else if result.TokensIn == 0 && result.TokensOut == 0 && co.CostUSD == 0 && strings.TrimSpace(co.Result) == "" {
+		// Empty run: CLI exited cleanly but never called the API.
+		result.Status = "error"
+		result.Error = "empty run: CLI returned success but no tokens were consumed"
 	} else {
 		result.Status = "success"
 	}

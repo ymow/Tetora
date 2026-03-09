@@ -396,6 +396,37 @@ func TestParseClaudeOutput_WithoutUsage(t *testing.T) {
 	}
 }
 
+// TestParseClaudeOutput_ArrayFormatWithStringContent verifies that the array
+// format parser handles messages where message.content is a plain string (e.g.
+// system init, rate_limit_event) instead of []claudeContentBlock. Previously
+// this caused json.Unmarshal to fail for the entire array, falling through to
+// the text fallback where cost/tokens were 0.
+func TestParseClaudeOutput_ArrayFormatWithStringContent(t *testing.T) {
+	stdout := []byte(`[
+		{"type":"system","subtype":"init","message":{"role":"system","content":"init"},"session_id":"s1"},
+		{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello"}]}},
+		{"type":"rate_limit_event","message":{"role":"system","content":"throttled"}},
+		{"type":"result","result":"Done","is_error":false,"duration_ms":5000,"total_cost_usd":0.28,"session_id":"s1","num_turns":3,"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":200,"cache_read_input_tokens":300}}
+	]`)
+	result := parseClaudeOutput(stdout, nil, 0)
+	if result.Status != "success" {
+		t.Errorf("expected success, got %s (error: %s)", result.Status, result.Error)
+	}
+	if result.CostUSD != 0.28 {
+		t.Errorf("expected CostUSD=0.28, got %f", result.CostUSD)
+	}
+	// TotalInputTokens = input_tokens + cache_creation + cache_read = 100+200+300 = 600
+	if result.TokensIn != 600 {
+		t.Errorf("expected TokensIn=600, got %d", result.TokensIn)
+	}
+	if result.TokensOut != 50 {
+		t.Errorf("expected TokensOut=50, got %d", result.TokensOut)
+	}
+	if result.SessionID != "s1" {
+		t.Errorf("expected SessionID=s1, got %s", result.SessionID)
+	}
+}
+
 func TestParseOpenAIResponse_TokensExtracted(t *testing.T) {
 	data := []byte(`{
 		"id": "chatcmpl-tok",
