@@ -27,7 +27,8 @@ Commands:
   dispatch           Run an ad-hoc task via the daemon
   route              Smart dispatch (auto-route to best agent)
   init               Interactive setup wizard
-  doctor             Health checks and diagnostics
+  doctor             Setup checks and diagnostics
+  health             Runtime health (daemon, workers, taskboard, disk)
   status             Quick overview (daemon, jobs, cost)
   drain              Graceful shutdown: stop new tasks, wait for running agents to finish
   service <action>   Manage launchd service (install|uninstall|status)

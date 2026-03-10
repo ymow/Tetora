@@ -35,7 +35,7 @@ func cmdCompletion(args []string) {
 // completionSubcommands returns all top-level tetora subcommands.
 func completionSubcommands() []string {
 	return []string{
-		"serve", "run", "dispatch", "route", "init", "doctor",
+		"serve", "run", "dispatch", "route", "init", "doctor", "health",
 		"status", "service", "job", "agent", "history", "config",
 		"logs", "prompt", "memory", "mcp", "session", "knowledge",
 		"skill", "workflow", "budget", "trust", "webhook", "data", "backup", "restore",
@@ -100,7 +100,8 @@ func completionSubcommandDescriptions() map[string]string {
 		"dispatch":   "Run an ad-hoc task via the daemon",
 		"route":      "Smart dispatch (auto-route to best agent)",
 		"init":       "Interactive setup wizard",
-		"doctor":     "Health checks and diagnostics",
+		"doctor":     "Setup checks and diagnostics",
+		"health":     "Runtime health (daemon, workers, taskboard, disk)",
 		"status":     "Quick overview (daemon, jobs, cost)",
 		"service":    "Manage launchd service",
 		"job":        "Manage cron jobs",

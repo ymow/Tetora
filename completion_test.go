@@ -9,7 +9,7 @@ func TestCompletionSubcommands(t *testing.T) {
 	cmds := completionSubcommands()
 
 	expected := []string{
-		"serve", "run", "dispatch", "route", "init", "doctor",
+		"serve", "run", "dispatch", "route", "init", "doctor", "health",
 		"status", "service", "job", "agent", "history", "config",
 		"logs", "prompt", "memory", "mcp", "session", "knowledge",
 		"skill", "workflow", "budget", "trust", "webhook", "data", "backup", "restore",
