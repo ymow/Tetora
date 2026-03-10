@@ -166,15 +166,17 @@ body {
   line-height: 1.5;
   min-height: 100vh;
 }
-.container { max-width: 1100px; margin: 0 auto; padding: 24px 20px; }
+.container { max-width: 100%; margin: 0; padding: 0; }
+.app-layout { display: flex; min-height: calc(100vh - 80px); }
+.app-main { flex: 1; min-width: 0; padding: 24px 28px; max-width: 1100px; }
 
 /* Header */
 header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 28px;
-  padding-bottom: 16px;
+  margin-bottom: 0;
+  padding: 12px 24px;
   border-bottom: var(--header-border);
 }
 .logo {
@@ -1506,6 +1508,8 @@ body.theme-material .logo {
 .wed-node-tool_call .wed-node-shape { fill: #150f1f; stroke: #c084fc; }
 .wed-node-delay .wed-node-shape { fill: #0a1f1a; stroke: #34d399; }
 .wed-node-notify .wed-node-shape { fill: #1f1000; stroke: #fb923c; }
+.wed-node-handoff .wed-handoff-outer { fill: #1a0f1f; stroke: #e879f9; stroke-width: 1.5; }
+.wed-node-handoff .wed-handoff-inner { fill: #1a0a20; stroke: #e879f9; stroke-width: 1; opacity: 0.7; }
 .wed-node.selected.wed-node-dispatch .wed-node-shape { stroke: #a78bfa; }
 .wed-node-label { fill: var(--text); font-size: 11px; font-weight: 600; pointer-events: none; }
 .wed-node-sublabel { fill: #a1a1aa; font-size: 9px; pointer-events: none; }
@@ -1533,74 +1537,86 @@ body.theme-material .logo {
   .output-modal { min-width: auto; }
 }
 
-/* Tab Navigation */
-.tab-nav {
+/* Sidebar Navigation (Google-style) */
+.sidebar-nav {
+  width: 220px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  padding: 12px 8px;
   display: flex;
-  gap: 0;
-  margin-bottom: 24px;
-  border-bottom: 1px solid var(--border);
+  flex-direction: column;
+  gap: 2px;
+  position: sticky;
+  top: 0;
+  height: calc(100vh - 60px);
+  overflow-y: auto;
 }
-.tab-nav button {
-  background: none;
-  border: none;
-  border-radius: 0;
+.sidebar-nav .nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-radius: 20px;
   color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--font-heading);
+  cursor: pointer;
+  border: none;
+  background: none;
+  width: 100%;
+  text-align: left;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.sidebar-nav .nav-item:hover {
+  color: var(--text);
+  background: rgba(128,128,255,0.06);
+}
+.sidebar-nav .nav-item.active {
+  color: var(--accent);
+  background: rgba(128,128,255,0.1);
+  font-weight: 600;
+}
+.sidebar-nav .nav-item .nav-icon {
+  font-size: 16px;
+  width: 22px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.sidebar-nav .nav-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 8px 12px;
+}
+.sidebar-nav .nav-label {
   font-size: 10px;
   font-weight: 600;
-  font-family: var(--font-heading);
-  padding: 10px 20px;
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  transition: color 0.2s, border-color 0.2s;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 12px 14px 4px;
+  letter-spacing: 0.5px;
 }
-.tab-nav button:hover { color: var(--text); }
-.tab-nav button.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
+/* Mobile sidebar toggle */
+.sidebar-toggle {
+  display: none;
+  position: fixed;
+  bottom: 20px;
+  left: 20px;
+  z-index: 1000;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.3);
 }
 
-/* Sub-tab Navigation (Google-style pill bar) */
-.sub-tab-nav {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 20px;
-  padding: 4px;
-  background: var(--surface);
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  width: fit-content;
-}
-.sub-tab-nav button {
-  background: none;
-  border: none;
-  border-radius: 6px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 500;
-  padding: 6px 16px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.sub-tab-nav button:hover {
-  color: var(--text);
-  background: rgba(128,128,255,0.08);
-}
-.sub-tab-nav button.active {
-  color: var(--accent);
-  background: rgba(128,128,255,0.12);
-  font-weight: 600;
-}
-@media (max-width: 640px) {
-  .sub-tab-nav {
-    overflow-x: auto;
-    width: 100%;
-    -webkit-overflow-scrolling: touch;
-  }
-  .sub-tab-nav button {
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-}
+/* Sub-tab nav hidden — sidebar handles all navigation, kept in DOM for state tracking */
+.sub-tab-nav { display: none; }
 
 /* Chat Container */
 .chat-container {
@@ -1872,15 +1888,41 @@ body.theme-material .logo {
   .container { padding-top: 12px; }
 }
 
+/* Tablet: collapse sidebar */
+@media (max-width: 768px) {
+  .sidebar-nav {
+    position: fixed;
+    left: -240px;
+    top: 0;
+    height: 100vh;
+    z-index: 999;
+    background: var(--bg);
+    transition: left 0.25s ease;
+    box-shadow: none;
+  }
+  .sidebar-nav.open {
+    left: 0;
+    box-shadow: 4px 0 24px rgba(0,0,0,0.4);
+  }
+  .sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.3);
+    z-index: 998;
+  }
+  .sidebar-overlay.open { display: block; }
+  .sidebar-toggle { display: block; }
+  .app-main { padding: 16px; }
+}
+
 /* Small phones */
 @media (max-width: 480px) {
-  .container { padding: 12px; }
-  header { flex-wrap: wrap; gap: 8px; margin-bottom: 16px; padding-bottom: 12px; }
+  .container { padding: 0; }
+  header { flex-wrap: wrap; gap: 8px; margin-bottom: 0; padding: 10px 12px; }
   .logo { font-size: 18px; }
   .header-right { width: 100%; justify-content: flex-end; }
   .stat-value { font-size: 20px; }
-  .tab-nav { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .tab-nav button { padding: 8px 14px; font-size: 13px; white-space: nowrap; }
   th, td { padding: 6px 8px; }
   .modal { min-width: auto; margin: 8px; padding: 16px; }
   .form-row-inline { grid-template-columns: 1fr; }
@@ -2171,12 +2213,51 @@ body:not([class*="theme-"])::after, body.theme-default::after {
     <button class="alert-close" onclick="dismissUsageAlert()" aria-label="Dismiss">&#215;</button>
   </div>
 
-  <div class="tab-nav">
-    <button id="tab-dashboard" class="active" onclick="switchTab('dashboard')">Dashboard</button>
-    <button id="tab-chat" onclick="switchTab('chat')">Chat</button>
-    <button id="tab-operations" onclick="switchTab('operations')">Operations</button>
-    <button id="tab-settings" onclick="switchTab('settings')">Settings</button>
-  </div>
+  <div class="app-layout">
+
+  <!-- Sidebar Navigation -->
+  <nav class="sidebar-nav" id="sidebar-nav">
+    <button class="nav-item active" id="tab-dashboard" onclick="switchTab('dashboard')">
+      <span class="nav-icon">&#x1F4CA;</span> Dashboard
+    </button>
+    <button class="nav-item" id="tab-chat" onclick="switchTab('chat')">
+      <span class="nav-icon">&#x1F4AC;</span> Chat
+    </button>
+    <div class="nav-divider"></div>
+    <div class="nav-label">Operations</div>
+    <button class="nav-item" id="tab-operations-agents" onclick="switchTab('operations');switchSubTab('operations','agents')">
+      <span class="nav-icon">&#x1F916;</span> Agents
+    </button>
+    <button class="nav-item" id="tab-operations-workflows" onclick="switchTab('operations');switchSubTab('operations','workflows')">
+      <span class="nav-icon">&#x26A1;</span> Workflows
+    </button>
+    <button class="nav-item" id="tab-operations-tasks" onclick="switchTab('operations');switchSubTab('operations','tasks')">
+      <span class="nav-icon">&#x1F4CB;</span> Tasks
+    </button>
+    <button class="nav-item" id="tab-operations-memory" onclick="switchTab('operations');switchSubTab('operations','memory')">
+      <span class="nav-icon">&#x1F4C2;</span> Memory
+    </button>
+    <div class="nav-divider"></div>
+    <div class="nav-label">Settings</div>
+    <button class="nav-item" id="tab-settings-general" onclick="switchTab('settings');switchSubTab('settings','general')">
+      <span class="nav-icon">&#x2699;</span> General
+    </button>
+    <button class="nav-item" id="tab-settings-integrations" onclick="switchTab('settings');switchSubTab('settings','integrations')">
+      <span class="nav-icon">&#x1F517;</span> Integrations
+    </button>
+    <button class="nav-item" id="tab-settings-tools-security" onclick="switchTab('settings');switchSubTab('settings','tools-security')">
+      <span class="nav-icon">&#x1F6E1;</span> Tools & Security
+    </button>
+    <button class="nav-item" id="tab-settings-notifications" onclick="switchTab('settings');switchSubTab('settings','notifications')">
+      <span class="nav-icon">&#x1F514;</span> Notifications
+    </button>
+  </nav>
+
+  <!-- Sidebar overlay for mobile -->
+  <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
+
+  <!-- Main Content -->
+  <div class="app-main">
 
   <div id="dashboard-content">
   <!-- View Selector -->
@@ -2896,6 +2977,8 @@ body:not([class*="theme-"])::after, body.theme-default::after {
               <div class="wfed-dd-item" onclick="addStepToWorkflow('tool_call');toggleAddStepMenu()">tool_call</div>
               <div class="wfed-dd-item" onclick="addStepToWorkflow('delay');toggleAddStepMenu()">delay</div>
               <div class="wfed-dd-item" onclick="addStepToWorkflow('notify');toggleAddStepMenu()">notify</div>
+              <div class="wfed-dd-item" onclick="addStepToWorkflow('external');toggleAddStepMenu()">external</div>
+              <div class="wfed-dd-item" onclick="addStepToWorkflow('handoff');toggleAddStepMenu()">handoff</div>
             </div>
           </div>
           <button class="btn" onclick="wedAutoLayout()" title="Auto-layout nodes">&#x2B21; Layout</button>
@@ -2905,6 +2988,7 @@ body:not([class*="theme-"])::after, body.theme-default::after {
           <button class="btn" onclick="toggleWfJsonEditor()">{ }</button>
           <button class="btn" onclick="editWorkflowMeta()">&#x270E; Meta</button>
           <button class="btn" id="wf-fullscreen-btn" onclick="wfEdToggleFullscreen()" title="全螢幕">&#x26F6;</button>
+          <button class="btn" onclick="wfEdShowVersionHistory()" title="版本歷史">&#x1F552; Versions</button>
           <button class="btn" onclick="showRunModal(wfEd.workflow)" title="執行此 workflow">&#9654; Run</button>
           <button class="btn" id="wf-save-btn" onclick="saveWorkflowEditorData()" style="background:var(--accent);color:#fff;opacity:0.5">Save</button>
           <button class="btn" onclick="closeWorkflowEditor()">Close</button>
@@ -2928,6 +3012,9 @@ body:not([class*="theme-"])::after, body.theme-default::after {
           </div>
         </div>
       </div>
+
+      <!-- Version History Panel -->
+      <div id="wf-version-panel" style="display:none;margin-top:12px;max-height:400px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg)"></div>
 
       <!-- JSON Editor (collapsible) -->
       <div id="wf-json-editor-panel" style="display:none;margin-top:12px">
@@ -3270,6 +3357,11 @@ body:not([class*="theme-"])::after, body.theme-default::after {
 
   <!-- workspace-content removed: content moved to operations sub-tabs -->
 
+  </div><!-- /app-main -->
+  </div><!-- /app-layout -->
+
+  <!-- Mobile sidebar toggle -->
+  <button class="sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()" aria-label="Menu">&#9776;</button>
 
 <!-- Project Modal -->
 <div class="modal-overlay" id="project-modal">
@@ -8233,11 +8325,10 @@ function switchTab(tab) {
   }
   currentTab = tab;
   TAB_LIST.forEach(function(t) {
-    var btn = document.getElementById('tab-' + t);
     var content = document.getElementById(t + '-content');
-    if (btn) btn.classList.toggle('active', tab === t);
     if (content) content.style.display = tab === t ? '' : 'none';
   });
+  // Sidebar highlight handled by updateSidebarHighlight
   if (tab === 'chat') {
     refreshChatSidebar();
     populateChatRoleFilter();
@@ -8255,12 +8346,14 @@ function switchTab(tab) {
     applyDashView();
     loadDashViewData();
   }
+  updateSidebarHighlight();
+  closeSidebar();
 }
 
 function switchSubTab(parentTab, subTab) {
   var container = document.getElementById(parentTab + '-content');
   if (!container) return;
-  // Update sub-tab nav buttons
+  // Update sub-tab nav buttons (hidden but kept for state tracking)
   var nav = container.querySelector('.sub-tab-nav');
   if (nav) {
     nav.querySelectorAll('button').forEach(function(btn) {
@@ -8276,6 +8369,8 @@ function switchSubTab(parentTab, subTab) {
   // Refresh data
   if (parentTab === 'operations') refreshOperationsSubTab(subTab);
   if (parentTab === 'settings') refreshSettingsSubTab(subTab);
+  updateSidebarHighlight();
+  closeSidebar();
 }
 
 function getActiveSubTab(parentTab) {
@@ -8296,6 +8391,37 @@ function refreshOperationsSubTab(sub) {
 
 function refreshSettingsSubTab(sub) {
   if (sub === 'integrations') refreshIntegrations();
+}
+
+// --- Sidebar Navigation Helpers ---
+function updateSidebarHighlight() {
+  var sidebar = document.getElementById('sidebar-nav');
+  if (!sidebar) return;
+  sidebar.querySelectorAll('.nav-item').forEach(function(btn) { btn.classList.remove('active'); });
+
+  var activeId = '';
+  if (currentTab === 'dashboard') {
+    activeId = 'tab-dashboard';
+  } else if (currentTab === 'chat') {
+    activeId = 'tab-chat';
+  } else if (currentTab === 'operations') {
+    var sub = getActiveSubTab('operations');
+    activeId = 'tab-operations-' + (sub || 'agents');
+  } else if (currentTab === 'settings') {
+    var sub = getActiveSubTab('settings');
+    activeId = 'tab-settings-' + (sub || 'general');
+  }
+  var el = document.getElementById(activeId);
+  if (el) el.classList.add('active');
+}
+
+function toggleSidebar() {
+  document.getElementById('sidebar-nav').classList.toggle('open');
+  document.getElementById('sidebar-overlay').classList.toggle('open');
+}
+function closeSidebar() {
+  document.getElementById('sidebar-nav').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('open');
 }
 
 function populateChatRoleFilter() {
