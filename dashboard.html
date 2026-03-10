@@ -1506,6 +1506,8 @@ body.theme-material .logo {
 .wed-node-tool_call .wed-node-shape { fill: #150f1f; stroke: #c084fc; }
 .wed-node-delay .wed-node-shape { fill: #0a1f1a; stroke: #34d399; }
 .wed-node-notify .wed-node-shape { fill: #1f1000; stroke: #fb923c; }
+.wed-node-handoff .wed-handoff-outer { fill: #1a0f1f; stroke: #e879f9; stroke-width: 1.5; }
+.wed-node-handoff .wed-handoff-inner { fill: #1a0a20; stroke: #e879f9; stroke-width: 1; opacity: 0.7; }
 .wed-node.selected.wed-node-dispatch .wed-node-shape { stroke: #a78bfa; }
 .wed-node-label { fill: var(--text); font-size: 11px; font-weight: 600; pointer-events: none; }
 .wed-node-sublabel { fill: #a1a1aa; font-size: 9px; pointer-events: none; }
@@ -2847,6 +2849,8 @@ body:not([class*="theme-"])::after, body.theme-default::after {
               <div class="wfed-dd-item" onclick="addStepToWorkflow('tool_call');toggleAddStepMenu()">tool_call</div>
               <div class="wfed-dd-item" onclick="addStepToWorkflow('delay');toggleAddStepMenu()">delay</div>
               <div class="wfed-dd-item" onclick="addStepToWorkflow('notify');toggleAddStepMenu()">notify</div>
+              <div class="wfed-dd-item" onclick="addStepToWorkflow('external');toggleAddStepMenu()">external</div>
+              <div class="wfed-dd-item" onclick="addStepToWorkflow('handoff');toggleAddStepMenu()">handoff</div>
             </div>
           </div>
           <button class="btn" onclick="wedAutoLayout()" title="Auto-layout nodes">&#x2B21; Layout</button>
@@ -2856,6 +2860,7 @@ body:not([class*="theme-"])::after, body.theme-default::after {
           <button class="btn" onclick="toggleWfJsonEditor()">{ }</button>
           <button class="btn" onclick="editWorkflowMeta()">&#x270E; Meta</button>
           <button class="btn" id="wf-fullscreen-btn" onclick="wfEdToggleFullscreen()" title="全螢幕">&#x26F6;</button>
+          <button class="btn" onclick="wfEdShowVersionHistory()" title="版本歷史">&#x1F552; Versions</button>
           <button class="btn" onclick="showRunModal(wfEd.workflow)" title="執行此 workflow">&#9654; Run</button>
           <button class="btn" id="wf-save-btn" onclick="saveWorkflowEditorData()" style="background:var(--accent);color:#fff;opacity:0.5">Save</button>
           <button class="btn" onclick="closeWorkflowEditor()">Close</button>
@@ -2879,6 +2884,9 @@ body:not([class*="theme-"])::after, body.theme-default::after {
           </div>
         </div>
       </div>
+
+      <!-- Version History Panel -->
+      <div id="wf-version-panel" style="display:none;margin-top:12px;max-height:400px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg)"></div>
 
       <!-- JSON Editor (collapsible) -->
       <div id="wf-json-editor-panel" style="display:none;margin-top:12px">

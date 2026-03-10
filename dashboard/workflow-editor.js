@@ -327,6 +327,10 @@ function renderEditorCanvas() {
     } else if (s.type === 'external') {
       // Dashed border rect for external steps
       html += '<rect class="wed-node-shape wed-external" x="' + p.x + '" y="' + p.y + '" width="' + NW + '" height="' + NH + '" rx="8" stroke-dasharray="6 3"/>';
+    } else if (s.type === 'handoff') {
+      // Double-border rect for handoff steps
+      html += '<rect class="wed-node-shape wed-handoff-outer" x="' + p.x + '" y="' + p.y + '" width="' + NW + '" height="' + NH + '" rx="8"/>';
+      html += '<rect class="wed-node-shape wed-handoff-inner" x="' + (p.x + 4) + '" y="' + (p.y + 4) + '" width="' + (NW - 8) + '" height="' + (NH - 8) + '" rx="6" stroke-dasharray="4 2"/>';
     } else {
       html += '<rect class="wed-node-shape" x="' + p.x + '" y="' + p.y + '" width="' + NW + '" height="' + NH + '" rx="8"/>';
     }
@@ -604,7 +608,7 @@ function renderPropertyPanel(stepId) {
 
   var fields = [
     { key: 'id', label: 'ID', type: 'text', required: true },
-    { key: 'type', label: 'Type', type: 'select', options: ['dispatch','skill','condition','parallel','tool_call','delay','notify','external'] },
+    { key: 'type', label: 'Type', type: 'select', options: ['dispatch','skill','condition','parallel','tool_call','delay','notify','external','handoff'] },
     { key: 'agent', label: 'Agent', type: 'text', placeholder: 'e.g. kokuyou' },
     { key: 'prompt', label: 'Prompt', type: 'textarea' },
     { key: 'skill', label: 'Skill', type: 'skill-select' },
@@ -664,6 +668,10 @@ function renderPropertyPanel(stepId) {
       return ['id','type','externalUrl','externalContentType','externalBody','externalRawBody',
               'callbackKey','callbackTimeout','callbackMode','callbackAuth','callbackAccumulate',
               'onTimeout','dependsOn','retryMax','onError'].includes(f.key);
+    });
+  } else if (stype === 'handoff') {
+    visibleFields = fields.filter(function(f) {
+      return ['id','type','agent','prompt','handoffFrom','model','timeout','budget','dependsOn','retryMax','onError'].includes(f.key);
     });
   }
 
@@ -863,6 +871,10 @@ function addStepToWorkflow(type) {
     newStep.externalUrl = '';
     newStep.callbackKey = '';
     newStep.callbackTimeout = '5m';
+  } else if (type === 'handoff') {
+    newStep.agent = '';
+    newStep.prompt = '';
+    newStep.handoffFrom = '';
   }
 
   // Position near last node or at center of current view
@@ -1200,5 +1212,113 @@ async function confirmRunWorkflow() {
     setTimeout(refreshWorkflowRuns, 800);
   } catch(e) {
     toast('Run failed: ' + e.message);
+  }
+}
+
+// ---- Version History Panel ----
+
+async function wfEdShowVersionHistory() {
+  if (!wfEd.workflow || !wfEd.workflow.name) { toast('No workflow loaded'); return; }
+  var panel = document.getElementById('wf-version-panel');
+  if (!panel) return;
+
+  // Toggle off if visible
+  if (panel.style.display !== 'none' && panel.style.display !== '') {
+    panel.style.display = 'none';
+    return;
+  }
+
+  panel.style.display = '';
+  panel.innerHTML = '<div style="padding:16px;color:var(--muted);font-size:13px">Loading versions...</div>';
+
+  try {
+    var versions = await fetchJSON('/versions?type=workflow&name=' + encodeURIComponent(wfEd.workflow.name) + '&limit=20');
+    if (!versions || versions.length === 0) {
+      panel.innerHTML = '<div style="padding:16px;color:var(--muted);font-size:13px">No versions found. Save the workflow to create the first snapshot.</div>' +
+        '<div style="padding:0 16px 12px"><button class="btn" onclick="document.getElementById(\'wf-version-panel\').style.display=\'none\'">Close</button></div>';
+      return;
+    }
+
+    var html = '<div style="padding:12px">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
+    html += '<strong style="color:var(--accent);font-size:14px">Version History</strong>';
+    html += '<button class="btn" style="font-size:11px;padding:2px 8px" onclick="document.getElementById(\'wf-version-panel\').style.display=\'none\'">Close</button>';
+    html += '</div>';
+
+    versions.forEach(function(v) {
+      var date = v.createdAt || '';
+      var shortId = v.versionId || ('v' + v.id);
+      var diff = v.diffSummary || '';
+      var by = v.changedBy || '';
+      var reason = v.reason || '';
+
+      html += '<div class="wfed-version-row" style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;background:var(--card)">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">';
+      html += '<span style="font-size:12px;font-weight:600;color:var(--accent)">' + esc(shortId) + '</span>';
+      html += '<span style="font-size:10px;color:var(--muted)">' + esc(date) + '</span>';
+      html += '</div>';
+      if (by) html += '<div style="font-size:10px;color:var(--muted);margin-bottom:2px">by ' + esc(by) + (reason ? ' — ' + esc(reason) : '') + '</div>';
+      if (diff) html += '<div style="font-size:11px;color:#9ca3af;white-space:pre-wrap;max-height:60px;overflow:auto;margin-bottom:6px">' + esc(diff) + '</div>';
+      html += '<div style="display:flex;gap:6px">';
+      html += '<button class="btn" style="font-size:10px;padding:2px 8px" onclick="wfEdViewVersion(\'' + escAttr(shortId) + '\')">View</button>';
+      html += '<button class="btn" style="font-size:10px;padding:2px 8px;background:#7c3aed;color:#fff" onclick="wfEdRestoreVersion(\'' + escAttr(shortId) + '\',\'' + escAttr(date) + '\')">Restore</button>';
+      html += '</div>';
+      html += '</div>';
+    });
+
+    html += '</div>';
+    panel.innerHTML = html;
+  } catch(e) {
+    panel.innerHTML = '<div style="padding:16px;color:#f87171;font-size:13px">Error loading versions: ' + esc(e.message) + '</div>' +
+      '<div style="padding:0 16px 12px"><button class="btn" onclick="document.getElementById(\'wf-version-panel\').style.display=\'none\'">Close</button></div>';
+  }
+}
+
+async function wfEdViewVersion(versionId) {
+  try {
+    var ver = await fetchJSON('/config/versions/' + encodeURIComponent(versionId));
+    var content = ver.contentJson || ver.contentJSON || '';
+    var formatted = '';
+    try { formatted = JSON.stringify(JSON.parse(content), null, 2); } catch(e) { formatted = content; }
+
+    var modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center';
+    modal.onclick = function(e) { if (e.target === modal) document.body.removeChild(modal); };
+
+    var box = document.createElement('div');
+    box.style.cssText = 'background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:16px;max-width:700px;width:90%;max-height:80vh;overflow:auto';
+    box.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">' +
+      '<strong style="color:var(--accent)">' + esc(versionId) + '</strong>' +
+      '<button class="btn" style="font-size:11px;padding:2px 8px" id="wf-ver-close-btn">Close</button></div>' +
+      (ver.diffSummary ? '<div style="font-size:11px;color:#9ca3af;margin-bottom:8px;white-space:pre-wrap;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--card)">' + esc(ver.diffSummary) + '</div>' : '') +
+      '<pre style="font-size:11px;color:var(--text);white-space:pre-wrap;word-break:break-all;max-height:50vh;overflow:auto;background:var(--card);padding:12px;border-radius:8px;border:1px solid var(--border)">' + esc(formatted) + '</pre>';
+
+    modal.appendChild(box);
+    document.body.appendChild(modal);
+    box.querySelector('#wf-ver-close-btn').onclick = function() { document.body.removeChild(modal); };
+  } catch(e) {
+    toast('Error loading version: ' + e.message);
+  }
+}
+
+async function wfEdRestoreVersion(versionId, date) {
+  if (!confirm('Restore workflow to version ' + versionId + (date ? ' from ' + date : '') + '?')) return;
+  try {
+    var resp = await fetch(API + '/workflows/' + encodeURIComponent(wfEd.workflow.name) + '/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ versionId: versionId }),
+    });
+    if (!resp.ok) {
+      var err = await resp.json().catch(function() { return {}; });
+      toast('Restore failed: ' + (err.error || 'unknown error'));
+      return;
+    }
+    toast('Restored to version ' + versionId);
+    openWorkflowEditor(wfEd.workflow.name);
+    var panel = document.getElementById('wf-version-panel');
+    if (panel) panel.style.display = 'none';
+  } catch(e) {
+    toast('Restore error: ' + e.message);
   }
 }

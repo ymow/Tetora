@@ -148,6 +148,27 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 				"workflow": name,
 			})
 
+		case action == "restore" && r.Method == http.MethodPost:
+			if cfg.HistoryDB == "" {
+				http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
+				return
+			}
+			var restoreBody struct {
+				VersionID string `json:"versionId"`
+			}
+			json.NewDecoder(r.Body).Decode(&restoreBody)
+			if restoreBody.VersionID == "" {
+				http.Error(w, `{"error":"versionId required"}`, http.StatusBadRequest)
+				return
+			}
+			if err := restoreWorkflowVersion(cfg.HistoryDB, cfg, restoreBody.VersionID); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
+				return
+			}
+			auditLog(cfg.HistoryDB, "workflow.restore", "http",
+				fmt.Sprintf("name=%s version=%s", name, restoreBody.VersionID), clientIP(r))
+			json.NewEncoder(w).Encode(map[string]string{"status": "restored", "workflow": name, "versionId": restoreBody.VersionID})
+
 		case action == "runs" && r.Method == http.MethodGet:
 			runs, err := queryWorkflowRuns(cfg.HistoryDB, 20, name)
 			if err != nil {
@@ -160,7 +181,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 			json.NewEncoder(w).Encode(runs)
 
 		default:
-			http.Error(w, `{"error":"GET, DELETE, or POST .../validate|run"}`, http.StatusMethodNotAllowed)
+			http.Error(w, `{"error":"GET, DELETE, or POST .../validate|run|restore"}`, http.StatusMethodNotAllowed)
 		}
 	})
 
