@@ -377,6 +377,9 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 	prompt += "- THEN: Execute each item, checking them off as you go.\n"
 	prompt += "- Log major milestones by calling taskboard_comment.\n"
 	prompt += "- Your todo.md persists across retries — if items exist, continue from where you left off.\n"
+	prompt += "- Before starting: identify what is OUT OF SCOPE and note it in your todo.md. Prevent scope creep.\n"
+	prompt += "- Use precise language in all outputs. Forbidden: 'should work', 'probably', 'might need', 'I think', 'seems to'. State facts or unknowns explicitly.\n"
+	prompt += "- Before marking task complete: verify that a reviewer can understand your changes without asking clarifying questions. If not, add missing context.\n"
 
 	// --- Phase B: Per-agent todo progress tracking ---
 	// Inject agent's existing todo.md for retry awareness.
