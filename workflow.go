@@ -117,9 +117,28 @@ func loadWorkflow(path string) (*Workflow, error) {
 }
 
 // loadWorkflowByName loads a workflow by name from the workflows directory.
+// Falls back to scanning all files if no {name}.json exists (handles filename != internal name).
 func loadWorkflowByName(cfg *Config, name string) (*Workflow, error) {
 	path := filepath.Join(workflowDir(cfg), name+".json")
-	return loadWorkflow(path)
+	wf, err := loadWorkflow(path)
+	if err == nil {
+		return wf, nil
+	}
+	// Fallback: scan directory for a workflow with matching internal name.
+	entries, dirErr := os.ReadDir(workflowDir(cfg))
+	if dirErr != nil {
+		return nil, err // return original error
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		w, loadErr := loadWorkflow(filepath.Join(workflowDir(cfg), e.Name()))
+		if loadErr == nil && w.Name == name {
+			return w, nil
+		}
+	}
+	return nil, err
 }
 
 // saveWorkflow writes a workflow to the workflows directory.
