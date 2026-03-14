@@ -295,7 +295,7 @@ func (e *ProactiveEngine) matchesSchedule(rule ProactiveRule) bool {
 	now := time.Now().In(loc)
 
 	// Check if cron expression matches current minute.
-	if !expr.matches(now) {
+	if !expr.Matches(now) {
 		return false
 	}
 

@@ -32,7 +32,7 @@ func TestTriggerCronMatch(t *testing.T) {
 		t.Fatalf("parseCronExpr: %v", err)
 	}
 
-	if !expr.matches(now) {
+	if !expr.Matches(now) {
 		t.Errorf("expected cron %q to match current time %v", cron, now)
 	}
 }

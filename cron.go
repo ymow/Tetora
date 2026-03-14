@@ -597,7 +597,7 @@ func (ce *CronEngine) tick(ctx context.Context) {
 			if j.runCount > 0 {
 				// Only warn when the schedule would have fired (avoid noise on every tick).
 				nowLocal := now.In(j.loc)
-				if j.expr.matches(nowLocal) {
+				if j.expr.Matches(nowLocal) {
 					logWarnCtx(ctx, "cron job skipped: already running max instances",
 						"jobId", j.ID, "name", j.Name,
 						"running", j.runCount, "maxConcurrentRuns", maxRuns)
@@ -638,7 +638,7 @@ func (ce *CronEngine) tick(ctx context.Context) {
 			if !j.nextRun.IsZero() && nowLocal.Before(j.nextRun) {
 				continue
 			}
-			if !j.expr.matches(nowLocal) {
+			if !j.expr.Matches(nowLocal) {
 				continue
 			}
 			// Idle gate.
@@ -682,7 +682,7 @@ func (ce *CronEngine) tick(ctx context.Context) {
 		}
 
 		// Check cron expression matches current minute.
-		if !j.expr.matches(nowLocal) {
+		if !j.expr.Matches(nowLocal) {
 			continue
 		}
 

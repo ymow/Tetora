@@ -230,7 +230,7 @@ func (e *WorkflowTriggerEngine) checkCronTriggers(ctx context.Context) {
 		}
 
 		nowLocal := now.In(loc)
-		if !expr.matches(nowLocal) {
+		if !expr.Matches(nowLocal) {
 			continue
 		}
 
