@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -97,4 +98,68 @@ func Escape(s string) string {
 	// Escape single quotes for SQL.
 	s = strings.ReplaceAll(s, "'", "''")
 	return s
+}
+
+// --- JSON row helpers ---
+// These parse values returned from sqlite3 -json output.
+
+// Str extracts a string from a JSON row value.
+func Str(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch val := v.(type) {
+	case string:
+		return val
+	case json.Number:
+		return val.String()
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+// Int extracts an int from a JSON row value.
+func Int(v any) int {
+	if v == nil {
+		return 0
+	}
+	switch val := v.(type) {
+	case float64:
+		return int(val)
+	case json.Number:
+		i, _ := val.Int64()
+		return int(i)
+	case string:
+		i, _ := strconv.Atoi(val)
+		return i
+	default:
+		return 0
+	}
+}
+
+// Float extracts a float64 from a JSON row value.
+func Float(v any) float64 {
+	if v == nil {
+		return 0
+	}
+	switch val := v.(type) {
+	case float64:
+		return val
+	case json.Number:
+		f, _ := val.Float64()
+		return f
+	case string:
+		f, _ := strconv.ParseFloat(val, 64)
+		return f
+	default:
+		return 0
+	}
+}
+
+// Truncate truncates a string to maxLen characters, appending "..." if truncated.
+func Truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
