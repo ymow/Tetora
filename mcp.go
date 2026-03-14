@@ -24,6 +24,9 @@ type MCPConfigInfo struct {
 // --- CRUD ---
 
 func listMCPConfigs(cfg *Config) []MCPConfigInfo {
+	cfg.mcpMu.RLock()
+	defer cfg.mcpMu.RUnlock()
+
 	if len(cfg.MCPConfigs) == 0 {
 		return nil
 	}
@@ -46,6 +49,9 @@ func listMCPConfigs(cfg *Config) []MCPConfigInfo {
 }
 
 func getMCPConfig(cfg *Config, name string) (json.RawMessage, error) {
+	cfg.mcpMu.RLock()
+	defer cfg.mcpMu.RUnlock()
+
 	raw, ok := cfg.MCPConfigs[name]
 	if !ok {
 		return nil, fmt.Errorf("MCP config %q not found", name)
@@ -72,13 +78,7 @@ func setMCPConfig(cfg *Config, configPath, name string, config json.RawMessage) 
 		return err
 	}
 
-	// Update in-memory.
-	if cfg.MCPConfigs == nil {
-		cfg.MCPConfigs = make(map[string]json.RawMessage)
-	}
-	cfg.MCPConfigs[name] = config
-
-	// Write MCP file for immediate use.
+	// Write MCP file for immediate use (outside lock to avoid holding lock during I/O).
 	mcpDir := filepath.Join(cfg.baseDir, "mcp")
 	if err := os.MkdirAll(mcpDir, 0o755); err != nil {
 		return fmt.Errorf("create mcp dir: %w", err)
@@ -87,16 +87,27 @@ func setMCPConfig(cfg *Config, configPath, name string, config json.RawMessage) 
 	if err := os.WriteFile(path, config, 0o644); err != nil {
 		return fmt.Errorf("write mcp file %q: %w", path, err)
 	}
+
+	// Update in-memory under lock.
+	cfg.mcpMu.Lock()
+	if cfg.MCPConfigs == nil {
+		cfg.MCPConfigs = make(map[string]json.RawMessage)
+	}
+	cfg.MCPConfigs[name] = config
 	if cfg.mcpPaths == nil {
 		cfg.mcpPaths = make(map[string]string)
 	}
 	cfg.mcpPaths[name] = path
+	cfg.mcpMu.Unlock()
 
 	return nil
 }
 
 func deleteMCPConfig(cfg *Config, configPath, name string) error {
-	if _, ok := cfg.MCPConfigs[name]; !ok {
+	cfg.mcpMu.RLock()
+	_, ok := cfg.MCPConfigs[name]
+	cfg.mcpMu.RUnlock()
+	if !ok {
 		return fmt.Errorf("MCP config %q not found", name)
 	}
 
@@ -104,22 +115,21 @@ func deleteMCPConfig(cfg *Config, configPath, name string) error {
 		return err
 	}
 
-	// Update in-memory.
-	delete(cfg.MCPConfigs, name)
-
-	// Remove MCP file.
+	// Determine file path and update in-memory under lock.
+	cfg.mcpMu.Lock()
+	var filePath string
 	if p, ok := cfg.mcpPaths[name]; ok {
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove mcp file %q: %w", p, err)
-		}
+		filePath = p
 		delete(cfg.mcpPaths, name)
 	} else {
-		// Try default path.
-		mcpDir := filepath.Join(cfg.baseDir, "mcp")
-		p := filepath.Join(mcpDir, name+".json")
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove mcp file %q: %w", p, err)
-		}
+		filePath = filepath.Join(cfg.baseDir, "mcp", name+".json")
+	}
+	delete(cfg.MCPConfigs, name)
+	cfg.mcpMu.Unlock()
+
+	// Remove MCP file outside lock.
+	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove mcp file %q: %w", filePath, err)
 	}
 
 	return nil

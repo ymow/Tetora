@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -143,6 +144,7 @@ type Config struct {
 
 	// Resolved at runtime (not serialized).
 	baseDir           string
+	mcpMu             sync.RWMutex
 	mcpPaths          map[string]string
 	tlsEnabled        bool
 	registry          *providerRegistry
@@ -1292,10 +1294,17 @@ func (cfg *Config) resolveMCPPaths() {
 	}
 }
 
+// configFileMu serializes all read-modify-write operations on the config file
+// so concurrent HTTP handlers cannot interleave their reads and writes.
+var configFileMu sync.Mutex
+
 // updateConfigMCPs updates a single MCP config in config.json.
 // If config is nil, the MCP entry is removed. Otherwise it is added/updated.
 // Preserves all other config fields by reading/modifying/writing the raw JSON.
 func updateConfigMCPs(configPath, mcpName string, config json.RawMessage) error {
+	configFileMu.Lock()
+	defer configFileMu.Unlock()
+
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
