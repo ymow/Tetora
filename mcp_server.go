@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -232,12 +233,21 @@ func (s *mcpBridgeServer) Run() error {
 				ID:      0,
 				Error:   &jsonRPCError{Code: -32700, Message: "parse error"},
 			}
-			encoder.Encode(resp)
+			if err := encoder.Encode(resp); err != nil {
+				fmt.Fprintf(os.Stderr, "mcp: encode response: %v\n", err)
+			}
+			continue
+		}
+
+		// JSON-RPC 2.0: notifications must not receive a response.
+		if req.Method == "initialized" || strings.HasPrefix(req.Method, "notifications/") {
 			continue
 		}
 
 		resp := s.handleRequest(&req)
-		encoder.Encode(resp)
+		if err := encoder.Encode(resp); err != nil {
+			fmt.Fprintf(os.Stderr, "mcp: encode response: %v\n", err)
+		}
 	}
 }
 
@@ -245,9 +255,6 @@ func (s *mcpBridgeServer) handleRequest(req *jsonRPCRequest) jsonRPCResponse {
 	switch req.Method {
 	case "initialize":
 		return s.handleInitialize(req)
-	case "initialized":
-		// Client acknowledgment — no response needed for notification.
-		return jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{}`)}
 	case "tools/list":
 		return s.handleToolsList(req)
 	case "tools/call":
@@ -265,7 +272,7 @@ func (s *mcpBridgeServer) handleRequest(req *jsonRPCRequest) jsonRPCResponse {
 
 func (s *mcpBridgeServer) handleInitialize(req *jsonRPCRequest) jsonRPCResponse {
 	result := map[string]any{
-		"protocolVersion": "2024-11-05",
+		"protocolVersion": mcpProtocolVersion,
 		"capabilities": map[string]any{
 			"tools": map[string]any{},
 		},
@@ -274,7 +281,10 @@ func (s *mcpBridgeServer) handleInitialize(req *jsonRPCRequest) jsonRPCResponse 
 			"version": tetoraVersion,
 		},
 	}
-	data, _ := json.Marshal(result)
+	data, err := json.Marshal(result)
+	if err != nil {
+		return s.errorResponse(req.ID, -32603, "internal: marshal failed")
+	}
 	return jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: data}
 }
 
@@ -295,7 +305,10 @@ func (s *mcpBridgeServer) handleToolsList(req *jsonRPCRequest) jsonRPCResponse {
 	}
 
 	result := map[string]any{"tools": tools}
-	data, _ := json.Marshal(result)
+	data, err := json.Marshal(result)
+	if err != nil {
+		return s.errorResponse(req.ID, -32603, "internal: marshal failed")
+	}
 	return jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: data}
 }
 
@@ -343,7 +356,11 @@ func (s *mcpBridgeServer) handleToolsCall(req *jsonRPCRequest) jsonRPCResponse {
 		if !ok {
 			return s.errorResponse(req.ID, -32602, "missing required param: "+p)
 		}
-		path = strings.Replace(path, "{"+p+"}", fmt.Sprint(val), 1)
+		valStr := fmt.Sprint(val)
+		if strings.Contains(valStr, "/") {
+			return s.errorResponse(req.ID, -32602, fmt.Sprintf("param %q must not contain '/'", p))
+		}
+		path = strings.Replace(path, "{"+p+"}", url.PathEscape(valStr), 1)
 		delete(args, p) // Remove from body/query
 	}
 
@@ -360,23 +377,26 @@ func (s *mcpBridgeServer) handleToolsCall(req *jsonRPCRequest) jsonRPCResponse {
 			"text": string(result),
 		},
 	}
-	respData, _ := json.Marshal(map[string]any{"content": content})
+	respData, err := json.Marshal(map[string]any{"content": content})
+	if err != nil {
+		return s.errorResponse(req.ID, -32603, "internal: marshal failed")
+	}
 	return jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: respData}
 }
 
 // doHTTP executes an HTTP request against the Tetora API.
 func (s *mcpBridgeServer) doHTTP(method, path string, args map[string]any) ([]byte, error) {
-	url := s.baseURL + path
+	reqURL := s.baseURL + path
 
 	var body io.Reader
 	if method == "GET" {
 		// Add args as query parameters.
 		if len(args) > 0 {
-			params := make([]string, 0, len(args))
+			q := url.Values{}
 			for k, v := range args {
-				params = append(params, fmt.Sprintf("%s=%s", k, fmt.Sprint(v)))
+				q.Set(k, fmt.Sprint(v))
 			}
-			url += "?" + strings.Join(params, "&")
+			reqURL += "?" + q.Encode()
 		}
 	} else {
 		// POST/PATCH/PUT — send as JSON body.
@@ -387,7 +407,7 @@ func (s *mcpBridgeServer) doHTTP(method, path string, args map[string]any) ([]by
 		body = strings.NewReader(string(data))
 	}
 
-	req, err := http.NewRequest(method, url, body)
+	req, err := http.NewRequest(method, reqURL, body)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

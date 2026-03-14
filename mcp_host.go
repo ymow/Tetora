@@ -16,10 +16,13 @@ import (
 
 // MCPHost manages the lifecycle of MCP server processes.
 type MCPHost struct {
-	servers map[string]*MCPServer
-	mu      sync.RWMutex
-	cfg     *Config
-	toolReg *ToolRegistry
+	servers  map[string]*MCPServer
+	mu       sync.RWMutex
+	cfg      *Config
+	toolReg  *ToolRegistry
+	ctx      context.Context
+	cancel   context.CancelFunc
+	stopOnce sync.Once
 }
 
 // MCPServer represents a single MCP server process.
@@ -33,13 +36,20 @@ type MCPServer struct {
 	Stdout    *bufio.Reader
 	Tools     []ToolDef
 	mu        sync.Mutex
-	nextID    int
+	nextID    uint64
 	status    string // "starting", "running", "stopped", "error"
 	lastError string
 	restarts  int
 	ctx       context.Context
 	cancel    context.CancelFunc
+	parentCtx context.Context
 	toolReg   *ToolRegistry
+
+	// Demux: route responses to the correct caller by request ID.
+	pending    map[int]chan *jsonRPCResponse
+	pendingMu  sync.Mutex
+	readerDone chan struct{}
+	waitOnce   sync.Once
 }
 
 // MCPServerStatus provides status information for API endpoints.
@@ -50,6 +60,9 @@ type MCPServerStatus struct {
 	Restarts  int      `json:"restarts"`
 	LastError string   `json:"lastError,omitempty"`
 }
+
+// mcpProtocolVersion is the MCP protocol version used by both host and server.
+const mcpProtocolVersion = "2025-03-26"
 
 // --- JSON-RPC 2.0 Types ---
 
@@ -126,6 +139,15 @@ func (h *MCPHost) Start(ctx context.Context) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	h.ctx, h.cancel = context.WithCancel(ctx)
+
+	// Watch for host context cancellation to ensure clean shutdown.
+	go func() {
+		<-h.ctx.Done()
+		h.Stop()
+	}()
+
+	var wg sync.WaitGroup
 	for name, serverCfg := range h.cfg.MCPServers {
 		// Check if explicitly disabled.
 		if serverCfg.Enabled != nil && !*serverCfg.Enabled {
@@ -134,19 +156,21 @@ func (h *MCPHost) Start(ctx context.Context) error {
 		}
 
 		server := &MCPServer{
-			Name:    name,
-			Command: serverCfg.Command,
-			Args:    serverCfg.Args,
-			Env:     serverCfg.Env,
-			status:  "starting",
-			toolReg: h.toolReg,
+			Name:      name,
+			Command:   serverCfg.Command,
+			Args:      serverCfg.Args,
+			Env:       serverCfg.Env,
+			status:    "starting",
+			parentCtx: h.ctx,
+			toolReg:   h.toolReg,
 		}
-		server.ctx, server.cancel = context.WithCancel(ctx)
+		server.ctx, server.cancel = context.WithCancel(h.ctx)
 
 		h.servers[name] = server
 
-		// Start in background.
+		wg.Add(1)
 		go func(s *MCPServer) {
+			defer wg.Done()
 			if err := s.start(s.ctx); err != nil {
 				s.mu.Lock()
 				s.status = "error"
@@ -161,17 +185,25 @@ func (h *MCPHost) Start(ctx context.Context) error {
 		}(server)
 	}
 
+	wg.Wait()
 	return nil
 }
 
-// Stop shuts down all MCP servers.
+// Stop shuts down all MCP servers. Safe to call multiple times.
 func (h *MCPHost) Stop() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.stopOnce.Do(func() {
+		// Cancel host context to signal all derived server contexts.
+		if h.cancel != nil {
+			h.cancel()
+		}
 
-	for _, server := range h.servers {
-		server.stop()
-	}
+		h.mu.Lock()
+		defer h.mu.Unlock()
+
+		for _, server := range h.servers {
+			server.stop()
+		}
+	})
 }
 
 // RestartServer restarts a specific MCP server.
@@ -187,11 +219,12 @@ func (h *MCPHost) RestartServer(name string) error {
 	// Stop existing.
 	server.stop()
 
-	// Restart.
+	// Restart with fresh context derived from host context.
 	server.mu.Lock()
 	server.status = "starting"
 	server.restarts++
-	server.ctx, server.cancel = context.WithCancel(context.Background())
+	server.parentCtx = h.ctx
+	server.ctx, server.cancel = context.WithCancel(h.ctx)
 	server.mu.Unlock()
 
 	go func() {
@@ -278,16 +311,26 @@ func (s *MCPServer) start(ctx context.Context) error {
 
 	logInfo("MCP server %s started (PID %d)", s.Name, cmd.Process.Pid)
 
+	// Initialize demux state and start reader goroutine before any requests.
+	s.pending = make(map[int]chan *jsonRPCResponse)
+	s.readerDone = make(chan struct{})
+	s.waitOnce = sync.Once{}
+	go s.runReader()
+
 	// Initialize handshake.
 	if err := s.initialize(); err != nil {
+		s.Stdin.Close()
 		s.Cmd.Process.Kill()
+		<-s.readerDone // reader goroutine calls Wait() via waitOnce; avoids double-Wait race
 		return fmt.Errorf("initialize: %w", err)
 	}
 
 	// Discover tools.
 	tools, err := s.discoverTools()
 	if err != nil {
+		s.Stdin.Close()
 		s.Cmd.Process.Kill()
+		<-s.readerDone // reader goroutine calls Wait() via waitOnce; avoids double-Wait race
 		return fmt.Errorf("discover tools: %w", err)
 	}
 
@@ -304,9 +347,8 @@ func (s *MCPServer) start(ctx context.Context) error {
 // stop gracefully stops the MCP server.
 func (s *MCPServer) stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.status == "stopped" {
+		s.mu.Unlock()
 		return
 	}
 
@@ -328,11 +370,23 @@ func (s *MCPServer) stop() {
 		s.Stdin.Close()
 	}
 
-	// Kill process.
+	// Kill process (triggers reader EOF).
 	if s.Cmd != nil && s.Cmd.Process != nil {
 		s.Cmd.Process.Kill()
-		s.Cmd.Wait()
 	}
+	s.mu.Unlock()
+
+	// Wait for reader goroutine to finish (outside lock to avoid deadlock).
+	if s.readerDone != nil {
+		<-s.readerDone
+	}
+
+	// Safety net: ensure Wait() is called even if reader didn't run.
+	s.waitOnce.Do(func() {
+		if s.Cmd != nil {
+			s.Cmd.Wait()
+		}
+	})
 
 	logInfo("MCP server %s stopped", s.Name)
 }
@@ -341,7 +395,7 @@ func (s *MCPServer) stop() {
 func (s *MCPServer) initialize() error {
 	// Send initialize request.
 	params := initializeParams{
-		ProtocolVersion: "2025-03-26",
+		ProtocolVersion: mcpProtocolVersion,
 		Capabilities: map[string]interface{}{
 			"roots": map[string]interface{}{
 				"listChanged": true,
@@ -351,7 +405,7 @@ func (s *MCPServer) initialize() error {
 	params.ClientInfo.Name = "tetora"
 	params.ClientInfo.Version = "2.0"
 
-	resp, err := s.sendRequest("initialize", params)
+	resp, err := s.sendRequest(s.ctx, "initialize", params)
 	if err != nil {
 		return fmt.Errorf("initialize request: %w", err)
 	}
@@ -383,7 +437,7 @@ func (s *MCPServer) initialize() error {
 
 // discoverTools discovers available tools from the server and registers them.
 func (s *MCPServer) discoverTools() ([]ToolDef, error) {
-	resp, err := s.sendRequest("tools/list", nil)
+	resp, err := s.sendRequest(s.ctx, "tools/list", nil)
 	if err != nil {
 		return nil, fmt.Errorf("tools/list request: %w", err)
 	}
@@ -441,7 +495,7 @@ func (s *MCPServer) callTool(ctx context.Context, name string, args json.RawMess
 		Arguments: args,
 	}
 
-	resp, err := s.sendRequest("tools/call", params)
+	resp, err := s.sendRequest(ctx, "tools/call", params)
 	if err != nil {
 		return "", fmt.Errorf("tools/call request: %w", err)
 	}
@@ -466,16 +520,18 @@ func (s *MCPServer) callTool(ctx context.Context, name string, args json.RawMess
 	return output, nil
 }
 
-// sendRequest sends a JSON-RPC request and waits for response.
-func (s *MCPServer) sendRequest(method string, params interface{}) (*jsonRPCResponse, error) {
+// sendRequest sends a JSON-RPC request and waits for the demuxed response.
+// ctx controls the caller-level timeout; s.ctx controls server-level shutdown.
+func (s *MCPServer) sendRequest(ctx context.Context, method string, params interface{}) (*jsonRPCResponse, error) {
 	s.mu.Lock()
 	s.nextID++
 	id := s.nextID
 	s.mu.Unlock()
 
+	intID := int(id)
 	req := jsonRPCRequest{
 		JSONRPC: "2.0",
-		ID:      id,
+		ID:      intID,
 		Method:  method,
 		Params:  params,
 	}
@@ -485,91 +541,156 @@ func (s *MCPServer) sendRequest(method string, params interface{}) (*jsonRPCResp
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
+	// Register pending channel before writing to avoid race with reader.
+	ch := make(chan *jsonRPCResponse, 1)
+	s.pendingMu.Lock()
+	s.pending[intID] = ch
+	s.pendingMu.Unlock()
+
+	// Write request to stdin.
 	s.mu.Lock()
 	if s.Stdin == nil {
 		s.mu.Unlock()
+		s.pendingMu.Lock()
+		delete(s.pending, intID)
+		s.pendingMu.Unlock()
 		return nil, fmt.Errorf("stdin closed")
 	}
 	_, err = s.Stdin.Write(append(data, '\n'))
 	s.mu.Unlock()
 
 	if err != nil {
+		s.pendingMu.Lock()
+		delete(s.pending, intID)
+		s.pendingMu.Unlock()
 		return nil, fmt.Errorf("write request: %w", err)
 	}
 
-	// Read response.
-	return s.readResponse()
+	// Wait for demuxed response or context cancellation.
+	select {
+	case resp, ok := <-ch:
+		if !ok {
+			return nil, fmt.Errorf("reader closed before response received")
+		}
+		return resp, nil
+	case <-ctx.Done():
+		s.pendingMu.Lock()
+		delete(s.pending, intID)
+		s.pendingMu.Unlock()
+		return nil, fmt.Errorf("context cancelled: %w", ctx.Err())
+	case <-s.ctx.Done():
+		s.pendingMu.Lock()
+		delete(s.pending, intID)
+		s.pendingMu.Unlock()
+		return nil, fmt.Errorf("context cancelled: %w", s.ctx.Err())
+	}
 }
 
-// readResponse reads a JSON-RPC response from stdout.
-func (s *MCPServer) readResponse() (*jsonRPCResponse, error) {
-	s.mu.Lock()
-	if s.Stdout == nil {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("stdout closed")
-	}
-	reader := s.Stdout
-	s.mu.Unlock()
+// runReader is the single goroutine that reads stdout and demuxes responses by ID.
+func (s *MCPServer) runReader() {
+	defer func() {
+		// Close all pending channels so blocked senders unblock.
+		s.pendingMu.Lock()
+		for id, ch := range s.pending {
+			close(ch)
+			delete(s.pending, id)
+		}
+		s.pendingMu.Unlock()
 
-	// Read one line (JSON-RPC over stdio uses newline-delimited JSON).
-	line, err := reader.ReadBytes('\n')
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
+		s.waitOnce.Do(func() {
+			if s.Cmd != nil {
+				s.Cmd.Wait()
+			}
+		})
+		close(s.readerDone)
+	}()
 
-	var resp jsonRPCResponse
-	if err := json.Unmarshal(line, &resp); err != nil {
-		return nil, fmt.Errorf("unmarshal response: %w", err)
-	}
+	for {
+		line, err := s.Stdout.ReadBytes('\n')
+		if err != nil {
+			if err != io.EOF {
+				logDebug("MCP server %s reader: %v", s.Name, err)
+			}
+			return
+		}
 
-	return &resp, nil
+		var resp jsonRPCResponse
+		if err := json.Unmarshal(line, &resp); err != nil {
+			logWarn("MCP server %s: invalid JSON from stdout: %v", s.Name, err)
+			continue
+		}
+
+		// Notifications (ID == 0) are server-initiated; log and discard.
+		if resp.ID == 0 {
+			logDebug("MCP server %s: notification received", s.Name)
+			continue
+		}
+
+		s.pendingMu.Lock()
+		ch, ok := s.pending[resp.ID]
+		if ok {
+			delete(s.pending, resp.ID)
+		}
+		s.pendingMu.Unlock()
+
+		if ok {
+			ch <- &resp
+		} else {
+			logWarn("MCP server %s: unexpected response ID %d", s.Name, resp.ID)
+		}
+	}
 }
 
 // monitorHealth monitors the server process and restarts on failure.
 func (s *MCPServer) monitorHealth() {
-	if s.Cmd == nil {
+	if s.readerDone == nil {
 		return
 	}
 
-	err := s.Cmd.Wait()
+	// Wait for reader goroutine to exit (which happens on process exit/EOF).
+	<-s.readerDone
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	// If stopped normally, don't restart.
 	if s.status == "stopped" {
+		s.mu.Unlock()
 		return
 	}
 
 	// Process crashed.
 	s.status = "error"
-	s.lastError = fmt.Sprintf("process exited: %v", err)
+	s.lastError = "process exited unexpectedly"
 
 	// Auto-restart with backoff (max 3 retries).
-	if s.restarts < 3 {
+	// Skip restart if parent (host) context is already cancelled.
+	if s.restarts < 3 && s.parentCtx.Err() == nil {
 		s.restarts++
-		logWarn("MCP server %s crashed (restart %d/3), restarting...", s.Name, s.restarts)
+		restarts := s.restarts
+		logWarn("MCP server %s crashed (restart %d/3), restarting...", s.Name, restarts)
 
 		// Exponential backoff.
-		backoff := time.Duration(s.restarts) * 2 * time.Second
-		time.Sleep(backoff)
+		backoff := time.Duration(restarts) * 2 * time.Second
 
 		s.status = "starting"
-		s.ctx, s.cancel = context.WithCancel(context.Background())
+		s.ctx, s.cancel = context.WithCancel(s.parentCtx)
+		s.mu.Unlock()
 
-		go func() {
-			if err := s.start(s.ctx); err != nil {
-				s.mu.Lock()
-				s.status = "error"
-				s.lastError = err.Error()
-				s.mu.Unlock()
-				logError("MCP server %s restart failed: %v", s.Name, err)
-				return
-			}
-			go s.monitorHealth()
-		}()
+		time.Sleep(backoff)
+
+		if err := s.start(s.ctx); err != nil {
+			s.mu.Lock()
+			s.status = "error"
+			s.lastError = err.Error()
+			s.mu.Unlock()
+			logError("MCP server %s restart failed: %v", s.Name, err)
+			return
+		}
+		// start() already initialized new demux state; recurse to monitor.
+		s.monitorHealth()
 	} else {
 		logError("MCP server %s crashed, max restarts exceeded", s.Name)
+		s.mu.Unlock()
 	}
 }
 

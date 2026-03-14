@@ -80,9 +80,13 @@ func setMCPConfig(cfg *Config, configPath, name string, config json.RawMessage) 
 
 	// Write MCP file for immediate use.
 	mcpDir := filepath.Join(cfg.baseDir, "mcp")
-	os.MkdirAll(mcpDir, 0o755)
+	if err := os.MkdirAll(mcpDir, 0o755); err != nil {
+		return fmt.Errorf("create mcp dir: %w", err)
+	}
 	path := filepath.Join(mcpDir, name+".json")
-	os.WriteFile(path, config, 0o644)
+	if err := os.WriteFile(path, config, 0o644); err != nil {
+		return fmt.Errorf("write mcp file %q: %w", path, err)
+	}
 	if cfg.mcpPaths == nil {
 		cfg.mcpPaths = make(map[string]string)
 	}
@@ -105,12 +109,17 @@ func deleteMCPConfig(cfg *Config, configPath, name string) error {
 
 	// Remove MCP file.
 	if p, ok := cfg.mcpPaths[name]; ok {
-		os.Remove(p)
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove mcp file %q: %w", p, err)
+		}
 		delete(cfg.mcpPaths, name)
 	} else {
 		// Try default path.
 		mcpDir := filepath.Join(cfg.baseDir, "mcp")
-		os.Remove(filepath.Join(mcpDir, name+".json"))
+		p := filepath.Join(mcpDir, name+".json")
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove mcp file %q: %w", p, err)
+		}
 	}
 
 	return nil

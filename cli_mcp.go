@@ -93,8 +93,8 @@ func mcpShowCmd(name string) {
 }
 
 func mcpAddCmd(name string, flags []string) {
-	cfg := loadConfig(findConfigPath())
 	configPath := findConfigPath()
+	cfg := loadConfig(configPath)
 
 	// Parse flags.
 	var command string
@@ -168,8 +168,8 @@ func mcpAddCmd(name string, flags []string) {
 }
 
 func mcpRemoveCmd(name string) {
-	cfg := loadConfig(findConfigPath())
 	configPath := findConfigPath()
+	cfg := loadConfig(configPath)
 
 	if err := deleteMCPConfig(cfg, configPath, name); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
