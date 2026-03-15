@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -52,7 +53,7 @@ Commands:
   access <action>    Manage agent directory access (list|add|remove)
   import <source>    Import data (config)
   release            Build, tag, and publish a release (atomic pipeline)
-  upgrade            Upgrade to the latest version
+  upgrade [--force]  Upgrade to the latest release version
   backup             Create backup of tetora data
   restore            Restore from a backup file
   dashboard          Open web dashboard in browser
@@ -89,8 +90,88 @@ func cmdVersion() {
 	fmt.Printf("tetora v%s (%s/%s)\n", tetoraVersion, runtime.GOOS, runtime.GOARCH)
 }
 
-func cmdUpgrade() {
+// parseVersion splits a version string like "2.0.3" or "2.0.3.1" into numeric parts.
+// Returns nil on parse failure.
+func parseVersion(v string) []int {
+	v = strings.TrimPrefix(v, "v")
+	if v == "" || v == "dev" {
+		return nil
+	}
+	parts := strings.Split(v, ".")
+	nums := make([]int, len(parts))
+	for i, p := range parts {
+		n := 0
+		for _, ch := range p {
+			if ch < '0' || ch > '9' {
+				return nil
+			}
+			n = n*10 + int(ch-'0')
+		}
+		nums[i] = n
+	}
+	return nums
+}
+
+// isDevVersion returns true if the version has a 4th segment (e.g. "2.0.3.1").
+func isDevVersion(v string) bool {
+	parts := parseVersion(v)
+	return len(parts) > 3
+}
+
+// devBaseVersion returns the first 3 segments of a version string.
+// e.g. "2.0.3.1" → "2.0.3", "2.0.3" → "2.0.3".
+func devBaseVersion(v string) string {
+	parts := parseVersion(v)
+	if len(parts) < 3 {
+		return v
+	}
+	return fmt.Sprintf("%d.%d.%d", parts[0], parts[1], parts[2])
+}
+
+// versionNewerThan returns true if a > b using semver comparison.
+// A 3-part release (2.0.3) is considered newer than a 4-part dev (2.0.2.12).
+// A release (2.0.3) is considered newer than a dev of the same base (2.0.3.1)
+// because dev builds should always upgrade to matching releases.
+func versionNewerThan(a, b string) bool {
+	pa, pb := parseVersion(a), parseVersion(b)
+	if pa == nil || pb == nil {
+		return a != b // fallback: if unparseable, assume different = newer
+	}
+	// Compare up to the shorter length.
+	maxLen := len(pa)
+	if len(pb) > maxLen {
+		maxLen = len(pb)
+	}
+	for i := 0; i < maxLen; i++ {
+		va, vb := 0, 0
+		if i < len(pa) {
+			va = pa[i]
+		}
+		if i < len(pb) {
+			vb = pb[i]
+		}
+		if va > vb {
+			return true
+		}
+		if va < vb {
+			return false
+		}
+	}
+	return false // equal
+}
+
+func cmdUpgrade(args []string) {
+	force := false
+	for _, arg := range args {
+		if arg == "--force" || arg == "-f" {
+			force = true
+		}
+	}
+
 	fmt.Printf("Current: v%s (%s/%s)\n", tetoraVersion, runtime.GOOS, runtime.GOARCH)
+	if isDevVersion(tetoraVersion) {
+		fmt.Println("  (dev build detected)")
+	}
 
 	// Fetch latest release tag from GitHub API.
 	ghClient := &http.Client{Timeout: 15 * time.Second}
@@ -100,6 +181,10 @@ func cmdUpgrade() {
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		fmt.Fprintf(os.Stderr, "Error checking latest release: HTTP %d\n", resp.StatusCode)
+		os.Exit(1)
+	}
 	var release struct {
 		TagName string `json:"tag_name"`
 	}
@@ -108,11 +193,34 @@ func cmdUpgrade() {
 		os.Exit(1)
 	}
 	latest := strings.TrimPrefix(release.TagName, "v")
-	if latest == tetoraVersion {
-		fmt.Println("Already up to date.")
-		return
+	if latest == "" {
+		fmt.Fprintf(os.Stderr, "Error: release tag_name is empty\n")
+		os.Exit(1)
 	}
 	fmt.Printf("Latest:  v%s\n", latest)
+
+	if !force {
+		if latest == tetoraVersion {
+			fmt.Println("Already up to date.")
+			return
+		}
+		if isDevVersion(tetoraVersion) {
+			// Dev build: upgrade if release matches or is newer than the base.
+			// e.g. 2.0.3.1 → 2.0.3 (same base, upgrade to release) ✓
+			// e.g. 2.0.2.12 → 2.0.3 (newer release) ✓
+			// e.g. 2.0.4.1 → 2.0.3 (older release, skip) ✗
+			base := devBaseVersion(tetoraVersion)
+			if base != latest && !versionNewerThan(latest, base) {
+				fmt.Printf("Dev build v%s is ahead of release v%s. Use --force to downgrade.\n", tetoraVersion, latest)
+				return
+			}
+		} else if !versionNewerThan(latest, tetoraVersion) {
+			fmt.Println("Already up to date (or newer). Use --force to override.")
+			return
+		}
+	} else {
+		fmt.Println("  (--force: skipping version check)")
+	}
 
 	// Determine binary name.
 	arch := runtime.GOARCH
@@ -157,6 +265,36 @@ func cmdUpgrade() {
 	}
 	tmp.Close()
 
+	// Verify downloaded binary: size sanity check + run it to confirm version.
+	info, err := os.Stat(tmpPath)
+	if err != nil {
+		os.Remove(tmpPath)
+		fmt.Fprintf(os.Stderr, "Cannot stat downloaded binary: %v\n", err)
+		os.Exit(1)
+	}
+	if info.Size() < 1024*1024 {
+		os.Remove(tmpPath)
+		fmt.Fprintf(os.Stderr, "Downloaded binary too small (%d bytes)\n", info.Size())
+		os.Exit(1)
+	}
+
+	// Run the temp binary to verify its embedded version before replacing.
+	verCtx, verCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer verCancel()
+	verOut, err := exec.CommandContext(verCtx, tmpPath, "version").Output()
+	if err != nil {
+		os.Remove(tmpPath)
+		fmt.Fprintf(os.Stderr, "Downloaded binary failed to execute: %v\n", err)
+		os.Exit(1)
+	}
+	verStr := strings.TrimSpace(string(verOut))
+	fmt.Printf("Downloaded binary reports: %s\n", verStr)
+	if !strings.Contains(verStr, latest) {
+		os.Remove(tmpPath)
+		fmt.Fprintf(os.Stderr, "Version mismatch: expected v%s in output %q\n", latest, verStr)
+		os.Exit(1)
+	}
+
 	// Replace old binary.
 	if err := os.Rename(tmpPath, selfPath); err != nil {
 		os.Remove(tmpPath)
@@ -164,12 +302,26 @@ func cmdUpgrade() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Upgraded to v%s\n", latest)
+	// Post-replace verification: confirm the file on disk is the new version.
+	postOut, err := exec.Command(selfPath, "version").Output()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: replaced binary but post-check failed: %v\n", err)
+	} else {
+		postStr := strings.TrimSpace(string(postOut))
+		if !strings.Contains(postStr, latest) {
+			fmt.Fprintf(os.Stderr, "WARNING: binary replaced but still reports %q (expected v%s)\n", postStr, latest)
+			fmt.Fprintf(os.Stderr, "The file at %s may not have been updated. Try: tetora upgrade --force\n", selfPath)
+		} else {
+			fmt.Printf("Verified: %s\n", postStr)
+		}
+	}
+
+	fmt.Printf("Binary replaced: v%s → v%s (%s)\n", tetoraVersion, latest, selfPath)
 
 	// Check for running jobs before restarting — avoid killing in-flight tasks.
 	if names := checkRunningJobs(); len(names) > 0 {
-		fmt.Printf("\nRunning jobs detected: %s\n", strings.Join(names, ", "))
-		fmt.Println("Skipping auto-restart to avoid interrupting in-flight tasks.")
+		fmt.Printf("\nWARNING: Running jobs detected: %s\n", strings.Join(names, ", "))
+		fmt.Println("Binary on disk is updated, but daemon still runs the old version.")
 		fmt.Println("Run 'tetora restart' manually when jobs finish.")
 		return
 	}

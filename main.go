@@ -180,7 +180,7 @@ func main() {
 			cmdRelease(os.Args[2:])
 			return
 		case "upgrade":
-			cmdUpgrade()
+			cmdUpgrade(os.Args[2:])
 			return
 		case "version", "--version":
 			cmdVersion()

@@ -354,6 +354,7 @@ func TestErrorPropagationFromToolHandler(t *testing.T) {
 	go func() {
 		line, err := reqReader.ReadBytes('\n')
 		if err != nil {
+			t.Errorf("TestErrorPropagationFromToolHandler: read request: %v", err)
 			return
 		}
 		var req jsonRPCRequest
@@ -368,11 +369,15 @@ func TestErrorPropagationFromToolHandler(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from callTool, got nil")
 	}
-	if !strings.Contains(err.Error(), "tool handler failed") {
-		t.Errorf("expected error to contain 'tool handler failed', got: %v", err)
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "tools/call error") {
+		t.Errorf("expected error to contain 'tools/call error', got: %v", errMsg)
 	}
-	if !strings.Contains(err.Error(), "permission denied") {
-		t.Errorf("expected error to contain 'permission denied', got: %v", err)
+	if !strings.Contains(errMsg, "tool handler failed") {
+		t.Errorf("expected error to contain 'tool handler failed', got: %v", errMsg)
+	}
+	if !strings.Contains(errMsg, "permission denied") {
+		t.Errorf("expected error to contain 'permission denied', got: %v", errMsg)
 	}
 }
 
@@ -430,8 +435,16 @@ func TestServerContextCancellationDuringRequest(t *testing.T) {
 	srv, reqReader, _ := setupMockMCPServer(t)
 	go srv.runReader()
 
-	// Drain outbound requests so the pipe write doesn't block.
+	// requestReceived is closed once the outbound request arrives,
+	// guaranteeing sendRequest is blocked in the select when we cancel.
+	requestReceived := make(chan struct{})
 	go func() {
+		_, err := reqReader.ReadBytes('\n')
+		if err != nil {
+			return
+		}
+		close(requestReceived)
+		// Drain any further requests to avoid blocking the write side.
 		for {
 			_, err := reqReader.ReadBytes('\n')
 			if err != nil {
@@ -440,10 +453,15 @@ func TestServerContextCancellationDuringRequest(t *testing.T) {
 		}
 	}()
 
-	// Cancel the server context after a short delay.
+	// Cancel the server context only after the request has been received.
 	go func() {
-		time.Sleep(60 * time.Millisecond)
-		srv.cancel()
+		select {
+		case <-requestReceived:
+			srv.cancel()
+		case <-time.After(5 * time.Second):
+			t.Errorf("timed out waiting for request to be received")
+			srv.cancel()
+		}
 	}()
 
 	_, err := srv.sendRequest(context.Background(), "tools/call", nil)

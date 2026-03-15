@@ -17,6 +17,18 @@ logs/
 .env
 .env.*
 
+# Test artifacts
+*.test
+*_cover.out
+cover.out
+full_cover.out
+mcp_cover.out
+mcp_final.out
+mcp_final2.out
+
+# Wrangler
+.wrangler/
+
 # Generated
 mcp/
 sessions/

@@ -147,18 +147,19 @@ func TestClassifyCJKLength(t *testing.T) {
 
 // --- Source-based overrides ---
 
-func TestClassifySourceOverrideCron(t *testing.T) {
-	// Even a short simple greeting becomes complex from cron.
+func TestClassifySourceCronKeywordBased(t *testing.T) {
+	// Short cron prompt → Simple (keyword-based, not auto-Complex).
 	got := classifyComplexity("hello", "cron")
-	if got != ComplexityComplex {
-		t.Errorf("classifyComplexity(hello, cron) = %v, want complex", got)
+	if got != ComplexitySimple {
+		t.Errorf("classifyComplexity(hello, cron) = %v, want simple", got)
 	}
 }
 
-func TestClassifySourceOverrideWorkflow(t *testing.T) {
+func TestClassifySourceWorkflowKeywordBased(t *testing.T) {
+	// Short workflow prompt → Simple (keyword-based, not auto-Complex).
 	got := classifyComplexity("check status", "workflow")
-	if got != ComplexityComplex {
-		t.Errorf("classifyComplexity(check status, workflow) = %v, want complex", got)
+	if got != ComplexitySimple {
+		t.Errorf("classifyComplexity(check status, workflow) = %v, want simple", got)
 	}
 }
 
@@ -176,9 +177,10 @@ func TestClassifySourceCaseInsensitive(t *testing.T) {
 		t.Errorf("classifyComplexity(hi, Discord) = %v, want simple", got)
 	}
 
+	// Short cron prompt → Simple (keyword-based, not auto-Complex).
 	got2 := classifyComplexity("hi", "CRON")
-	if got2 != ComplexityComplex {
-		t.Errorf("classifyComplexity(hi, CRON) = %v, want complex", got2)
+	if got2 != ComplexitySimple {
+		t.Errorf("classifyComplexity(hi, CRON) = %v, want simple", got2)
 	}
 }
 

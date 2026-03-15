@@ -11,7 +11,7 @@ import (
 
 func cmdSkill(args []string) {
 	if len(args) == 0 {
-		fmt.Println("Usage: tetora skill <list|run|test|store|approve|reject|install|search|scan|init> [name]")
+		fmt.Println("Usage: tetora skill <list|run|test|store|approve|reject|install|search|scan|init|log|stats|diagnostics> [name]")
 		fmt.Println()
 		fmt.Println("Commands:")
 		fmt.Println("  list                                   List all skills (config + file-based)")
@@ -24,6 +24,9 @@ func cmdSkill(args []string) {
 		fmt.Println("  search  <query>                        Search skill registry")
 		fmt.Println("  scan    <name>                         Security scan a skill")
 		fmt.Println("  init   [name]                          AI interview to generate SKILL.md")
+		fmt.Println("  log    <name> [flags]                  Record a skill execution event")
+		fmt.Println("  stats  [name] [--days N]               Show skill usage statistics")
+		fmt.Println("  diagnostics                            Run skill trigger diagnostics")
 		return
 	}
 	switch args[0] {
@@ -79,6 +82,28 @@ func cmdSkill(args []string) {
 			nameArg = args[1]
 		}
 		skillInitCmd(nameArg)
+	case "log":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: tetora skill log <name> --event=<type> [--source=<src>] [--status=<s>] [--duration=<ms>] [--error=\"...\"]")
+			os.Exit(1)
+		}
+		skillLogCmd(args[1], args[2:])
+	case "stats":
+		nameArg := ""
+		daysArg := 30
+		for i := 1; i < len(args); i++ {
+			if strings.HasPrefix(args[i], "--days=") {
+				fmt.Sscanf(args[i], "--days=%d", &daysArg)
+			} else if args[i] == "--days" && i+1 < len(args) {
+				fmt.Sscanf(args[i+1], "%d", &daysArg)
+				i++
+			} else if !strings.HasPrefix(args[i], "-") {
+				nameArg = args[i]
+			}
+		}
+		skillStatsCmd(nameArg, daysArg)
+	case "diagnostics", "diag":
+		skillDiagnosticsCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown skill action: %s\n", args[0])
 		os.Exit(1)
@@ -320,3 +345,122 @@ func skillRejectCmd(name string) {
 		recordSkillEvent(cfg.HistoryDB, name, "rejected", "", "cli")
 	}
 }
+
+// --- P18.5: Skill Observability CLI ---
+
+// skillLogCmd records a skill execution event from the command line.
+// Usage: tetora skill log <name> --event=invoked --source=claude-code --status=success
+func skillLogCmd(name string, flags []string) {
+	cfg := loadConfig(findConfigPath())
+	if cfg.HistoryDB == "" {
+		fmt.Fprintln(os.Stderr, "Error: no history database configured")
+		os.Exit(1)
+	}
+
+	var eventType, source, status, errorMsg, role string
+	var durationMs int
+
+	eventType = "invoked" // default
+	for i := 0; i < len(flags); i++ {
+		switch {
+		case strings.HasPrefix(flags[i], "--event="):
+			eventType = strings.TrimPrefix(flags[i], "--event=")
+		case strings.HasPrefix(flags[i], "--source="):
+			source = strings.TrimPrefix(flags[i], "--source=")
+		case strings.HasPrefix(flags[i], "--status="):
+			status = strings.TrimPrefix(flags[i], "--status=")
+		case strings.HasPrefix(flags[i], "--duration="):
+			fmt.Sscanf(strings.TrimPrefix(flags[i], "--duration="), "%d", &durationMs)
+		case strings.HasPrefix(flags[i], "--error="):
+			errorMsg = strings.TrimPrefix(flags[i], "--error=")
+		case strings.HasPrefix(flags[i], "--role="):
+			role = strings.TrimPrefix(flags[i], "--role=")
+		}
+	}
+
+	recordSkillEventEx(cfg.HistoryDB, name, eventType, "", role, SkillEventOpts{
+		Status:     status,
+		DurationMs: durationMs,
+		Source:     source,
+		ErrorMsg:   errorMsg,
+	})
+	fmt.Printf("Logged: %s %s (status=%s, source=%s)\n", name, eventType, status, source)
+}
+
+// skillStatsCmd shows per-skill usage statistics.
+func skillStatsCmd(name string, days int) {
+	cfg := loadConfig(findConfigPath())
+	if cfg.HistoryDB == "" {
+		fmt.Fprintln(os.Stderr, "Error: no history database configured")
+		os.Exit(1)
+	}
+
+	if name != "" {
+		// Detailed view for a single skill.
+		rows, err := querySkillStats(cfg.HistoryDB, name, days)
+		if err != nil || len(rows) == 0 {
+			fmt.Printf("No data for skill %q in last %d days.\n", name, days)
+			return
+		}
+		row := rows[0]
+		fmt.Printf("Skill: %s (last %d days)\n", name, days)
+		fmt.Printf("  Injected:  %v\n", row["injected"])
+		fmt.Printf("  Invoked:   %v\n", row["invoked"])
+		fmt.Printf("  Success:   %v\n", row["success"])
+		fmt.Printf("  Fail:      %v\n", row["fail"])
+		fmt.Printf("  Last used: %v\n", row["last_used"])
+
+		// Recent history.
+		history, err := querySkillHistory(cfg.HistoryDB, name, 10)
+		if err == nil && len(history) > 0 {
+			fmt.Println("\nRecent events:")
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "  EVENT\tSTATUS\tSOURCE\tDURATION\tERROR\tTIME")
+			for _, h := range history {
+				dur := ""
+				if d, ok := h["duration_ms"]; ok && fmt.Sprintf("%v", d) != "0" {
+					dur = fmt.Sprintf("%vms", d)
+				}
+				errStr := fmt.Sprintf("%v", h["error_msg"])
+				if len(errStr) > 40 {
+					errStr = errStr[:40] + "..."
+				}
+				ts := fmt.Sprintf("%v", h["created_at"])
+				if len(ts) > 16 {
+					ts = ts[:16]
+				}
+				fmt.Fprintf(w, "  %v\t%v\t%v\t%s\t%s\t%s\n",
+					h["event_type"], h["status"], h["source"], dur, errStr, ts)
+			}
+			w.Flush()
+		}
+		return
+	}
+
+	// Summary view for all skills.
+	rows, err := querySkillStats(cfg.HistoryDB, "", days)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if len(rows) == 0 {
+		fmt.Printf("No skill usage data in last %d days.\n", days)
+		return
+	}
+
+	fmt.Printf("Skill usage (last %d days):\n\n", days)
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SKILL\tINJECTED\tINVOKED\tSUCCESS\tFAIL\tLAST USED")
+	for _, row := range rows {
+		lastUsed := fmt.Sprintf("%v", row["last_used"])
+		if len(lastUsed) > 10 {
+			lastUsed = lastUsed[:10]
+		}
+		fmt.Fprintf(w, "%v\t%v\t%v\t%v\t%v\t%s\n",
+			row["skill_name"], row["injected"], row["invoked"],
+			row["success"], row["fail"], lastUsed)
+	}
+	w.Flush()
+}
+
+// skillDiagnosticsCmd is implemented in skill_diagnostics.go.

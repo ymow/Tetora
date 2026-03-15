@@ -149,17 +149,43 @@ func TestClassifyCJKLength(t *testing.T) {
 
 // --- Source-based overrides ---
 
-func TestClassifySourceOverrideCron(t *testing.T) {
+func TestClassifySourceCronKeywordBased(t *testing.T) {
+	// Short cron prompt without coding keywords → Simple
 	got := classify.Classify("hello", "cron")
-	if got != classify.Complex {
-		t.Errorf("Classify(hello, cron) = %v, want Complex", got)
+	if got != classify.Simple {
+		t.Errorf("Classify(hello, cron) = %v, want Simple", got)
+	}
+
+	// Cron prompt with coding keywords (3+) and >= 100 runes → Complex
+	got2 := classify.Classify("implement the database migration and deploy the schema changes to production environment for the new user authentication feature", "cron")
+	if got2 != classify.Complex {
+		t.Errorf("Classify(complex cron, cron) = %v, want Complex", got2)
+	}
+
+	// Cron prompt >= 100 runes without enough coding keywords → Standard
+	got3 := classify.Classify("post the daily summary to X and check engagement stats for the team then send the weekly newsletter to subscribers", "cron")
+	if got3 != classify.Standard {
+		t.Errorf("Classify(standard cron, cron) = %v, want Standard", got3)
 	}
 }
 
-func TestClassifySourceOverrideWorkflow(t *testing.T) {
+func TestClassifySourceWorkflowKeywordBased(t *testing.T) {
+	// Short workflow prompt → Simple
 	got := classify.Classify("check status", "workflow")
-	if got != classify.Complex {
-		t.Errorf("Classify(check status, workflow) = %v, want Complex", got)
+	if got != classify.Simple {
+		t.Errorf("Classify(check status, workflow) = %v, want Simple", got)
+	}
+
+	// Workflow with coding keywords (3+) and >= 100 runes → Complex
+	got2 := classify.Classify("refactor the api endpoint and fix the database query optimization issue that is causing slow response times in production", "workflow")
+	if got2 != classify.Complex {
+		t.Errorf("Classify(complex workflow, workflow) = %v, want Complex", got2)
+	}
+
+	// Workflow >= 100 runes without enough coding keywords → Standard
+	got3 := classify.Classify("generate the weekly report and send it to the team channel for review please and make sure all the formatting is correct", "workflow")
+	if got3 != classify.Standard {
+		t.Errorf("Classify(standard workflow, workflow) = %v, want Standard", got3)
 	}
 }
 
@@ -176,9 +202,10 @@ func TestClassifySourceCaseInsensitive(t *testing.T) {
 		t.Errorf("Classify(hi, Discord) = %v, want Simple", got)
 	}
 
+	// Short cron prompt → Simple (keyword-based, not auto-Complex)
 	got2 := classify.Classify("hi", "CRON")
-	if got2 != classify.Complex {
-		t.Errorf("Classify(hi, CRON) = %v, want Complex", got2)
+	if got2 != classify.Simple {
+		t.Errorf("Classify(hi, CRON) = %v, want Simple", got2)
 	}
 }
 
@@ -322,10 +349,20 @@ func TestChatSourcesContainsExpectedSources(t *testing.T) {
 }
 
 func TestComplexSourcesContainsExpectedSources(t *testing.T) {
-	expected := []string{"cron", "workflow", "agent-comm"}
+	// Only agent-comm is always Complex now
+	expected := []string{"agent-comm"}
 	for _, src := range expected {
 		if !classify.ComplexSources[src] {
 			t.Errorf("ComplexSources missing %q", src)
+		}
+	}
+}
+
+func TestKeywordClassifiedSourcesContainsExpectedSources(t *testing.T) {
+	expected := []string{"cron", "workflow"}
+	for _, src := range expected {
+		if !classify.KeywordClassifiedSources[src] {
+			t.Errorf("KeywordClassifiedSources missing %q", src)
 		}
 	}
 }

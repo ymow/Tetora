@@ -1,12 +1,12 @@
 export PATH := /usr/local/Cellar/go/1.26.0/bin:$(PATH)
 
-VERSION  := 2.0.3
+VERSION  := 2.0.4
 BINARY   := tetora
 INSTALL  := $(HOME)/.tetora/bin
 LDFLAGS  := -s -w -X main.tetoraVersion=$(VERSION)
 PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64
 
-.PHONY: build dev reload install clean release test bump bump-force dashboard
+.PHONY: build dev reload install clean release test bump bump-force dashboard local-install
 
 DASH_PARTS := dashboard/head.html dashboard/style.css dashboard/body.html \
 	dashboard/core.js dashboard/views.js dashboard/workers.js \
@@ -154,7 +154,19 @@ clean:
 	rm -f $(BINARY)
 	rm -rf dist/
 
-release:
+local-install: build
+	@$(INSTALL)/$(BINARY) stop 2>/dev/null || true
+	@sleep 1
+	@if lsof -ti :8991 >/dev/null 2>&1; then \
+		lsof -ti :8991 | xargs kill -9 2>/dev/null || true; \
+		sleep 1; \
+	fi
+	@cp $(BINARY) $(INSTALL)/$(BINARY)
+	@codesign -s - -f -i com.takumalee.tetora $(INSTALL)/$(BINARY) 2>/dev/null || true
+	@$(INSTALL)/$(BINARY) start 2>/dev/null || true
+	@echo "Local daemon updated to v$(VERSION)"
+
+release: local-install
 	@mkdir -p dist
 	@for platform in $(PLATFORMS); do \
 		os=$${platform%/*}; \

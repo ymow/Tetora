@@ -23,6 +23,7 @@ var includeDirs = []string{
 	"prompts",
 	"knowledge",
 	"souls",
+	"dbs",
 }
 
 // excludeDirs lists directories that should never be included.

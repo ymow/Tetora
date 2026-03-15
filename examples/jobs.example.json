@@ -71,7 +71,7 @@
         "model": "sonnet",
         "timeout": "5m",
         "budget": 1.5,
-        "permissionMode": "autoEdit"
+        "permissionMode": "acceptEdits"
       },
       "notify": true,
       "maxRetries": 1,

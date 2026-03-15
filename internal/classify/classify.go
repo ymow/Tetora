@@ -77,10 +77,18 @@ var ChatSources = map[string]bool{
 }
 
 // ComplexSources contains sources that always indicate complex work.
+// Note: cron and workflow are no longer auto-Complex — they use keyword-based
+// classification like taskboard to avoid injecting heavy context for simple jobs.
 var ComplexSources = map[string]bool{
-	"cron":       true,
-	"workflow":   true,
 	"agent-comm": true,
+}
+
+// KeywordClassifiedSources are sources that use keyword-based complexity
+// instead of always being Complex. Short/simple tasks get Standard,
+// only genuinely complex tasks (3+ coding keywords) get Complex.
+var KeywordClassifiedSources = map[string]bool{
+	"cron":     true,
+	"workflow": true,
 }
 
 // complexKeywordsEN contains coding-related keywords (English).
@@ -123,10 +131,10 @@ func Classify(prompt string, source string) Complexity {
 
 	promptLower := strings.ToLower(prompt)
 
-	// Taskboard tasks: smarter classification to control token injection costs.
-	// Simple for short tasks, Standard by default, Complex only for genuinely
-	// complex tasks (3+ coding keywords) that need deep thinking.
-	if srcLower == "taskboard" {
+	// Keyword-classified sources (cron, workflow, taskboard): use keyword counting
+	// instead of blanket Complex. This avoids injecting heavy context (3 reflections,
+	// writing style, all AddDirs) for simple scheduled/dispatch tasks.
+	if srcLower == "taskboard" || KeywordClassifiedSources[srcLower] {
 		if runeLen < 100 {
 			return Simple
 		}

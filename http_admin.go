@@ -608,7 +608,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		}
 
 		rows, err := queryDB(cfg.HistoryDB,
-			fmt.Sprintf(`SELECT id, skill_name, event_type, task_prompt, agent, created_at FROM skill_usage ORDER BY id DESC LIMIT %d`, limit))
+			fmt.Sprintf(`SELECT id, skill_name, event_type, task_prompt, role, created_at, status, duration_ms, source, session_id, error_msg FROM skill_usage ORDER BY id DESC LIMIT %d`, limit))
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return

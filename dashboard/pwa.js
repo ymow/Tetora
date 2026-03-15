@@ -64,6 +64,8 @@ function refreshIntegrations() {
     })
     .catch(function(e) { toast('Failed to load integrations: ' + e); });
 
+  renderClaudeMCPToggle();
+
   // Also load reminders and triggers.
   refreshReminders();
   refreshTriggers();
@@ -358,6 +360,62 @@ function renderKnowledgeStatus(count) {
 
 function renderBrowserRelayStatus(status) {
   // Included in channel status area
+}
+
+function renderClaudeMCPToggle() {
+  var el = document.getElementById('stg-integration-claude-mcp');
+  if (!el) return;
+  el.innerHTML = '<div style="color:var(--muted);padding:12px">Loading...</div>';
+  fetch('/api/claude-mcp/status')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) {
+        el.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px">' +
+          '<div style="color:var(--red)">Error: ' + data.error + '</div></div>';
+        return;
+      }
+      var statusColor = data.healthy ? 'var(--green)' : data.enabled ? 'var(--yellow)' : 'var(--muted)';
+      var statusIcon = data.healthy ? '&#9679;' : data.enabled ? '&#9888;' : '&#9675;';
+      var statusText = data.healthy ? 'connected' : data.enabled ? 'binary not found' : 'not configured';
+      var checked = data.enabled ? ' checked' : '';
+      el.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center">' +
+        '<div>' +
+        '<div style="font-weight:600">Tetora MCP Server</div>' +
+        '<div style="font-size:12px;color:var(--muted);margin-top:2px">Expose Tetora tools to Claude Code</div>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:12px">' +
+        '<span style="color:' + statusColor + ';font-size:12px">' + statusIcon + ' ' + statusText + '</span>' +
+        '<label style="position:relative;display:inline-block;width:44px;height:24px;cursor:pointer">' +
+        '<input type="checkbox" id="claude-mcp-toggle"' + checked + ' onchange="toggleClaudeMCP(this.checked)" style="opacity:0;width:0;height:0">' +
+        '<span style="position:absolute;inset:0;background:' + (data.enabled ? 'var(--accent)' : 'var(--border)') + ';border-radius:12px;transition:background .2s"></span>' +
+        '<span style="position:absolute;top:2px;left:' + (data.enabled ? '22px' : '2px') + ';width:20px;height:20px;background:#fff;border-radius:50%;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.3)"></span>' +
+        '</label>' +
+        '</div>' +
+        '</div></div>';
+    })
+    .catch(function(e) {
+      el.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px">' +
+        '<div style="color:var(--red)">Failed to check MCP status</div></div>';
+    });
+}
+
+function toggleClaudeMCP(enable) {
+  fetch('/api/claude-mcp/toggle', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({enable: enable})
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) {
+        toast('MCP toggle failed: ' + data.error);
+      } else {
+        toast(data.enabled ? 'MCP enabled' : 'MCP disabled');
+      }
+      renderClaudeMCPToggle();
+    })
+    .catch(function(e) { toast('MCP toggle failed: ' + e); });
 }
 
 function renderHAStatus(status) {

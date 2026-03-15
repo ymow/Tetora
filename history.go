@@ -621,6 +621,9 @@ func recordHistory(dbPath string, jobID, name, source, role string, task Task, r
 		// Log but don't fail the task.
 		logWarn("record history failed", "error", err)
 	}
+
+	// Record skill completion events for all skills that were injected for this task.
+	recordSkillCompletion(dbPath, task, result, role, startedAt, finishedAt)
 }
 
 // --- Observability Metrics ---

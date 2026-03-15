@@ -128,7 +128,9 @@ func buildSkillsPrompt(cfg *Config, task Task, complexity RequestComplexity) str
 
 	// Track which skills were injected for this task.
 	for _, s := range skills {
-		recordSkillEvent(cfg.HistoryDB, s.Name, "injected", task.Prompt, task.Agent)
+		recordSkillEventEx(cfg.HistoryDB, s.Name, "injected", task.Prompt, task.Agent, SkillEventOpts{
+			SessionID: task.SessionID,
+		})
 	}
 
 	var sb strings.Builder

@@ -3441,7 +3441,6 @@ body:not([class*="theme-"])::after, body.theme-default::after {
           <option value="">All Workflows</option>
         </select>
         <input type="text" id="kb-search" placeholder="Search tasks..." oninput="filterBoard()">
-        <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);cursor:pointer;margin-left:auto"><input type="checkbox" id="kb-filter-include-done" onchange="refreshBoard()" style="cursor:pointer">Show Done</label>
         <span id="kb-total-cost" class="kanban-total-cost"></span>
       </div>
       <!-- Kanban Board -->
@@ -7756,9 +7755,7 @@ async function refreshBoard() {
   var assignee = document.getElementById('kb-filter-assignee').value;
   var priority = document.getElementById('kb-filter-priority').value;
   var workflow = document.getElementById('kb-filter-workflow').value;
-  var includeDone = document.getElementById('kb-filter-include-done').checked;
   var url = '/api/tasks/board?';
-  if (includeDone) url += 'includeDone=true&';
   if (project) url += 'project=' + encodeURIComponent(project) + '&';
   if (assignee) url += 'assignee=' + encodeURIComponent(assignee) + '&';
   if (priority) url += 'priority=' + encodeURIComponent(priority) + '&';
