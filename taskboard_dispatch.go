@@ -408,6 +408,14 @@ func (d *TaskBoardDispatcher) scan() {
 			logInfo("taskboard dispatch: assigned defaultAgent to unassigned task",
 				"id", t.ID, "title", t.Title, "agent", defaultAgent)
 		}
+
+		// Skip tasks assigned to non-agent users (e.g. "takuma") — only dispatch to known agents.
+		if _, isAgent := d.cfg.Agents[t.Assignee]; !isAgent {
+			logDebug("taskboard dispatch: skipping non-agent assignee",
+				"id", t.ID, "title", t.Title, "assignee", t.Assignee)
+			continue
+		}
+
 		if dispatched >= available {
 			logInfo("taskboard dispatch: maxConcurrentTasks reached, deferring remaining tasks",
 				"active", active, "dispatched", dispatched, "max", maxTasks)
