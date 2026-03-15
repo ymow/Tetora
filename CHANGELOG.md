@@ -11,7 +11,7 @@
 
 ---
 
-## [v2.1.0] - 2026-03-12
+## [v2.0.3] - 2026-03-16
 
 ### Added
 - **Workflow Engine**: DAG-based pipeline execution with condition branches, parallel steps, and retry logic
@@ -23,22 +23,34 @@
 - **Slot Pressure System**: reserved slots for interactive sessions; non-interactive batch tasks queue automatically when slots are scarce
 - **Token-based session compaction**: sessions auto-compress when token count exceeds the 200K threshold, preventing unbounded context growth
 - **Partial-done task status**: recoverable intermediate state for tasks that complete core work but fail post-processing steps (git merge, review)
-- **Bump safety check**: `make bump` warns and aborts if workflows are currently running before restarting the daemon
 - **Worktree data-loss prevention**: conditional worktree cleanup with stale `index.lock` detection to avoid destroying uncommitted work
 - **Lessons.md injection**: agent lessons from `workspace/memory/lessons.md` are automatically injected into dispatch prompts
 - **Workflow step progress tracking**: dashboard shows per-step status and progress for running workflows
 - **Dashboard DAG visualization**: workflow DAG rendered with theme-adaptive colors in the workflow editor
+- **Docs i18n**: 54 translation files across 9 languages for 6 core docs; language selector auto-detects browser locale
+- **MCP concurrent safety**: `mcpMu` + `configFileMu` mutexes; concurrent CRUD races eliminated; test coverage raised to 81.8%
+- **Skill attribution via session_id**: `recordSkillCompletion` uses exact `session_id` match instead of time-window heuristic
+- **Dashboard "Show Done" toggle**: kanban board filter bar checkbox to include done/failed tasks via `includeDone=true`
 
 ### Fixed
-- **Service Worker intercepting API requests**: stripped `Referer` header was causing 401 errors on dashboard API calls; Service Worker now excludes API routes
+- **Dispatch skips non-agent assignees**: tasks assigned to human users (e.g. "takuma") are no longer auto-dispatched by the daemon
+- **Deprecated `autoEdit` permission mode**: replaced with `acceptEdits` / `auto` for Claude Code compatibility
+- **Discord gateway dedup**: 128-entry ring buffer skips replayed `MESSAGE_CREATE` events on gateway Resume
+- **Dashboard theme colors**: chat bubbles, cost badge, SVG grid lines now use CSS variables — all 8 themes render correctly
+- **Service Worker intercepting API requests**: Service Worker now excludes API routes, fixing 401 errors
 - **Dashboard refresh buttons not working**: re-fetch logic repaired across all dashboard tabs
-- **Review execution error**: review step was returning `"approve"` on execution errors instead of the correct `"escalate"` fallback
-- **Session context growing unbounded**: sessions could reach 1.1M+ tokens without triggering compaction; threshold and trigger logic corrected
+- **Review execution error**: review step returns `"escalate"` on errors instead of incorrect `"approve"`
+- **Session context growing unbounded**: compaction threshold and trigger logic corrected
+- **Bump safety check**: `make bump` warns and aborts if workflows are currently running
 
 ### Changed
-- **`standard-dev` workflow**: now creates a PR or MR instead of merging directly to main, enabling code review before merge
-- **`direct-dev` workflow**: new workflow for private projects where merging directly to main is acceptable
-- **`make bump`**: now checks for running workflows before restarting the daemon, preventing mid-run interruptions
+- **`standard-dev` workflow**: now creates a PR or MR instead of merging directly to main
+- **`direct-dev` workflow**: new workflow for private projects where direct merge is acceptable
+
+### Improved
+- **Package extraction (Phase 0–1a)**: 14 packages extracted to `internal/` — `db`, `log`, `cron`, `nlp`, `circuit`, `backup`, `pwa`, `sprite`, `quickaction`, `webhook`, `i18n`, `classify`, `audit`, `version`; dead wrapper code removed
+- **MCP reviewer fixes**: notifications, protocol version, nextID, error handling, duplicate loadConfig
+- **Unit tests**: new tests for db, audit, webhook, sprite packages
 
 ---
 
