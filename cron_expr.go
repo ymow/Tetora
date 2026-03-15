@@ -67,7 +67,7 @@ If insufficient data for improvements, say so and exit.
 				Model:          "sonnet",
 				Timeout:        "5m",
 				Budget:         1.5,
-				PermissionMode: "autoEdit",
+				PermissionMode: "acceptEdits",
 			},
 			Notify:     true,
 			MaxRetries: 1,

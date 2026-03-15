@@ -132,7 +132,7 @@ func agentAdd() {
 
 	model := prompt("Model", defaultModel)
 	description := prompt("Description", "")
-	permMode := prompt("Permission mode (plan|acceptEdits|autoEdit|bypassPermissions)", defaultPerm)
+	permMode := prompt("Permission mode (plan|acceptEdits|auto|bypassPermissions)", defaultPerm)
 
 	var soulFile string
 	if archetype != nil {

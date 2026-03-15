@@ -149,12 +149,12 @@ func jobAdd() {
 	fmt.Println("  Permission modes:")
 	fmt.Println("    plan               Read-only, planning mode")
 	fmt.Println("    acceptEdits        Accept file edits (default)")
-	fmt.Println("    autoEdit           Auto-accept edits")
+	fmt.Println("    auto               Fully autonomous mode")
 	fmt.Println("    bypassPermissions  Skip all confirmations")
 	permMode := prompt("Permission mode", "")
 	if permMode != "" {
 		valid := false
-		for _, v := range []string{"plan", "acceptEdits", "autoEdit", "bypassPermissions"} {
+		for _, v := range []string{"plan", "acceptEdits", "auto", "bypassPermissions"} {
 			if permMode == v {
 				valid = true
 				break

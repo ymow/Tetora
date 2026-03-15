@@ -165,6 +165,13 @@ func interactiveChoose(options []string, defaultIdx int) int {
 }
 
 func cmdInit() {
+	skipOnboarding := false
+	for _, arg := range os.Args[2:] {
+		if arg == "--skip-onboarding" {
+			skipOnboarding = true
+		}
+	}
+
 	scanner := bufio.NewScanner(os.Stdin)
 	prompt := func(label, defaultVal string) string {
 		if defaultVal != "" {
@@ -230,7 +237,9 @@ func cmdInit() {
 	configDir := filepath.Join(home, ".tetora")
 	configPath := filepath.Join(configDir, "config.json")
 
+	isFirstTime := true
 	if _, err := os.Stat(configPath); err == nil {
+		isFirstTime = false
 		fmt.Printf("%s %s\n", L.ConfigExists, configPath)
 		fmt.Printf("  %s ", L.OverwritePrompt)
 		scanner.Scan()
@@ -560,7 +569,7 @@ func cmdInit() {
 		rolePerm := prompt(L.RolePermPrompt, defaultPerm)
 
 		// Validate permission mode.
-		validPerms := []string{"plan", "acceptEdits", "autoEdit", "bypassPermissions"}
+		validPerms := []string{"plan", "acceptEdits", "auto", "bypassPermissions"}
 		permOK := false
 		for _, v := range validPerms {
 			if rolePerm == v {
@@ -747,6 +756,17 @@ afterRole:
 	fmt.Println(L.NextStatus)
 	fmt.Println(L.NextServe)
 	fmt.Println(L.NextDashboard)
+
+	// Kirara onboarding: guide first-time users through creating their first agent.
+	// Use claudePath if set (claude-code provider), otherwise try to detect claude binary.
+	effectiveClaude := claudePath
+	if effectiveClaude == "" {
+		effectiveClaude = detectClaude()
+	}
+	if isFirstTime && !skipOnboarding && effectiveClaude != "" {
+		fmt.Println()
+		runKiraraOnboarding(scanner, configPath, configDir, effectiveClaude, selectedLang)
+	}
 }
 
 // enableSmartDispatch sets smartDispatch.enabled=true in the config file.
