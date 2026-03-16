@@ -2,16 +2,13 @@ package main
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
-	"strings"
 	"time"
+
+	"tetora/internal/messaging/webhook"
 )
 
 // --- Incoming Webhook Types ---
@@ -27,10 +24,7 @@ type IncomingWebhookConfig struct {
 }
 
 func (c IncomingWebhookConfig) isEnabled() bool {
-	if c.Enabled == nil {
-		return true
-	}
-	return *c.Enabled
+	return webhook.Config{Enabled: c.Enabled}.IsEnabled()
 }
 
 // IncomingWebhookResult is the response from processing an incoming webhook.
@@ -38,144 +32,44 @@ type IncomingWebhookResult struct {
 	Name     string `json:"name"`
 	Status   string `json:"status"`   // "accepted", "filtered", "error", "disabled"
 	TaskID   string `json:"taskId,omitempty"`
-	Agent     string `json:"agent,omitempty"`
+	Agent    string `json:"agent,omitempty"`
 	Workflow string `json:"workflow,omitempty"`
 	Message  string `json:"message,omitempty"`
 }
 
-// --- Signature Verification ---
+// --- Signature Verification (delegated to internal/messaging/webhook) ---
 
 // verifyWebhookSignature checks the request signature against the shared secret.
-// Supports GitHub (X-Hub-Signature-256), GitLab (X-Gitlab-Token), and generic (X-Webhook-Signature).
 func verifyWebhookSignature(r *http.Request, body []byte, secret string) bool {
-	if secret == "" {
-		return true // no secret = skip verification
-	}
-
-	// GitHub: X-Hub-Signature-256 = sha256=<hex>
-	if sig := r.Header.Get("X-Hub-Signature-256"); sig != "" {
-		return verifyHMACSHA256(body, secret, strings.TrimPrefix(sig, "sha256="))
-	}
-
-	// GitLab: X-Gitlab-Token = <secret>
-	if token := r.Header.Get("X-Gitlab-Token"); token != "" {
-		return hmac.Equal([]byte(token), []byte(secret))
-	}
-
-	// Generic: X-Webhook-Signature = <hex hmac-sha256>
-	if sig := r.Header.Get("X-Webhook-Signature"); sig != "" {
-		return verifyHMACSHA256(body, secret, sig)
-	}
-
-	// No signature header found — reject if secret is configured.
-	return false
+	return webhook.VerifySignature(r, body, secret)
 }
 
 // verifyHMACSHA256 checks HMAC-SHA256 signature.
 func verifyHMACSHA256(body []byte, secret, signatureHex string) bool {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(body)
-	expected := hex.EncodeToString(mac.Sum(nil))
-	return hmac.Equal([]byte(expected), []byte(signatureHex))
+	return webhook.VerifyHMACSHA256(body, secret, signatureHex)
 }
 
-// --- Payload Template Expansion ---
+// --- Payload Template Expansion (delegated to internal/messaging/webhook) ---
 
-// expandPayloadTemplate replaces {{payload.xxx}} and {{payload.xxx.yyy}} placeholders
-// with values from the parsed JSON payload.
-func expandPayloadTemplate(template string, payload map[string]any) string {
-	re := regexp.MustCompile(`\{\{payload\.([a-zA-Z0-9_.]+)\}\}`)
-	return re.ReplaceAllStringFunc(template, func(match string) string {
-		// Extract the path: "payload.pull_request.title" -> "pull_request.title"
-		path := match[10 : len(match)-2] // strip "{{payload." and "}}"
-		val := getNestedValue(payload, path)
-		if val == nil {
-			return match // keep original if not found
-		}
-		switch v := val.(type) {
-		case string:
-			return v
-		case float64:
-			if v == float64(int(v)) {
-				return fmt.Sprintf("%d", int(v))
-			}
-			return fmt.Sprintf("%g", v)
-		case bool:
-			return fmt.Sprintf("%v", v)
-		default:
-			b, _ := json.Marshal(v)
-			return string(b)
-		}
-	})
+// expandPayloadTemplate replaces {{payload.xxx}} placeholders with payload values.
+func expandPayloadTemplate(tmpl string, payload map[string]any) string {
+	return webhook.ExpandTemplate(tmpl, payload)
 }
 
 // getNestedValue retrieves a value from a nested map using dot notation.
 func getNestedValue(m map[string]any, path string) any {
-	parts := strings.Split(path, ".")
-	var current any = m
-	for _, part := range parts {
-		cm, ok := current.(map[string]any)
-		if !ok {
-			return nil
-		}
-		current, ok = cm[part]
-		if !ok {
-			return nil
-		}
-	}
-	return current
+	return webhook.GetNestedValue(m, path)
 }
 
-// --- Filter Evaluation ---
+// --- Filter Evaluation (delegated to internal/messaging/webhook) ---
 
 // evaluateFilter checks if a payload matches a simple filter expression.
-// Supported: "payload.key == 'value'", "payload.key != 'value'", "payload.key" (truthy check).
 func evaluateFilter(filter string, payload map[string]any) bool {
-	filter = strings.TrimSpace(filter)
-	if filter == "" {
-		return true // no filter = accept all
-	}
-
-	// "payload.key == 'value'" or "payload.key != 'value'"
-	for _, op := range []string{"==", "!="} {
-		if parts := strings.SplitN(filter, op, 2); len(parts) == 2 {
-			key := strings.TrimSpace(parts[0])
-			val := strings.TrimSpace(parts[1])
-			val = strings.Trim(val, "'\"")
-
-			// Strip "payload." prefix.
-			key = strings.TrimPrefix(key, "payload.")
-
-			actual := getNestedValue(payload, key)
-			actualStr := fmt.Sprintf("%v", actual)
-
-			if op == "==" {
-				return actualStr == val
-			}
-			return actualStr != val
-		}
-	}
-
-	// Truthy check: "payload.key"
-	key := strings.TrimPrefix(filter, "payload.")
-	val := getNestedValue(payload, key)
-	return isTruthy(val)
+	return webhook.EvaluateFilter(filter, payload)
 }
 
 func isTruthy(val any) bool {
-	if val == nil {
-		return false
-	}
-	switch v := val.(type) {
-	case bool:
-		return v
-	case string:
-		return v != ""
-	case float64:
-		return v != 0
-	default:
-		return true
-	}
+	return webhook.IsTruthy(val)
 }
 
 // --- Webhook Handler ---

@@ -1,4 +1,4 @@
-package main
+package groupchat
 
 import (
 	"testing"
@@ -7,19 +7,16 @@ import (
 
 func TestGroupChat_ShouldRespond_Mention(t *testing.T) {
 	cfg := &Config{
-		GroupChat: GroupChatConfig{
-			Activation:    "mention",
-			MentionNames:  []string{"tetora", "テトラ"},
-			ContextWindow: 10,
-			RateLimit: GroupChatRateLimitConfig{
-				MaxPerMin: 5,
-				PerGroup:  true,
-			},
+		Activation:    "mention",
+		MentionNames:  []string{"tetora", "テトラ"},
+		ContextWindow: 10,
+		RateLimit: RateLimitConfig{
+			MaxPerMin: 5,
+			PerGroup:  true,
 		},
-		Agents: map[string]AgentConfig{},
 	}
 
-	engine := newGroupChatEngine(cfg)
+	engine := New(cfg)
 
 	// Test mention match (case insensitive).
 	if !engine.ShouldRespond("slack", "C123", "U1", "Hey tetora, what's up?") {
@@ -40,19 +37,16 @@ func TestGroupChat_ShouldRespond_Mention(t *testing.T) {
 
 func TestGroupChat_ShouldRespond_Keyword(t *testing.T) {
 	cfg := &Config{
-		GroupChat: GroupChatConfig{
-			Activation:    "keyword",
-			Keywords:      []string{"help", "bug", "error"},
-			ContextWindow: 10,
-			RateLimit: GroupChatRateLimitConfig{
-				MaxPerMin: 5,
-				PerGroup:  true,
-			},
+		Activation:    "keyword",
+		Keywords:      []string{"help", "bug", "error"},
+		ContextWindow: 10,
+		RateLimit: RateLimitConfig{
+			MaxPerMin: 5,
+			PerGroup:  true,
 		},
-		Agents: map[string]AgentConfig{},
 	}
 
-	engine := newGroupChatEngine(cfg)
+	engine := New(cfg)
 
 	// Test keyword match.
 	if !engine.ShouldRespond("slack", "C123", "U1", "I need help with this") {
@@ -73,18 +67,15 @@ func TestGroupChat_ShouldRespond_Keyword(t *testing.T) {
 
 func TestGroupChat_ShouldRespond_All(t *testing.T) {
 	cfg := &Config{
-		GroupChat: GroupChatConfig{
-			Activation:    "all",
-			ContextWindow: 10,
-			RateLimit: GroupChatRateLimitConfig{
-				MaxPerMin: 5,
-				PerGroup:  true,
-			},
+		Activation:    "all",
+		ContextWindow: 10,
+		RateLimit: RateLimitConfig{
+			MaxPerMin: 5,
+			PerGroup:  true,
 		},
-		Agents: map[string]AgentConfig{},
 	}
 
-	engine := newGroupChatEngine(cfg)
+	engine := New(cfg)
 
 	// Test all messages should match.
 	if !engine.ShouldRespond("slack", "C123", "U1", "Random message") {
@@ -97,18 +88,15 @@ func TestGroupChat_ShouldRespond_All(t *testing.T) {
 
 func TestGroupChat_RateLimit_PerGroup(t *testing.T) {
 	cfg := &Config{
-		GroupChat: GroupChatConfig{
-			Activation:    "all",
-			ContextWindow: 10,
-			RateLimit: GroupChatRateLimitConfig{
-				MaxPerMin: 3,
-				PerGroup:  true,
-			},
+		Activation:    "all",
+		ContextWindow: 10,
+		RateLimit: RateLimitConfig{
+			MaxPerMin: 3,
+			PerGroup:  true,
 		},
-		Agents: map[string]AgentConfig{},
 	}
 
-	engine := newGroupChatEngine(cfg)
+	engine := New(cfg)
 
 	// Group 1: should allow 3 messages.
 	for i := 0; i < 3; i++ {
@@ -130,18 +118,15 @@ func TestGroupChat_RateLimit_PerGroup(t *testing.T) {
 
 func TestGroupChat_RateLimit_Global(t *testing.T) {
 	cfg := &Config{
-		GroupChat: GroupChatConfig{
-			Activation:    "all",
-			ContextWindow: 10,
-			RateLimit: GroupChatRateLimitConfig{
-				MaxPerMin: 3,
-				PerGroup:  false, // Global rate limit.
-			},
+		Activation:    "all",
+		ContextWindow: 10,
+		RateLimit: RateLimitConfig{
+			MaxPerMin: 3,
+			PerGroup:  false, // Global rate limit.
 		},
-		Agents: map[string]AgentConfig{},
 	}
 
-	engine := newGroupChatEngine(cfg)
+	engine := New(cfg)
 
 	// Group 1: 2 messages.
 	engine.ShouldRespond("slack", "C123", "U1", "msg1")
@@ -160,22 +145,19 @@ func TestGroupChat_RateLimit_Global(t *testing.T) {
 
 func TestGroupChat_IsAllowedGroup(t *testing.T) {
 	cfg := &Config{
-		GroupChat: GroupChatConfig{
-			Activation:    "all",
-			ContextWindow: 10,
-			RateLimit: GroupChatRateLimitConfig{
-				MaxPerMin: 5,
-				PerGroup:  true,
-			},
-			AllowedGroups: map[string][]string{
-				"slack":   {"C123", "C456"},
-				"discord": {"G789"},
-			},
+		Activation:    "all",
+		ContextWindow: 10,
+		RateLimit: RateLimitConfig{
+			MaxPerMin: 5,
+			PerGroup:  true,
 		},
-		Agents: map[string]AgentConfig{},
+		AllowedGroups: map[string][]string{
+			"slack":   {"C123", "C456"},
+			"discord": {"G789"},
+		},
 	}
 
-	engine := newGroupChatEngine(cfg)
+	engine := New(cfg)
 
 	// Test allowed groups.
 	if !engine.IsAllowedGroup("slack", "C123") {
@@ -202,19 +184,16 @@ func TestGroupChat_IsAllowedGroup(t *testing.T) {
 
 func TestGroupChat_IsAllowedGroup_NoWhitelist(t *testing.T) {
 	cfg := &Config{
-		GroupChat: GroupChatConfig{
-			Activation:    "all",
-			ContextWindow: 10,
-			RateLimit: GroupChatRateLimitConfig{
-				MaxPerMin: 5,
-				PerGroup:  true,
-			},
-			// No AllowedGroups configured = allow all.
+		Activation:    "all",
+		ContextWindow: 10,
+		RateLimit: RateLimitConfig{
+			MaxPerMin: 5,
+			PerGroup:  true,
 		},
-		Agents: map[string]AgentConfig{},
+		// No AllowedGroups configured = allow all.
 	}
 
-	engine := newGroupChatEngine(cfg)
+	engine := New(cfg)
 
 	// Test all groups allowed when no whitelist.
 	if !engine.IsAllowedGroup("slack", "C123") {
@@ -227,18 +206,15 @@ func TestGroupChat_IsAllowedGroup_NoWhitelist(t *testing.T) {
 
 func TestGroupChat_ContextWindow_Record(t *testing.T) {
 	cfg := &Config{
-		GroupChat: GroupChatConfig{
-			Activation:    "all",
-			ContextWindow: 3,
-			RateLimit: GroupChatRateLimitConfig{
-				MaxPerMin: 100,
-				PerGroup:  true,
-			},
+		Activation:    "all",
+		ContextWindow: 3,
+		RateLimit: RateLimitConfig{
+			MaxPerMin: 100,
+			PerGroup:  true,
 		},
-		Agents: map[string]AgentConfig{},
 	}
 
-	engine := newGroupChatEngine(cfg)
+	engine := New(cfg)
 
 	// Record messages.
 	engine.RecordMessage("slack", "C123", "U1", "msg1")
@@ -257,18 +233,15 @@ func TestGroupChat_ContextWindow_Record(t *testing.T) {
 
 func TestGroupChat_ContextWindow_RingBuffer(t *testing.T) {
 	cfg := &Config{
-		GroupChat: GroupChatConfig{
-			Activation:    "all",
-			ContextWindow: 3, // Ring buffer size 3.
-			RateLimit: GroupChatRateLimitConfig{
-				MaxPerMin: 100,
-				PerGroup:  true,
-			},
+		Activation:    "all",
+		ContextWindow: 3, // Ring buffer size 3.
+		RateLimit: RateLimitConfig{
+			MaxPerMin: 100,
+			PerGroup:  true,
 		},
-		Agents: map[string]AgentConfig{},
 	}
 
-	engine := newGroupChatEngine(cfg)
+	engine := New(cfg)
 
 	// Record 5 messages (exceeds buffer size).
 	engine.RecordMessage("slack", "C123", "U1", "msg1")
@@ -289,18 +262,15 @@ func TestGroupChat_ContextWindow_RingBuffer(t *testing.T) {
 
 func TestGroupChat_ContextWindow_Limit(t *testing.T) {
 	cfg := &Config{
-		GroupChat: GroupChatConfig{
-			Activation:    "all",
-			ContextWindow: 10,
-			RateLimit: GroupChatRateLimitConfig{
-				MaxPerMin: 100,
-				PerGroup:  true,
-			},
+		Activation:    "all",
+		ContextWindow: 10,
+		RateLimit: RateLimitConfig{
+			MaxPerMin: 100,
+			PerGroup:  true,
 		},
-		Agents: map[string]AgentConfig{},
 	}
 
-	engine := newGroupChatEngine(cfg)
+	engine := New(cfg)
 
 	// Record 5 messages.
 	for i := 1; i <= 5; i++ {
@@ -316,18 +286,15 @@ func TestGroupChat_ContextWindow_Limit(t *testing.T) {
 
 func TestGroupChat_Status(t *testing.T) {
 	cfg := &Config{
-		GroupChat: GroupChatConfig{
-			Activation:    "all",
-			ContextWindow: 10,
-			RateLimit: GroupChatRateLimitConfig{
-				MaxPerMin: 5,
-				PerGroup:  true,
-			},
+		Activation:    "all",
+		ContextWindow: 10,
+		RateLimit: RateLimitConfig{
+			MaxPerMin: 5,
+			PerGroup:  true,
 		},
-		Agents: map[string]AgentConfig{},
 	}
 
-	engine := newGroupChatEngine(cfg)
+	engine := New(cfg)
 
 	// Record messages in 2 groups.
 	engine.RecordMessage("slack", "C123", "U1", "msg1")
@@ -354,19 +321,16 @@ func TestGroupChat_Status(t *testing.T) {
 
 func TestGroupChat_Activation_CaseInsensitive(t *testing.T) {
 	cfg := &Config{
-		GroupChat: GroupChatConfig{
-			Activation:    "mention",
-			MentionNames:  []string{"tetora"},
-			ContextWindow: 10,
-			RateLimit: GroupChatRateLimitConfig{
-				MaxPerMin: 100, // High limit to avoid rate limiting in test.
-				PerGroup:  true,
-			},
+		Activation:    "mention",
+		MentionNames:  []string{"tetora"},
+		ContextWindow: 10,
+		RateLimit: RateLimitConfig{
+			MaxPerMin: 100, // High limit to avoid rate limiting in test.
+			PerGroup:  true,
 		},
-		Agents: map[string]AgentConfig{},
 	}
 
-	engine := newGroupChatEngine(cfg)
+	engine := New(cfg)
 
 	// Test various cases.
 	testCases := []string{
@@ -387,31 +351,26 @@ func TestGroupChat_Activation_CaseInsensitive(t *testing.T) {
 
 func TestGroupChat_ConfigDefaults(t *testing.T) {
 	cfg := &Config{
-		GroupChat: GroupChatConfig{
-			// No explicit settings → should apply defaults.
-		},
-		Agents: map[string]AgentConfig{
-			"琉璃": {},
-			"翡翠": {},
-		},
+		// No explicit settings → should apply defaults.
+		AgentNames: []string{"琉璃", "翡翠"},
 	}
 
-	_ = newGroupChatEngine(cfg)
+	_ = New(cfg)
 
 	// Check defaults applied.
-	if cfg.GroupChat.ContextWindow != 10 {
-		t.Errorf("Expected default ContextWindow=10, got %d", cfg.GroupChat.ContextWindow)
+	if cfg.ContextWindow != 10 {
+		t.Errorf("Expected default ContextWindow=10, got %d", cfg.ContextWindow)
 	}
-	if cfg.GroupChat.RateLimit.MaxPerMin != 5 {
-		t.Errorf("Expected default RateLimit.MaxPerMin=5, got %d", cfg.GroupChat.RateLimit.MaxPerMin)
+	if cfg.RateLimit.MaxPerMin != 5 {
+		t.Errorf("Expected default RateLimit.MaxPerMin=5, got %d", cfg.RateLimit.MaxPerMin)
 	}
-	if cfg.GroupChat.Activation != "mention" {
-		t.Errorf("Expected default Activation=mention, got %s", cfg.GroupChat.Activation)
+	if cfg.Activation != "mention" {
+		t.Errorf("Expected default Activation=mention, got %s", cfg.Activation)
 	}
 
-	// Check default mention names include role names.
+	// Check default mention names include agent names.
 	hasRoleName := false
-	for _, name := range cfg.GroupChat.MentionNames {
+	for _, name := range cfg.MentionNames {
 		if name == "琉璃" || name == "翡翠" {
 			hasRoleName = true
 			break
@@ -424,18 +383,15 @@ func TestGroupChat_ConfigDefaults(t *testing.T) {
 
 func TestGroupChat_RateLimitSlidingWindow(t *testing.T) {
 	cfg := &Config{
-		GroupChat: GroupChatConfig{
-			Activation:    "all",
-			ContextWindow: 10,
-			RateLimit: GroupChatRateLimitConfig{
-				MaxPerMin: 2,
-				PerGroup:  true,
-			},
+		Activation:    "all",
+		ContextWindow: 10,
+		RateLimit: RateLimitConfig{
+			MaxPerMin: 2,
+			PerGroup:  true,
 		},
-		Agents: map[string]AgentConfig{},
 	}
 
-	engine := newGroupChatEngine(cfg)
+	engine := New(cfg)
 
 	// Send 2 messages (max).
 	engine.ShouldRespond("slack", "C123", "U1", "msg1")
