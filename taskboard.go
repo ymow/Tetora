@@ -1226,8 +1226,7 @@ func cmdTask(args []string) {
 			}
 		}
 		if hasDeps {
-			depsJSON, _ := json.Marshal(dependsOn)
-			updates["depends_on"] = string(depsJSON)
+			updates["dependsOn"] = dependsOn
 		}
 
 		if len(updates) == 0 {
