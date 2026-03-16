@@ -8,6 +8,8 @@ import (
 	"io"
 	"path/filepath"
 
+	"tetora/internal/tool"
+
 	"tetora/internal/life/calendar"
 	"tetora/internal/life/contacts"
 	"tetora/internal/life/dailynotes"
@@ -154,7 +156,7 @@ func initFamilyDB(dbPath string) error {
 }
 
 func newPriceWatchEngine(cfg *Config) *PriceWatchEngine {
-	return pricewatch.New(cfg.HistoryDB, currencyBaseURL, makeLifeDB())
+	return pricewatch.New(cfg.HistoryDB, tool.CurrencyBaseURL, makeLifeDB())
 }
 
 func newReminderEngine(cfg *Config, notifyFn func(string)) *ReminderEngine {

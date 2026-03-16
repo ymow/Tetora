@@ -1,4 +1,4 @@
-package main
+package tool
 
 import (
 	"context"
@@ -12,8 +12,8 @@ import (
 
 // Base URLs for Open-Meteo APIs (overridable in tests).
 var (
-	weatherBaseURL   = "https://api.open-meteo.com"
-	geocodingBaseURL = "https://geocoding-api.open-meteo.com"
+	WeatherBaseURL   = "https://api.open-meteo.com"
+	GeocodingBaseURL = "https://geocoding-api.open-meteo.com"
 )
 
 // weatherCodeDesc maps WMO weather codes to human-readable descriptions.
@@ -28,7 +28,7 @@ var weatherCodeDesc = map[int]string{
 	95: "Thunderstorm", 96: "Thunderstorm with slight hail", 99: "Thunderstorm with heavy hail",
 }
 
-func toolWeatherCurrent(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+func WeatherCurrent(ctx context.Context, defaultLocation string, input json.RawMessage) (string, error) {
 	var args struct {
 		Location string `json:"location"`
 	}
@@ -37,19 +37,19 @@ func toolWeatherCurrent(ctx context.Context, cfg *Config, input json.RawMessage)
 	}
 	loc := args.Location
 	if loc == "" {
-		loc = cfg.Weather.Location
+		loc = defaultLocation
 	}
 	if loc == "" {
 		return "", fmt.Errorf("location required (set in config or pass as parameter)")
 	}
 
-	lat, lon, name, err := geocodeLocation(loc)
+	lat, lon, name, err := GeocodeLocation(loc)
 	if err != nil {
 		return "", err
 	}
 
 	apiURL := fmt.Sprintf("%s/v1/forecast?latitude=%.4f&longitude=%.4f&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,apparent_temperature&timezone=auto",
-		weatherBaseURL, lat, lon)
+		WeatherBaseURL, lat, lon)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(apiURL)
@@ -92,7 +92,7 @@ func toolWeatherCurrent(ctx context.Context, cfg *Config, input json.RawMessage)
 	), nil
 }
 
-func toolWeatherForecast(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+func WeatherForecast(ctx context.Context, defaultLocation string, input json.RawMessage) (string, error) {
 	var args struct {
 		Location string `json:"location"`
 		Days     int    `json:"days"`
@@ -102,7 +102,7 @@ func toolWeatherForecast(ctx context.Context, cfg *Config, input json.RawMessage
 	}
 	loc := args.Location
 	if loc == "" {
-		loc = cfg.Weather.Location
+		loc = defaultLocation
 	}
 	if loc == "" {
 		return "", fmt.Errorf("location required")
@@ -112,13 +112,13 @@ func toolWeatherForecast(ctx context.Context, cfg *Config, input json.RawMessage
 		days = 3
 	}
 
-	lat, lon, name, err := geocodeLocation(loc)
+	lat, lon, name, err := GeocodeLocation(loc)
 	if err != nil {
 		return "", err
 	}
 
 	apiURL := fmt.Sprintf("%s/v1/forecast?latitude=%.4f&longitude=%.4f&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max&timezone=auto&forecast_days=%d",
-		weatherBaseURL, lat, lon, days)
+		WeatherBaseURL, lat, lon, days)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(apiURL)
@@ -165,8 +165,8 @@ func toolWeatherForecast(ctx context.Context, cfg *Config, input json.RawMessage
 	return sb.String(), nil
 }
 
-func geocodeLocation(location string) (lat, lon float64, name string, err error) {
-	apiURL := geocodingBaseURL + "/v1/search?name=" + url.QueryEscape(location) + "&count=1"
+func GeocodeLocation(location string) (lat, lon float64, name string, err error) {
+	apiURL := GeocodingBaseURL + "/v1/search?name=" + url.QueryEscape(location) + "&count=1"
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(apiURL)
 	if err != nil {

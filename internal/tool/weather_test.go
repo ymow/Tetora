@@ -1,4 +1,4 @@
-package main
+package tool
 
 import (
 	"context"
@@ -9,8 +9,7 @@ import (
 	"testing"
 )
 
-func TestToolWeatherCurrent(t *testing.T) {
-	// Mock geocoding server.
+func TestWeatherCurrent(t *testing.T) {
 	geoSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"results": []map[string]any{
@@ -20,7 +19,6 @@ func TestToolWeatherCurrent(t *testing.T) {
 	}))
 	defer geoSrv.Close()
 
-	// Mock weather server.
 	wxSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"current": map[string]any{
@@ -38,18 +36,17 @@ func TestToolWeatherCurrent(t *testing.T) {
 	}))
 	defer wxSrv.Close()
 
-	origGeo := geocodingBaseURL
-	origWx := weatherBaseURL
-	geocodingBaseURL = geoSrv.URL
-	weatherBaseURL = wxSrv.URL
+	origGeo := GeocodingBaseURL
+	origWx := WeatherBaseURL
+	GeocodingBaseURL = geoSrv.URL
+	WeatherBaseURL = wxSrv.URL
 	defer func() {
-		geocodingBaseURL = origGeo
-		weatherBaseURL = origWx
+		GeocodingBaseURL = origGeo
+		WeatherBaseURL = origWx
 	}()
 
-	cfg := &Config{}
 	input, _ := json.Marshal(map[string]string{"location": "Tokyo"})
-	result, err := toolWeatherCurrent(context.Background(), cfg, input)
+	result, err := WeatherCurrent(context.Background(), "", input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -67,7 +64,7 @@ func TestToolWeatherCurrent(t *testing.T) {
 	}
 }
 
-func TestToolWeatherForecast(t *testing.T) {
+func TestWeatherForecast(t *testing.T) {
 	geoSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"results": []map[string]any{
@@ -94,18 +91,17 @@ func TestToolWeatherForecast(t *testing.T) {
 	}))
 	defer wxSrv.Close()
 
-	origGeo := geocodingBaseURL
-	origWx := weatherBaseURL
-	geocodingBaseURL = geoSrv.URL
-	weatherBaseURL = wxSrv.URL
+	origGeo := GeocodingBaseURL
+	origWx := WeatherBaseURL
+	GeocodingBaseURL = geoSrv.URL
+	WeatherBaseURL = wxSrv.URL
 	defer func() {
-		geocodingBaseURL = origGeo
-		weatherBaseURL = origWx
+		GeocodingBaseURL = origGeo
+		WeatherBaseURL = origWx
 	}()
 
-	cfg := &Config{}
 	input, _ := json.Marshal(map[string]any{"location": "Tokyo", "days": 2})
-	result, err := toolWeatherForecast(context.Background(), cfg, input)
+	result, err := WeatherForecast(context.Background(), "", input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -123,10 +119,9 @@ func TestToolWeatherForecast(t *testing.T) {
 	}
 }
 
-func TestToolWeatherMissingLocation(t *testing.T) {
-	cfg := &Config{}
+func TestWeatherMissingLocation(t *testing.T) {
 	input, _ := json.Marshal(map[string]string{})
-	_, err := toolWeatherCurrent(context.Background(), cfg, input)
+	_, err := WeatherCurrent(context.Background(), "", input)
 	if err == nil {
 		t.Fatal("expected error for missing location")
 	}
@@ -135,18 +130,16 @@ func TestToolWeatherMissingLocation(t *testing.T) {
 	}
 }
 
-func TestToolWeatherForecastMissingLocation(t *testing.T) {
-	cfg := &Config{}
+func TestWeatherForecastMissingLocation(t *testing.T) {
 	input, _ := json.Marshal(map[string]string{})
-	_, err := toolWeatherForecast(context.Background(), cfg, input)
+	_, err := WeatherForecast(context.Background(), "", input)
 	if err == nil {
 		t.Fatal("expected error for missing location")
 	}
 }
 
-func TestToolWeatherDefaultLocation(t *testing.T) {
+func TestWeatherDefaultLocation(t *testing.T) {
 	geoSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify the query contains the default location.
 		if !strings.Contains(r.URL.RawQuery, "Osaka") {
 			t.Errorf("expected query to contain Osaka, got: %s", r.URL.RawQuery)
 		}
@@ -175,18 +168,17 @@ func TestToolWeatherDefaultLocation(t *testing.T) {
 	}))
 	defer wxSrv.Close()
 
-	origGeo := geocodingBaseURL
-	origWx := weatherBaseURL
-	geocodingBaseURL = geoSrv.URL
-	weatherBaseURL = wxSrv.URL
+	origGeo := GeocodingBaseURL
+	origWx := WeatherBaseURL
+	GeocodingBaseURL = geoSrv.URL
+	WeatherBaseURL = wxSrv.URL
 	defer func() {
-		geocodingBaseURL = origGeo
-		weatherBaseURL = origWx
+		GeocodingBaseURL = origGeo
+		WeatherBaseURL = origWx
 	}()
 
-	cfg := &Config{Weather: WeatherConfig{Location: "Osaka"}}
 	input, _ := json.Marshal(map[string]string{}) // No location in input.
-	result, err := toolWeatherCurrent(context.Background(), cfg, input)
+	result, err := WeatherCurrent(context.Background(), "Osaka", input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -195,7 +187,7 @@ func TestToolWeatherDefaultLocation(t *testing.T) {
 	}
 }
 
-func TestToolWeatherAPIError(t *testing.T) {
+func TestWeatherAPIError(t *testing.T) {
 	geoSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"results": []map[string]any{
@@ -210,18 +202,17 @@ func TestToolWeatherAPIError(t *testing.T) {
 	}))
 	defer wxSrv.Close()
 
-	origGeo := geocodingBaseURL
-	origWx := weatherBaseURL
-	geocodingBaseURL = geoSrv.URL
-	weatherBaseURL = wxSrv.URL
+	origGeo := GeocodingBaseURL
+	origWx := WeatherBaseURL
+	GeocodingBaseURL = geoSrv.URL
+	WeatherBaseURL = wxSrv.URL
 	defer func() {
-		geocodingBaseURL = origGeo
-		weatherBaseURL = origWx
+		GeocodingBaseURL = origGeo
+		WeatherBaseURL = origWx
 	}()
 
-	cfg := &Config{}
 	input, _ := json.Marshal(map[string]string{"location": "Tokyo"})
-	_, err := toolWeatherCurrent(context.Background(), cfg, input)
+	_, err := WeatherCurrent(context.Background(), "", input)
 	if err == nil {
 		t.Fatal("expected error for API failure")
 	}
@@ -238,11 +229,11 @@ func TestGeocodeLocationNotFound(t *testing.T) {
 	}))
 	defer geoSrv.Close()
 
-	origGeo := geocodingBaseURL
-	geocodingBaseURL = geoSrv.URL
-	defer func() { geocodingBaseURL = origGeo }()
+	origGeo := GeocodingBaseURL
+	GeocodingBaseURL = geoSrv.URL
+	defer func() { GeocodingBaseURL = origGeo }()
 
-	_, _, _, err := geocodeLocation("NonexistentPlace12345")
+	_, _, _, err := GeocodeLocation("NonexistentPlace12345")
 	if err == nil {
 		t.Fatal("expected error for not found location")
 	}

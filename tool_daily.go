@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"tetora/internal/tool"
 )
 
 // registerDailyTools registers daily utility tools (weather, currency, RSS,
@@ -26,7 +28,9 @@ func registerDailyTools(r *ToolRegistry, cfg *Config, enabled func(string) bool)
 					"location": {"type": "string", "description": "City name (e.g. 'Tokyo', 'New York')"}
 				}
 			}`),
-			Handler: toolWeatherCurrent,
+			Handler: func(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+				return tool.WeatherCurrent(ctx, cfg.Weather.Location, input)
+			},
 			Builtin: true,
 		})
 	}
@@ -41,7 +45,9 @@ func registerDailyTools(r *ToolRegistry, cfg *Config, enabled func(string) bool)
 					"days": {"type": "integer", "description": "Forecast days (1-7, default 3)"}
 				}
 			}`),
-			Handler: toolWeatherForecast,
+			Handler: func(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+				return tool.WeatherForecast(ctx, cfg.Weather.Location, input)
+			},
 			Builtin: true,
 		})
 	}
@@ -60,7 +66,9 @@ func registerDailyTools(r *ToolRegistry, cfg *Config, enabled func(string) bool)
 				},
 				"required": ["amount", "from", "to"]
 			}`),
-			Handler: toolCurrencyConvert,
+			Handler: func(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+				return tool.CurrencyConvert(ctx, input)
+			},
 			Builtin: true,
 		})
 	}
@@ -75,7 +83,9 @@ func registerDailyTools(r *ToolRegistry, cfg *Config, enabled func(string) bool)
 					"currencies": {"type": "string", "description": "Comma-separated target currencies (e.g. 'JPY,EUR,TWD')"}
 				}
 			}`),
-			Handler: toolCurrencyRates,
+			Handler: func(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+				return tool.CurrencyRates(ctx, input)
+			},
 			Builtin: true,
 		})
 	}

@@ -1,4 +1,4 @@
-package main
+package tool
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestToolCurrencyConvert(t *testing.T) {
+func TestCurrencyConvert(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if q.Get("from") != "USD" || q.Get("to") != "JPY" {
@@ -24,13 +24,12 @@ func TestToolCurrencyConvert(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	origURL := currencyBaseURL
-	currencyBaseURL = srv.URL
-	defer func() { currencyBaseURL = origURL }()
+	origURL := CurrencyBaseURL
+	CurrencyBaseURL = srv.URL
+	defer func() { CurrencyBaseURL = origURL }()
 
-	cfg := &Config{}
 	input, _ := json.Marshal(map[string]any{"amount": 100, "from": "USD", "to": "JPY"})
-	result, err := toolCurrencyConvert(context.Background(), cfg, input)
+	result, err := CurrencyConvert(context.Background(), input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -45,32 +44,30 @@ func TestToolCurrencyConvert(t *testing.T) {
 	}
 }
 
-func TestToolCurrencyConvertMissingFields(t *testing.T) {
-	cfg := &Config{}
-
+func TestCurrencyConvertMissingFields(t *testing.T) {
 	// Missing amount.
 	input, _ := json.Marshal(map[string]any{"from": "USD", "to": "JPY"})
-	_, err := toolCurrencyConvert(context.Background(), cfg, input)
+	_, err := CurrencyConvert(context.Background(), input)
 	if err == nil {
 		t.Fatal("expected error for zero amount")
 	}
 
 	// Missing from.
 	input, _ = json.Marshal(map[string]any{"amount": 100, "to": "JPY"})
-	_, err = toolCurrencyConvert(context.Background(), cfg, input)
+	_, err = CurrencyConvert(context.Background(), input)
 	if err == nil {
 		t.Fatal("expected error for missing from")
 	}
 
 	// Missing to.
 	input, _ = json.Marshal(map[string]any{"amount": 100, "from": "USD"})
-	_, err = toolCurrencyConvert(context.Background(), cfg, input)
+	_, err = CurrencyConvert(context.Background(), input)
 	if err == nil {
 		t.Fatal("expected error for missing to")
 	}
 }
 
-func TestToolCurrencyRates(t *testing.T) {
+func TestCurrencyRates(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"base": "EUR",
@@ -84,13 +81,12 @@ func TestToolCurrencyRates(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	origURL := currencyBaseURL
-	currencyBaseURL = srv.URL
-	defer func() { currencyBaseURL = origURL }()
+	origURL := CurrencyBaseURL
+	CurrencyBaseURL = srv.URL
+	defer func() { CurrencyBaseURL = origURL }()
 
-	cfg := &Config{}
 	input, _ := json.Marshal(map[string]any{"base": "EUR", "currencies": "JPY,USD,TWD"})
-	result, err := toolCurrencyRates(context.Background(), cfg, input)
+	result, err := CurrencyRates(context.Background(), input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -109,7 +105,7 @@ func TestToolCurrencyRates(t *testing.T) {
 	}
 }
 
-func TestToolCurrencyRatesDefaultBase(t *testing.T) {
+func TestCurrencyRatesDefaultBase(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if q.Get("from") != "USD" {
@@ -123,13 +119,12 @@ func TestToolCurrencyRatesDefaultBase(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	origURL := currencyBaseURL
-	currencyBaseURL = srv.URL
-	defer func() { currencyBaseURL = origURL }()
+	origURL := CurrencyBaseURL
+	CurrencyBaseURL = srv.URL
+	defer func() { CurrencyBaseURL = origURL }()
 
-	cfg := &Config{}
 	input, _ := json.Marshal(map[string]any{})
-	result, err := toolCurrencyRates(context.Background(), cfg, input)
+	result, err := CurrencyRates(context.Background(), input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -138,19 +133,18 @@ func TestToolCurrencyRatesDefaultBase(t *testing.T) {
 	}
 }
 
-func TestToolCurrencyAPIError(t *testing.T) {
+func TestCurrencyAPIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
 	}))
 	defer srv.Close()
 
-	origURL := currencyBaseURL
-	currencyBaseURL = srv.URL
-	defer func() { currencyBaseURL = origURL }()
+	origURL := CurrencyBaseURL
+	CurrencyBaseURL = srv.URL
+	defer func() { CurrencyBaseURL = origURL }()
 
-	cfg := &Config{}
 	input, _ := json.Marshal(map[string]any{"amount": 100, "from": "USD", "to": "INVALID"})
-	_, err := toolCurrencyConvert(context.Background(), cfg, input)
+	_, err := CurrencyConvert(context.Background(), input)
 	if err == nil {
 		t.Fatal("expected error for API failure")
 	}

@@ -1,4 +1,4 @@
-package main
+package tool
 
 import (
 	"context"
@@ -11,9 +11,9 @@ import (
 )
 
 // Base URL for Frankfurter API (overridable in tests).
-var currencyBaseURL = "https://api.frankfurter.app"
+var CurrencyBaseURL = "https://api.frankfurter.app"
 
-func toolCurrencyConvert(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+func CurrencyConvert(ctx context.Context, input json.RawMessage) (string, error) {
 	var args struct {
 		Amount float64 `json:"amount"`
 		From   string  `json:"from"`
@@ -32,7 +32,7 @@ func toolCurrencyConvert(ctx context.Context, cfg *Config, input json.RawMessage
 	args.To = strings.ToUpper(args.To)
 
 	apiURL := fmt.Sprintf("%s/latest?amount=%.2f&from=%s&to=%s",
-		currencyBaseURL, args.Amount, args.From, args.To)
+		CurrencyBaseURL, args.Amount, args.From, args.To)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(apiURL)
@@ -63,7 +63,7 @@ func toolCurrencyConvert(ctx context.Context, cfg *Config, input json.RawMessage
 	return sb.String(), nil
 }
 
-func toolCurrencyRates(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+func CurrencyRates(ctx context.Context, input json.RawMessage) (string, error) {
 	var args struct {
 		Base       string `json:"base"`
 		Currencies string `json:"currencies"`
@@ -76,7 +76,7 @@ func toolCurrencyRates(ctx context.Context, cfg *Config, input json.RawMessage) 
 		base = "USD"
 	}
 
-	apiURL := fmt.Sprintf("%s/latest?from=%s", currencyBaseURL, base)
+	apiURL := fmt.Sprintf("%s/latest?from=%s", CurrencyBaseURL, base)
 	if args.Currencies != "" {
 		apiURL += "&to=" + strings.ToUpper(strings.ReplaceAll(args.Currencies, " ", ""))
 	}
