@@ -186,6 +186,10 @@ type DiscordBot struct {
 	seq       int
 	seqMu     sync.Mutex
 
+	// !chat agent-name: per-channel locked agent (skip smart dispatch).
+	chatLockMu sync.RWMutex
+	chatLock   map[string]string // channelID → agentName
+
 	client       *http.Client
 	stopCh       chan struct{}
 	interactions *discordInteractionState // P14.1: tracks pending component interactions
@@ -579,6 +583,12 @@ func (db *DiscordBot) handleMessage(msg discordMessage) {
 		}
 	}
 
+	// !chat lock: skip smart dispatch, route directly to locked agent.
+	if agent := db.getChatLock(msg.ChannelID); agent != "" {
+		db.handleDirectRoute(msg, text, agent)
+		return
+	}
+
 	if db.cfg.SmartDispatch.Enabled {
 		db.handleRoute(msg, text)
 	} else if db.cfg.DefaultAgent != "" {
@@ -646,6 +656,14 @@ func (db *DiscordBot) handleCommand(msg discordMessage, cmdText string) {
 		db.cmdNewSession(msg)
 	case "cancel":
 		db.cmdCancel(msg)
+	case "chat":
+		if args == "" {
+			db.sendMessage(msg.ChannelID, "Usage: `!chat <agent-name>`")
+		} else {
+			db.cmdChat(msg, strings.Fields(args)[0])
+		}
+	case "end":
+		db.cmdEnd(msg)
 	case "ask":
 		if args == "" {
 			db.sendMessage(msg.ChannelID, "Usage: `!ask <prompt>`")
@@ -871,6 +889,40 @@ func (db *DiscordBot) cmdAsk(msg discordMessage, prompt string) {
 	})
 }
 
+// --- Chat Lock (skip smart dispatch, lock to a specific agent) ---
+
+func (db *DiscordBot) getChatLock(channelID string) string {
+	db.chatLockMu.RLock()
+	defer db.chatLockMu.RUnlock()
+	return db.chatLock[channelID]
+}
+
+func (db *DiscordBot) cmdChat(msg discordMessage, agentName string) {
+	if _, ok := db.cfg.Agents[agentName]; !ok {
+		db.sendMessage(msg.ChannelID, fmt.Sprintf("Agent `%s` not found.", agentName))
+		return
+	}
+	db.chatLockMu.Lock()
+	if db.chatLock == nil {
+		db.chatLock = make(map[string]string)
+	}
+	db.chatLock[msg.ChannelID] = agentName
+	db.chatLockMu.Unlock()
+	db.sendMessage(msg.ChannelID, fmt.Sprintf("Locked to **%s**. All messages route directly to this agent. Use `!end` to unlock.", agentName))
+}
+
+func (db *DiscordBot) cmdEnd(msg discordMessage) {
+	db.chatLockMu.Lock()
+	agent := db.chatLock[msg.ChannelID]
+	delete(db.chatLock, msg.ChannelID)
+	db.chatLockMu.Unlock()
+	if agent == "" {
+		db.sendMessage(msg.ChannelID, "No active chat lock.")
+		return
+	}
+	db.sendMessage(msg.ChannelID, fmt.Sprintf("Unlocked from **%s**. Smart dispatch resumed.", agent))
+}
+
 func (db *DiscordBot) cmdNewSession(msg discordMessage) {
 	dbPath := db.cfg.HistoryDB
 	if dbPath == "" {
@@ -897,6 +949,8 @@ func (db *DiscordBot) cmdHelp(msg discordMessage) {
 			{Name: "!model [model] [agent]", Value: "Show/switch model"},
 			{Name: "!new", Value: "Start a new session (clear context)"},
 			{Name: "!cancel", Value: "Cancel all running tasks"},
+			{Name: "!chat <agent>", Value: "Lock this channel to an agent (skip dispatch)"},
+			{Name: "!end", Value: "Unlock channel, resume smart dispatch"},
 			{Name: "!ask <prompt>", Value: "Quick question (no routing, no session)"},
 			{Name: "!approve [tool|reset]", Value: "Manage auto-approved tools"},
 			{Name: "!help", Value: "Show this help"},
