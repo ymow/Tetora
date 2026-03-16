@@ -1,4 +1,4 @@
-package main
+package tool
 
 import (
 	"context"
@@ -10,10 +10,16 @@ import (
 	"time"
 )
 
-// --- Web Search Tool ---
+// WebSearchConfig holds configuration for web search.
+type WebSearchConfig struct {
+	Provider   string `json:"provider"`
+	APIKey     string `json:"apiKey"`
+	BaseURL    string `json:"baseURL"`
+	MaxResults int    `json:"maxResults"`
+}
 
-// toolWebSearch performs web search using the configured search provider.
-func toolWebSearch(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+// WebSearch performs web search using the configured search provider.
+func WebSearch(ctx context.Context, cfg WebSearchConfig, input json.RawMessage) (string, error) {
 	var args struct {
 		Query      string `json:"query"`
 		MaxResults int    `json:"maxResults"`
@@ -25,19 +31,17 @@ func toolWebSearch(ctx context.Context, cfg *Config, input json.RawMessage) (str
 		return "", fmt.Errorf("query is required")
 	}
 	if args.MaxResults <= 0 {
-		args.MaxResults = cfg.Tools.WebSearch.MaxResults
+		args.MaxResults = cfg.MaxResults
 		if args.MaxResults <= 0 {
 			args.MaxResults = 5
 		}
 	}
 
-	// Check if search provider is configured.
-	if cfg.Tools.WebSearch.Provider == "" {
+	if cfg.Provider == "" {
 		return "", fmt.Errorf("web search not configured (set tools.webSearch.provider in config)")
 	}
 
-	// Route to configured provider.
-	switch cfg.Tools.WebSearch.Provider {
+	switch cfg.Provider {
 	case "brave":
 		return searchBrave(ctx, cfg, args.Query, args.MaxResults)
 	case "tavily":
@@ -45,26 +49,24 @@ func toolWebSearch(ctx context.Context, cfg *Config, input json.RawMessage) (str
 	case "searxng":
 		return searchSearXNG(ctx, cfg, args.Query, args.MaxResults)
 	default:
-		return "", fmt.Errorf("unknown search provider: %s", cfg.Tools.WebSearch.Provider)
+		return "", fmt.Errorf("unknown search provider: %s", cfg.Provider)
 	}
 }
 
-// searchBrave calls the Brave Search API.
-func searchBrave(ctx context.Context, cfg *Config, query string, maxResults int) (string, error) {
-	if cfg.Tools.WebSearch.APIKey == "" {
+func searchBrave(ctx context.Context, cfg WebSearchConfig, query string, maxResults int) (string, error) {
+	if cfg.APIKey == "" {
 		return "", fmt.Errorf("brave search requires apiKey in tools.webSearch")
 	}
 
-	// Build request.
 	url := fmt.Sprintf("https://api.search.brave.com/res/v1/web/search?q=%s&count=%d",
-		urlEncode(query), maxResults)
+		URLEncode(query), maxResults)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-Subscription-Token", cfg.Tools.WebSearch.APIKey)
+	req.Header.Set("X-Subscription-Token", cfg.APIKey)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -83,7 +85,6 @@ func searchBrave(ctx context.Context, cfg *Config, query string, maxResults int)
 		return "", fmt.Errorf("read response: %w", err)
 	}
 
-	// Parse Brave API response.
 	var braveResp struct {
 		Web struct {
 			Results []struct {
@@ -97,7 +98,6 @@ func searchBrave(ctx context.Context, cfg *Config, query string, maxResults int)
 		return "", fmt.Errorf("parse brave response: %w", err)
 	}
 
-	// Convert to standard result format.
 	var results []map[string]string
 	for _, r := range braveResp.Web.Results {
 		results = append(results, map[string]string{
@@ -111,18 +111,16 @@ func searchBrave(ctx context.Context, cfg *Config, query string, maxResults int)
 	return string(out), nil
 }
 
-// searchTavily calls the Tavily Search API.
-func searchTavily(ctx context.Context, cfg *Config, query string, maxResults int) (string, error) {
-	if cfg.Tools.WebSearch.APIKey == "" {
+func searchTavily(ctx context.Context, cfg WebSearchConfig, query string, maxResults int) (string, error) {
+	if cfg.APIKey == "" {
 		return "", fmt.Errorf("tavily search requires apiKey in tools.webSearch")
 	}
 
-	// Build request.
 	reqBody := map[string]any{
-		"query":              query,
-		"max_results":        maxResults,
-		"search_depth":       "basic",
-		"include_answer":     false,
+		"query":               query,
+		"max_results":         maxResults,
+		"search_depth":        "basic",
+		"include_answer":      false,
 		"include_raw_content": false,
 	}
 	reqJSON, _ := json.Marshal(reqBody)
@@ -132,7 +130,7 @@ func searchTavily(ctx context.Context, cfg *Config, query string, maxResults int
 		return "", fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-API-Key", cfg.Tools.WebSearch.APIKey)
+	req.Header.Set("X-API-Key", cfg.APIKey)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -151,7 +149,6 @@ func searchTavily(ctx context.Context, cfg *Config, query string, maxResults int
 		return "", fmt.Errorf("read response: %w", err)
 	}
 
-	// Parse Tavily API response.
 	var tavilyResp struct {
 		Results []struct {
 			Title   string `json:"title"`
@@ -163,7 +160,6 @@ func searchTavily(ctx context.Context, cfg *Config, query string, maxResults int
 		return "", fmt.Errorf("parse tavily response: %w", err)
 	}
 
-	// Convert to standard result format.
 	var results []map[string]string
 	for _, r := range tavilyResp.Results {
 		results = append(results, map[string]string{
@@ -177,15 +173,13 @@ func searchTavily(ctx context.Context, cfg *Config, query string, maxResults int
 	return string(out), nil
 }
 
-// searchSearXNG calls a self-hosted SearXNG instance.
-func searchSearXNG(ctx context.Context, cfg *Config, query string, maxResults int) (string, error) {
-	baseURL := cfg.Tools.WebSearch.BaseURL
+func searchSearXNG(ctx context.Context, cfg WebSearchConfig, query string, maxResults int) (string, error) {
+	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		return "", fmt.Errorf("searxng requires baseURL in tools.webSearch")
 	}
 
-	// Build request.
-	url := fmt.Sprintf("%s/search?q=%s&format=json&pageno=1", baseURL, urlEncode(query))
+	url := fmt.Sprintf("%s/search?q=%s&format=json&pageno=1", baseURL, URLEncode(query))
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -210,7 +204,6 @@ func searchSearXNG(ctx context.Context, cfg *Config, query string, maxResults in
 		return "", fmt.Errorf("read response: %w", err)
 	}
 
-	// Parse SearXNG response.
 	var searxResp struct {
 		Results []struct {
 			Title   string `json:"title"`
@@ -222,12 +215,10 @@ func searchSearXNG(ctx context.Context, cfg *Config, query string, maxResults in
 		return "", fmt.Errorf("parse searxng response: %w", err)
 	}
 
-	// Limit results.
 	if len(searxResp.Results) > maxResults {
 		searxResp.Results = searxResp.Results[:maxResults]
 	}
 
-	// Convert to standard result format.
 	var results []map[string]string
 	for _, r := range searxResp.Results {
 		results = append(results, map[string]string{
@@ -241,11 +232,8 @@ func searchSearXNG(ctx context.Context, cfg *Config, query string, maxResults in
 	return string(out), nil
 }
 
-// --- Helper Functions ---
-
-// urlEncode encodes a string for use in URL query parameters.
-func urlEncode(s string) string {
-	// Simple URL encoding for query parameters.
+// URLEncode encodes a string for use in URL query parameters.
+func URLEncode(s string) string {
 	s = strings.ReplaceAll(s, " ", "+")
 	s = strings.ReplaceAll(s, "&", "%26")
 	s = strings.ReplaceAll(s, "=", "%3D")

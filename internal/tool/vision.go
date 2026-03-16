@@ -1,4 +1,4 @@
-package main
+package tool
 
 import (
 	"context"
@@ -11,59 +11,54 @@ import (
 	"time"
 )
 
-// --- P13.4: Image Analysis ---
-
-// visionInput is the input schema for the image_analyze tool.
-type visionInput struct {
-	Image  string `json:"image"`            // URL or base64 data
-	Prompt string `json:"prompt"`           // analysis prompt
-	Detail string `json:"detail,omitempty"` // "low", "high", "auto"
+// VisionConfig holds configuration for vision/image analysis.
+type VisionConfig struct {
+	Provider     string `json:"provider,omitempty"`
+	APIKey       string `json:"apiKey,omitempty"`
+	Model        string `json:"model,omitempty"`
+	MaxImageSize int    `json:"maxImageSize,omitempty"`
+	BaseURL      string `json:"baseURL,omitempty"`
 }
 
-// visionProvider abstracts different Vision API backends.
+type visionInput struct {
+	Image  string `json:"image"`
+	Prompt string `json:"prompt"`
+	Detail string `json:"detail,omitempty"`
+}
+
 type visionProvider interface {
-	// Name returns the provider identifier.
 	Name() string
-	// Analyze sends an image to the vision API and returns a text description.
 	Analyze(ctx context.Context, cfg *VisionConfig, imageData []byte, mediaType, prompt, detail string) (string, error)
 }
 
-// detectMediaType detects image format from first bytes.
-// Supported formats: JPEG, PNG, GIF, WebP.
-func detectMediaType(data []byte) string {
+// DetectMediaType detects image format from first bytes.
+func DetectMediaType(data []byte) string {
 	if len(data) < 12 {
 		return ""
 	}
-	// JPEG
 	if data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff {
 		return "image/jpeg"
 	}
-	// PNG
 	if data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4e && data[3] == 0x47 {
 		return "image/png"
 	}
-	// GIF
 	if string(data[:6]) == "GIF87a" || string(data[:6]) == "GIF89a" {
 		return "image/gif"
 	}
-	// WebP (RIFF....WEBP)
 	if string(data[:4]) == "RIFF" && len(data) >= 12 && string(data[8:12]) == "WEBP" {
 		return "image/webp"
 	}
 	return ""
 }
 
-// isBase64Image checks if the input string is base64-encoded image data.
-// Supports both raw base64 and data URI format (data:image/...;base64,...).
-func isBase64Image(s string) bool {
+// IsBase64Image checks if the input string is base64-encoded image data.
+func IsBase64Image(s string) bool {
 	if strings.HasPrefix(s, "data:image/") {
 		return true
 	}
-	// Check if it looks like raw base64 (no URL-like prefix).
 	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
 		return false
 	}
-	// Try to detect if it's base64 by checking for valid base64 chars.
 	if len(s) > 100 {
 		sample := s[:100]
 		for _, c := range sample {
@@ -76,20 +71,18 @@ func isBase64Image(s string) bool {
 	return false
 }
 
-// parseBase64Image extracts raw bytes and media type from a base64 string.
-func parseBase64Image(s string) ([]byte, string, error) {
+// ParseBase64Image extracts raw bytes and media type from a base64 string.
+func ParseBase64Image(s string) ([]byte, string, error) {
 	var b64Data string
 	var mediaType string
 
 	if strings.HasPrefix(s, "data:") {
-		// Parse data URI: data:image/jpeg;base64,/9j/4AAQ...
 		idx := strings.Index(s, ",")
 		if idx < 0 {
 			return nil, "", fmt.Errorf("invalid data URI format")
 		}
 		header := s[:idx]
 		b64Data = s[idx+1:]
-		// Extract media type from header: data:image/jpeg;base64
 		header = strings.TrimPrefix(header, "data:")
 		semiIdx := strings.Index(header, ";")
 		if semiIdx > 0 {
@@ -103,16 +96,14 @@ func parseBase64Image(s string) ([]byte, string, error) {
 
 	data, err := base64.StdEncoding.DecodeString(b64Data)
 	if err != nil {
-		// Try URL-safe base64.
 		data, err = base64.URLEncoding.DecodeString(b64Data)
 		if err != nil {
 			return nil, "", fmt.Errorf("invalid base64 data: %w", err)
 		}
 	}
 
-	// If media type not from data URI, detect from bytes.
 	if mediaType == "" {
-		mediaType = detectMediaType(data)
+		mediaType = DetectMediaType(data)
 		if mediaType == "" {
 			return nil, "", fmt.Errorf("unsupported image format")
 		}
@@ -121,8 +112,8 @@ func parseBase64Image(s string) ([]byte, string, error) {
 	return data, mediaType, nil
 }
 
-// fetchImage downloads an image from a URL and returns the bytes.
-func fetchImage(ctx context.Context, url string, maxSize int) ([]byte, string, error) {
+// FetchImage downloads an image from a URL and returns the bytes.
+func FetchImage(ctx context.Context, url string, maxSize int) ([]byte, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -143,7 +134,6 @@ func fetchImage(ctx context.Context, url string, maxSize int) ([]byte, string, e
 		return nil, "", fmt.Errorf("fetch image: HTTP %d %s", resp.StatusCode, resp.Status)
 	}
 
-	// Read with size limit.
 	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxSize)+1))
 	if err != nil {
 		return nil, "", fmt.Errorf("read image: %w", err)
@@ -152,11 +142,9 @@ func fetchImage(ctx context.Context, url string, maxSize int) ([]byte, string, e
 		return nil, "", fmt.Errorf("image too large: %d bytes exceeds limit of %d bytes", len(data), maxSize)
 	}
 
-	// Detect media type from response header or bytes.
 	mediaType := ""
 	ct := resp.Header.Get("Content-Type")
 	if ct != "" {
-		// Extract media type from content-type header (e.g. "image/jpeg; charset=utf-8").
 		parts := strings.SplitN(ct, ";", 2)
 		mt := strings.TrimSpace(parts[0])
 		switch mt {
@@ -165,7 +153,7 @@ func fetchImage(ctx context.Context, url string, maxSize int) ([]byte, string, e
 		}
 	}
 	if mediaType == "" {
-		mediaType = detectMediaType(data)
+		mediaType = DetectMediaType(data)
 	}
 	if mediaType == "" {
 		return nil, "", fmt.Errorf("unsupported image format from URL")
@@ -174,11 +162,10 @@ func fetchImage(ctx context.Context, url string, maxSize int) ([]byte, string, e
 	return data, mediaType, nil
 }
 
-// defaultMaxImageSize is 5MB.
-const defaultMaxImageSize = 5 * 1024 * 1024
+const DefaultMaxImageSize = 5 * 1024 * 1024
 
-// toolImageAnalyze is the handler for the image_analyze tool.
-func toolImageAnalyze(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+// ImageAnalyze is the handler for image analysis.
+func ImageAnalyze(ctx context.Context, cfg VisionConfig, input json.RawMessage) (string, error) {
 	var args visionInput
 	if err := json.Unmarshal(input, &args); err != nil {
 		return "", fmt.Errorf("invalid input: %w", err)
@@ -193,33 +180,28 @@ func toolImageAnalyze(ctx context.Context, cfg *Config, input json.RawMessage) (
 		args.Detail = "auto"
 	}
 
-	// Validate detail parameter.
 	switch args.Detail {
 	case "low", "high", "auto":
-		// ok
 	default:
 		return "", fmt.Errorf("invalid detail level %q: must be low, high, or auto", args.Detail)
 	}
 
-	// Determine provider early to fail fast if not configured.
-	provider := resolveVisionProvider(cfg)
+	provider := ResolveVisionProvider(cfg)
 	if provider == nil {
 		return "", fmt.Errorf("vision not configured (set tools.vision.provider in config)")
 	}
 
-	// Determine max image size.
-	maxSize := cfg.Tools.Vision.MaxImageSize
+	maxSize := cfg.MaxImageSize
 	if maxSize <= 0 {
-		maxSize = defaultMaxImageSize
+		maxSize = DefaultMaxImageSize
 	}
 
-	// Get image data.
 	var imageData []byte
 	var mediaType string
 	var err error
 
-	if isBase64Image(args.Image) {
-		imageData, mediaType, err = parseBase64Image(args.Image)
+	if IsBase64Image(args.Image) {
+		imageData, mediaType, err = ParseBase64Image(args.Image)
 		if err != nil {
 			return "", fmt.Errorf("parse base64 image: %w", err)
 		}
@@ -227,23 +209,19 @@ func toolImageAnalyze(ctx context.Context, cfg *Config, input json.RawMessage) (
 			return "", fmt.Errorf("image too large: %d bytes exceeds limit of %d bytes", len(imageData), maxSize)
 		}
 	} else {
-		// Treat as URL.
-		imageData, mediaType, err = fetchImage(ctx, args.Image, maxSize)
+		imageData, mediaType, err = FetchImage(ctx, args.Image, maxSize)
 		if err != nil {
 			return "", err
 		}
 	}
 
-	// Validate media type is supported.
 	switch mediaType {
 	case "image/jpeg", "image/png", "image/gif", "image/webp":
-		// ok
 	default:
 		return "", fmt.Errorf("unsupported image format: %s (supported: jpeg, png, gif, webp)", mediaType)
 	}
 
-	// Call the vision API.
-	result, err := provider.Analyze(ctx, &cfg.Tools.Vision, imageData, mediaType, args.Prompt, args.Detail)
+	result, err := provider.Analyze(ctx, &cfg, imageData, mediaType, args.Prompt, args.Detail)
 	if err != nil {
 		return "", fmt.Errorf("vision analysis failed: %w", err)
 	}
@@ -251,15 +229,15 @@ func toolImageAnalyze(ctx context.Context, cfg *Config, input json.RawMessage) (
 	return result, nil
 }
 
-// resolveVisionProvider returns the appropriate vision provider based on config.
-func resolveVisionProvider(cfg *Config) visionProvider {
-	switch cfg.Tools.Vision.Provider {
+// ResolveVisionProvider returns the appropriate vision provider based on config.
+func ResolveVisionProvider(cfg VisionConfig) visionProvider {
+	switch cfg.Provider {
 	case "anthropic":
-		return &anthropicVision{}
+		return &AnthropicVision{}
 	case "openai":
-		return &openaiVision{}
+		return &OpenAIVision{}
 	case "google":
-		return &googleVision{}
+		return &GoogleVision{}
 	default:
 		return nil
 	}
@@ -267,11 +245,11 @@ func resolveVisionProvider(cfg *Config) visionProvider {
 
 // --- Anthropic Vision Provider ---
 
-type anthropicVision struct{}
+type AnthropicVision struct{}
 
-func (a *anthropicVision) Name() string { return "anthropic" }
+func (a *AnthropicVision) Name() string { return "anthropic" }
 
-func (a *anthropicVision) Analyze(ctx context.Context, cfg *VisionConfig, imageData []byte, mediaType, prompt, detail string) (string, error) {
+func (a *AnthropicVision) Analyze(ctx context.Context, cfg *VisionConfig, imageData []byte, mediaType, prompt, detail string) (string, error) {
 	if cfg.APIKey == "" {
 		return "", fmt.Errorf("anthropic vision requires apiKey in tools.vision")
 	}
@@ -286,7 +264,6 @@ func (a *anthropicVision) Analyze(ctx context.Context, cfg *VisionConfig, imageD
 		baseURL = "https://api.anthropic.com"
 	}
 
-	// Build Anthropic Messages API request.
 	b64Data := base64.StdEncoding.EncodeToString(imageData)
 	reqBody := map[string]any{
 		"model":      model,
@@ -342,7 +319,6 @@ func (a *anthropicVision) Analyze(ctx context.Context, cfg *VisionConfig, imageD
 		return "", fmt.Errorf("anthropic api error: %d %s", resp.StatusCode, string(body))
 	}
 
-	// Parse response.
 	var result struct {
 		Content []struct {
 			Type string `json:"type"`
@@ -353,7 +329,6 @@ func (a *anthropicVision) Analyze(ctx context.Context, cfg *VisionConfig, imageD
 		return "", fmt.Errorf("parse response: %w", err)
 	}
 
-	// Collect text content.
 	var texts []string
 	for _, c := range result.Content {
 		if c.Type == "text" && c.Text != "" {
@@ -369,11 +344,11 @@ func (a *anthropicVision) Analyze(ctx context.Context, cfg *VisionConfig, imageD
 
 // --- OpenAI Vision Provider ---
 
-type openaiVision struct{}
+type OpenAIVision struct{}
 
-func (o *openaiVision) Name() string { return "openai" }
+func (o *OpenAIVision) Name() string { return "openai" }
 
-func (o *openaiVision) Analyze(ctx context.Context, cfg *VisionConfig, imageData []byte, mediaType, prompt, detail string) (string, error) {
+func (o *OpenAIVision) Analyze(ctx context.Context, cfg *VisionConfig, imageData []byte, mediaType, prompt, detail string) (string, error) {
 	if cfg.APIKey == "" {
 		return "", fmt.Errorf("openai vision requires apiKey in tools.vision")
 	}
@@ -388,11 +363,9 @@ func (o *openaiVision) Analyze(ctx context.Context, cfg *VisionConfig, imageData
 		baseURL = "https://api.openai.com"
 	}
 
-	// Build data URI for OpenAI.
 	b64Data := base64.StdEncoding.EncodeToString(imageData)
 	dataURI := fmt.Sprintf("data:%s;base64,%s", mediaType, b64Data)
 
-	// Build OpenAI Chat Completions request with image_url content part.
 	reqBody := map[string]any{
 		"model":      model,
 		"max_tokens": 1024,
@@ -445,7 +418,6 @@ func (o *openaiVision) Analyze(ctx context.Context, cfg *VisionConfig, imageData
 		return "", fmt.Errorf("openai api error: %d %s", resp.StatusCode, string(body))
 	}
 
-	// Parse response.
 	var result struct {
 		Choices []struct {
 			Message struct {
@@ -466,11 +438,11 @@ func (o *openaiVision) Analyze(ctx context.Context, cfg *VisionConfig, imageData
 
 // --- Google Vision Provider ---
 
-type googleVision struct{}
+type GoogleVision struct{}
 
-func (g *googleVision) Name() string { return "google" }
+func (g *GoogleVision) Name() string { return "google" }
 
-func (g *googleVision) Analyze(ctx context.Context, cfg *VisionConfig, imageData []byte, mediaType, prompt, detail string) (string, error) {
+func (g *GoogleVision) Analyze(ctx context.Context, cfg *VisionConfig, imageData []byte, mediaType, prompt, detail string) (string, error) {
 	if cfg.APIKey == "" {
 		return "", fmt.Errorf("google vision requires apiKey in tools.vision")
 	}
@@ -485,7 +457,6 @@ func (g *googleVision) Analyze(ctx context.Context, cfg *VisionConfig, imageData
 		baseURL = "https://generativelanguage.googleapis.com"
 	}
 
-	// Build Gemini generateContent request.
 	b64Data := base64.StdEncoding.EncodeToString(imageData)
 	reqBody := map[string]any{
 		"contents": []map[string]any{
@@ -533,7 +504,6 @@ func (g *googleVision) Analyze(ctx context.Context, cfg *VisionConfig, imageData
 		return "", fmt.Errorf("google api error: %d %s", resp.StatusCode, string(body))
 	}
 
-	// Parse Gemini response.
 	var result struct {
 		Candidates []struct {
 			Content struct {

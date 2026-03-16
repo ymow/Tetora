@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"tetora/internal/tool"
 )
 
 // registerCoreTools registers core exec/read/write/edit/web tools.
@@ -101,7 +103,14 @@ func registerCoreTools(r *ToolRegistry, cfg *Config, enabled func(string) bool) 
 				},
 				"required": ["query"]
 			}`),
-			Handler: toolWebSearch,
+			Handler: func(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+				return tool.WebSearch(ctx, tool.WebSearchConfig{
+					Provider:   cfg.Tools.WebSearch.Provider,
+					APIKey:     cfg.Tools.WebSearch.APIKey,
+					BaseURL:    cfg.Tools.WebSearch.BaseURL,
+					MaxResults: cfg.Tools.WebSearch.MaxResults,
+				}, input)
+			},
 			Builtin: true,
 		})
 	}
@@ -301,7 +310,15 @@ func registerCoreTools(r *ToolRegistry, cfg *Config, enabled func(string) bool) 
 				},
 				"required": ["image"]
 			}`),
-			Handler: toolImageAnalyze,
+			Handler: func(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+				return tool.ImageAnalyze(ctx, tool.VisionConfig{
+					Provider:     cfg.Tools.Vision.Provider,
+					APIKey:       cfg.Tools.Vision.APIKey,
+					Model:        cfg.Tools.Vision.Model,
+					MaxImageSize: cfg.Tools.Vision.MaxImageSize,
+					BaseURL:      cfg.Tools.Vision.BaseURL,
+				}, input)
+			},
 			Builtin: true,
 		})
 	}
