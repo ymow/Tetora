@@ -370,19 +370,19 @@ func TestCheckSLAViolationsNoData(t *testing.T) {
 
 func TestSLAConfigDefaults(t *testing.T) {
 	cfg := SLAConfig{}
-	if cfg.checkIntervalOrDefault() != 1*time.Hour {
-		t.Errorf("default checkInterval = %v, want 1h", cfg.checkIntervalOrDefault())
+	if cfg.CheckIntervalOrDefault() != 1*time.Hour {
+		t.Errorf("default checkInterval = %v, want 1h", cfg.CheckIntervalOrDefault())
 	}
-	if cfg.windowOrDefault() != 24*time.Hour {
-		t.Errorf("default window = %v, want 24h", cfg.windowOrDefault())
+	if cfg.WindowOrDefault() != 24*time.Hour {
+		t.Errorf("default window = %v, want 24h", cfg.WindowOrDefault())
 	}
 
 	cfg2 := SLAConfig{CheckInterval: "30m", Window: "12h"}
-	if cfg2.checkIntervalOrDefault() != 30*time.Minute {
-		t.Errorf("checkInterval = %v, want 30m", cfg2.checkIntervalOrDefault())
+	if cfg2.CheckIntervalOrDefault() != 30*time.Minute {
+		t.Errorf("checkInterval = %v, want 30m", cfg2.CheckIntervalOrDefault())
 	}
-	if cfg2.windowOrDefault() != 12*time.Hour {
-		t.Errorf("window = %v, want 12h", cfg2.windowOrDefault())
+	if cfg2.WindowOrDefault() != 12*time.Hour {
+		t.Errorf("window = %v, want 12h", cfg2.WindowOrDefault())
 	}
 }
 

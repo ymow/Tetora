@@ -688,7 +688,7 @@ func main() {
 					}
 				}
 			}()
-			logInfo("SLA monitor enabled", "interval", cfg.SLA.checkIntervalOrDefault().String(), "window", cfg.SLA.windowOrDefault().String())
+			logInfo("SLA monitor enabled", "interval", cfg.SLA.CheckIntervalOrDefault().String(), "window", cfg.SLA.WindowOrDefault().String())
 		}
 
 		// Start budget alert goroutine.
