@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -85,6 +86,26 @@ type Result struct {
 // ErrResult returns a Result signaling an API-level error.
 func ErrResult(format string, args ...any) *Result {
 	return &Result{IsError: true, Error: fmt.Sprintf(format, args...)}
+}
+
+// IsTransientError checks whether an error message indicates a transient failure
+// that should count towards the circuit breaker threshold and trigger failover.
+func IsTransientError(errMsg string) bool {
+	lower := strings.ToLower(errMsg)
+	transient := []string{
+		"timeout", "timed out", "deadline exceeded",
+		"connection refused", "connection reset",
+		"eof", "broken pipe",
+		"http 5", "status 5",
+		"temporarily unavailable", "service unavailable",
+		"too many requests", "rate limit",
+	}
+	for _, t := range transient {
+		if strings.Contains(lower, t) {
+			return true
+		}
+	}
+	return false
 }
 
 // --- Message Types ---

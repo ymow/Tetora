@@ -97,9 +97,9 @@ func TestResolveProviderName_RoleWithoutProvider(t *testing.T) {
 func TestProviderRegistry_RegisterAndGet(t *testing.T) {
 	reg := newProviderRegistry()
 	p := &mockProvider{name: "test"}
-	reg.register("test", p)
+	reg.Register("test", p)
 
-	got, err := reg.get("test")
+	got, err := reg.Get("test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestProviderRegistry_RegisterAndGet(t *testing.T) {
 
 func TestProviderRegistry_GetNotFound(t *testing.T) {
 	reg := newProviderRegistry()
-	_, err := reg.get("missing")
+	_, err := reg.Get("missing")
 	if err == nil {
 		t.Fatal("expected error for missing provider")
 	}
@@ -125,7 +125,7 @@ func TestInitProviders_BackwardCompat(t *testing.T) {
 	}
 	// Even with empty providers map, should auto-create "claude".
 	reg := initProviders(cfg)
-	p, err := reg.get("claude")
+	p, err := reg.Get("claude")
 	if err != nil {
 		t.Fatalf("expected claude provider: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestInitProviders_OpenAIProvider(t *testing.T) {
 		},
 	}
 	reg := initProviders(cfg)
-	p, err := reg.get("myopenai")
+	p, err := reg.Get("myopenai")
 	if err != nil {
 		t.Fatalf("expected myopenai provider: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestInitProviders_ClaudeCLIProvider(t *testing.T) {
 		},
 	}
 	reg := initProviders(cfg)
-	p, err := reg.get("claude")
+	p, err := reg.Get("claude")
 	if err != nil {
 		t.Fatalf("expected claude provider: %v", err)
 	}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+
+	"tetora/internal/provider"
 )
 
 // --- Tool Types ---
@@ -18,12 +20,8 @@ type ToolDef struct {
 	RequireAuth bool            `json:"requireAuth,omitempty"`
 }
 
-// ToolCall represents a tool invocation request from the provider.
-type ToolCall struct {
-	ID    string          `json:"id"`
-	Name  string          `json:"name"`
-	Input json.RawMessage `json:"input"`
-}
+// ToolCall is an alias for provider.ToolCall.
+type ToolCall = provider.ToolCall
 
 // ToolResult represents the result of a tool execution.
 type ToolResult struct {

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"tetora/internal/provider"
+
 	"tetora/internal/cost"
 	"tetora/internal/estimate"
 )
@@ -54,7 +56,7 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 
 	// Resolve provider.
 	providerName := resolveProviderName(cfg, task, agentName)
-	p, err := registry.get(providerName)
+	p, err := registry.Get(providerName)
 	if err != nil {
 		return &ProviderResult{IsError: true, Error: err.Error()}
 	}
@@ -97,12 +99,16 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 
 	// Build initial request.
 	req := buildProviderRequest(cfg, task, agentName, providerName, eventCh)
-	// Convert []*ToolDef to []ToolDef for the provider request.
-	toolDefs := make([]ToolDef, len(tools))
+	// Convert []*ToolDef to []provider.ToolDef for the provider request.
+	providerTools := make([]provider.ToolDef, len(tools))
 	for i, t := range tools {
-		toolDefs[i] = *t
+		providerTools[i] = provider.ToolDef{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		}
 	}
-	req.Tools = toolDefs
+	req.Tools = providerTools
 
 	// Initialize enhanced loop detector.
 	detector := NewLoopDetector()
@@ -242,7 +248,8 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 			detector.Record(tc.Name, tc.Input)
 
 			// Apply trust-level filtering.
-			if mockResult, shouldExec := filterToolCall(cfg, task.Agent, tc); !shouldExec {
+			rootTC := ToolCall{ID: tc.ID, Name: tc.Name, Input: tc.Input}
+			if mockResult, shouldExec := filterToolCall(cfg, task.Agent, rootTC); !shouldExec {
 				// Tool call filtered by trust level (observe or suggest mode).
 				toolResults = append(toolResults, *mockResult)
 				continue
@@ -250,7 +257,7 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 
 			// P28.0: Pre-execution approval gate.
 			if needsApproval(cfg, tc.Name) && task.approvalGate != nil && !task.approvalGate.IsAutoApproved(tc.Name) {
-				approved, gateErr := requestToolApproval(ctx, cfg, task, tc)
+				approved, gateErr := requestToolApproval(ctx, cfg, task, rootTC)
 				if gateErr != nil || !approved {
 					toolResults = append(toolResults, ToolResult{
 						ToolUseID: tc.ID,

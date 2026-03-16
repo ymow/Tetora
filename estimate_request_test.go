@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"tetora/internal/estimate"
+	"tetora/internal/provider"
 )
 
 func TestEstimateRequestTokens(t *testing.T) {
@@ -39,7 +40,7 @@ func TestEstimateRequestTokensWithMessages(t *testing.T) {
 func TestEstimateRequestTokensWithTools(t *testing.T) {
 	req := ProviderRequest{
 		Prompt: "test",
-		Tools: []ToolDef{
+		Tools: []provider.ToolDef{
 			{Name: "web_search", Description: "Search the web", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		},
 	}

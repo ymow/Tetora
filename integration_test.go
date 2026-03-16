@@ -53,7 +53,7 @@ func testConfigWithTools(tools ...*ToolDef) *Config {
 
 func testRegistry(p Provider) *providerRegistry {
 	reg := newProviderRegistry()
-	reg.register(p.Name(), p)
+	reg.Register(p.Name(), p)
 	return reg
 }
 

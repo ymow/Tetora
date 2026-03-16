@@ -1,4 +1,5 @@
-package main
+// Package upload manages file uploads with sanitization and retention.
+package upload
 
 import (
 	"fmt"
@@ -9,33 +10,30 @@ import (
 	"time"
 )
 
-// UploadedFile represents a file uploaded by a user.
-type UploadedFile struct {
+// File represents a file uploaded by a user.
+type File struct {
 	Name       string `json:"name"`
-	Path       string `json:"path"`       // full path on disk
+	Path       string `json:"path"`
 	Size       int64  `json:"size"`
 	MimeType   string `json:"mimeType"`
-	Source     string `json:"source"`     // "telegram", "http", "dashboard"
+	Source     string `json:"source"`
 	UploadedAt string `json:"uploadedAt"`
 }
 
-// initUploadDir ensures the upload directory exists.
-func initUploadDir(baseDir string) string {
+// InitDir ensures the upload directory exists and returns its path.
+func InitDir(baseDir string) string {
 	dir := filepath.Join(baseDir, "uploads")
 	os.MkdirAll(dir, 0o755)
 	return dir
 }
 
-// saveUpload saves uploaded content to the uploads directory.
-// Returns the UploadedFile with the saved path.
-func saveUpload(uploadDir, originalName string, reader io.Reader, size int64, source string) (*UploadedFile, error) {
-	// Sanitize filename.
-	safeName := sanitizeFilename(originalName)
+// Save saves uploaded content to the uploads directory.
+func Save(uploadDir, originalName string, reader io.Reader, size int64, source string) (*File, error) {
+	safeName := SanitizeFilename(originalName)
 	if safeName == "" {
 		safeName = "upload"
 	}
 
-	// Add timestamp prefix to avoid collisions.
 	ts := time.Now().Format("20060102-150405")
 	filename := fmt.Sprintf("%s_%s", ts, safeName)
 	fullPath := filepath.Join(uploadDir, filename)
@@ -52,23 +50,20 @@ func saveUpload(uploadDir, originalName string, reader io.Reader, size int64, so
 		return nil, fmt.Errorf("write file: %w", err)
 	}
 
-	return &UploadedFile{
+	return &File{
 		Name:       safeName,
 		Path:       fullPath,
 		Size:       written,
-		MimeType:   detectMimeType(safeName),
+		MimeType:   DetectMimeType(safeName),
 		Source:     source,
 		UploadedAt: time.Now().Format(time.RFC3339),
 	}, nil
 }
 
-// sanitizeFilename removes path separators and unsafe characters.
-func sanitizeFilename(name string) string {
-	// Take only the base name.
+// SanitizeFilename removes path separators and unsafe characters.
+func SanitizeFilename(name string) string {
 	name = filepath.Base(name)
-	// Remove leading dots.
 	name = strings.TrimLeft(name, ".")
-	// Replace unsafe characters.
 	var safe []byte
 	for _, c := range []byte(name) {
 		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
@@ -79,8 +74,8 @@ func sanitizeFilename(name string) string {
 	return string(safe)
 }
 
-// detectMimeType guesses MIME type from filename extension.
-func detectMimeType(name string) string {
+// DetectMimeType guesses MIME type from filename extension.
+func DetectMimeType(name string) string {
 	ext := strings.ToLower(filepath.Ext(name))
 	switch ext {
 	case ".jpg", ".jpeg":
@@ -130,8 +125,8 @@ func detectMimeType(name string) string {
 	}
 }
 
-// buildFilePromptPrefix creates the prompt prefix describing attached files.
-func buildFilePromptPrefix(files []*UploadedFile) string {
+// BuildPromptPrefix creates the prompt prefix describing attached files.
+func BuildPromptPrefix(files []*File) string {
 	if len(files) == 0 {
 		return ""
 	}
@@ -144,8 +139,8 @@ func buildFilePromptPrefix(files []*UploadedFile) string {
 	return strings.Join(lines, "\n")
 }
 
-// cleanupUploads removes upload files older than the given number of days.
-func cleanupUploads(uploadDir string, days int) {
+// Cleanup removes upload files older than the given number of days.
+func Cleanup(uploadDir string, days int) {
 	entries, err := os.ReadDir(uploadDir)
 	if err != nil {
 		return
@@ -163,14 +158,4 @@ func cleanupUploads(uploadDir string, days int) {
 			os.Remove(filepath.Join(uploadDir, e.Name()))
 		}
 	}
-}
-
-// coalesce returns the first non-empty string from the arguments.
-func coalesce(ss ...string) string {
-	for _, s := range ss {
-		if s != "" {
-			return s
-		}
-	}
-	return ""
 }

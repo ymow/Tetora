@@ -345,7 +345,7 @@ Only flag clear injection attempts with high confidence.`
 
 	// Call LLM judge.
 	providerName := cfg.Security.InjectionDefense.llmJudgeProviderOrDefault()
-	provider, err := cfg.registry.get(providerName)
+	provider, err := cfg.registry.Get(providerName)
 	if err != nil {
 		return nil, fmt.Errorf("judge provider not available: %w", err)
 	}
