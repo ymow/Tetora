@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"tetora/internal/automation/briefing"
 )
 
 // --- Test helpers ---
@@ -52,13 +54,15 @@ CREATE TABLE IF NOT EXISTS history (
 	return dbPath
 }
 
+// setupBriefingService creates a briefing service with all optional globals cleared
+// to nil for isolation. Callers that need a specific global must set it BEFORE calling
+// this function so it gets captured into the service's deps.
 func setupBriefingService(t *testing.T) (*BriefingService, string, func()) {
 	t.Helper()
 	dbPath := setupBriefingTestDB(t)
 	cfg := &Config{HistoryDB: dbPath}
-	svc := newBriefingService(cfg)
 
-	oldBriefing := globalBriefingService
+	// Save globals.
 	oldScheduling := globalSchedulingService
 	oldContacts := globalContactsService
 	oldHabits := globalHabitsService
@@ -68,7 +72,6 @@ func setupBriefingService(t *testing.T) (*BriefingService, string, func()) {
 	oldInsights := globalInsightsEngine
 
 	// Clear all globals for isolated test.
-	globalBriefingService = svc
 	globalSchedulingService = nil
 	globalContactsService = nil
 	globalHabitsService = nil
@@ -77,8 +80,9 @@ func setupBriefingService(t *testing.T) (*BriefingService, string, func()) {
 	globalTaskManager = nil
 	globalInsightsEngine = nil
 
+	svc := newBriefingService(cfg)
+
 	cleanup := func() {
-		globalBriefingService = oldBriefing
 		globalSchedulingService = oldScheduling
 		globalContactsService = oldContacts
 		globalHabitsService = oldHabits
@@ -89,6 +93,12 @@ func setupBriefingService(t *testing.T) (*BriefingService, string, func()) {
 	}
 
 	return svc, dbPath, cleanup
+}
+
+// testBriefingAppCtx creates a context with an App containing the given BriefingService.
+func testBriefingAppCtx(svc *BriefingService) context.Context {
+	app := &App{Briefing: svc}
+	return withApp(context.Background(), app)
 }
 
 func briefingExecSQL(t *testing.T, dbPath, sql string) {
@@ -108,23 +118,20 @@ func TestNewBriefingService(t *testing.T) {
 	if svc == nil {
 		t.Fatal("expected non-nil service")
 	}
-	if svc.dbPath != cfg.HistoryDB {
-		t.Errorf("expected dbPath %s, got %s", cfg.HistoryDB, svc.dbPath)
-	}
-	if svc.cfg != cfg {
-		t.Error("expected cfg to be stored")
+	if svc.DBPath() != cfg.HistoryDB {
+		t.Errorf("expected dbPath %s, got %s", cfg.HistoryDB, svc.DBPath())
 	}
 }
 
 // --- Greeting tests ---
 
 func TestMorningGreeting(t *testing.T) {
-	svc := &BriefingService{}
+	svc := briefing.New("", briefing.Deps{})
 
 	tests := []struct {
-		name    string
-		hour    int
-		want    string
+		name string
+		hour int
+		want string
 	}{
 		{"early_bird", 4, "Early bird!"},
 		{"morning", 8, "Good morning!"},
@@ -134,9 +141,9 @@ func TestMorningGreeting(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			date := time.Date(2026, 2, 23, tt.hour, 0, 0, 0, time.UTC)
-			greeting := svc.morningGreeting(date)
+			greeting := svc.MorningGreeting(date)
 			if !strings.Contains(greeting, tt.want) {
-				t.Errorf("morningGreeting(%d:00) = %q, want to contain %q", tt.hour, greeting, tt.want)
+				t.Errorf("MorningGreeting(%d:00) = %q, want to contain %q", tt.hour, greeting, tt.want)
 			}
 			// Should always contain the weekday and formatted date.
 			if !strings.Contains(greeting, "Monday") {
@@ -150,14 +157,14 @@ func TestMorningGreeting(t *testing.T) {
 }
 
 func TestEveningGreeting(t *testing.T) {
-	svc := &BriefingService{}
+	svc := briefing.New("", briefing.Deps{})
 	date := time.Date(2026, 2, 23, 20, 0, 0, 0, time.UTC) // Monday
-	greeting := svc.eveningGreeting(date)
+	greeting := svc.EveningGreeting(date)
 	if !strings.Contains(greeting, "Good evening!") {
-		t.Errorf("eveningGreeting = %q, want to contain 'Good evening!'", greeting)
+		t.Errorf("EveningGreeting = %q, want to contain 'Good evening!'", greeting)
 	}
 	if !strings.Contains(greeting, "Monday") {
-		t.Errorf("eveningGreeting = %q, want to contain weekday", greeting)
+		t.Errorf("EveningGreeting = %q, want to contain weekday", greeting)
 	}
 }
 
@@ -309,11 +316,11 @@ func TestFormatBriefing_EmptySections(t *testing.T) {
 // --- Quote / Reflection variation ---
 
 func TestDailyQuote_DifferentDays(t *testing.T) {
-	svc := &BriefingService{}
+	svc := briefing.New("", briefing.Deps{})
 	seen := make(map[string]bool)
 	for day := 1; day <= 7; day++ {
 		date := time.Date(2026, 1, day, 8, 0, 0, 0, time.UTC)
-		q := svc.dailyQuote(date)
+		q := svc.DailyQuote(date)
 		if q == "" {
 			t.Errorf("empty quote for day %d", day)
 		}
@@ -325,11 +332,11 @@ func TestDailyQuote_DifferentDays(t *testing.T) {
 }
 
 func TestEveningReflection_DifferentDays(t *testing.T) {
-	svc := &BriefingService{}
+	svc := briefing.New("", briefing.Deps{})
 	seen := make(map[string]bool)
 	for day := 1; day <= 7; day++ {
 		date := time.Date(2026, 1, day, 20, 0, 0, 0, time.UTC)
-		p := svc.eveningReflection(date)
+		p := svc.EveningReflection(date)
 		if p == "" {
 			t.Errorf("empty reflection for day %d", day)
 		}
@@ -361,11 +368,8 @@ func TestCapitalizeFirst(t *testing.T) {
 // --- Tool handler tests ---
 
 func TestToolBriefingMorning_NotInitialized(t *testing.T) {
-	old := globalBriefingService
-	globalBriefingService = nil
-	defer func() { globalBriefingService = old }()
-
-	_, err := toolBriefingMorning(context.Background(), &Config{}, json.RawMessage(`{}`))
+	ctx := withApp(context.Background(), &App{})
+	_, err := toolBriefingMorning(ctx, &Config{}, json.RawMessage(`{}`))
 	if err == nil {
 		t.Fatal("expected error when service is nil")
 	}
@@ -375,11 +379,8 @@ func TestToolBriefingMorning_NotInitialized(t *testing.T) {
 }
 
 func TestToolBriefingEvening_NotInitialized(t *testing.T) {
-	old := globalBriefingService
-	globalBriefingService = nil
-	defer func() { globalBriefingService = old }()
-
-	_, err := toolBriefingEvening(context.Background(), &Config{}, json.RawMessage(`{}`))
+	ctx := withApp(context.Background(), &App{})
+	_, err := toolBriefingEvening(ctx, &Config{}, json.RawMessage(`{}`))
 	if err == nil {
 		t.Fatal("expected error when service is nil")
 	}
@@ -391,9 +392,9 @@ func TestToolBriefingEvening_NotInitialized(t *testing.T) {
 func TestToolBriefingMorning(t *testing.T) {
 	svc, _, cleanup := setupBriefingService(t)
 	defer cleanup()
-	_ = svc
 
-	result, err := toolBriefingMorning(context.Background(), &Config{}, json.RawMessage(`{}`))
+	ctx := testBriefingAppCtx(svc)
+	result, err := toolBriefingMorning(ctx, &Config{}, json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("toolBriefingMorning: %v", err)
 	}
@@ -408,9 +409,9 @@ func TestToolBriefingMorning(t *testing.T) {
 func TestToolBriefingEvening(t *testing.T) {
 	svc, _, cleanup := setupBriefingService(t)
 	defer cleanup()
-	_ = svc
 
-	result, err := toolBriefingEvening(context.Background(), &Config{}, json.RawMessage(`{}`))
+	ctx := testBriefingAppCtx(svc)
+	result, err := toolBriefingEvening(ctx, &Config{}, json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("toolBriefingEvening: %v", err)
 	}
@@ -428,9 +429,9 @@ func TestToolBriefingEvening(t *testing.T) {
 func TestToolBriefingMorning_WithDate(t *testing.T) {
 	svc, _, cleanup := setupBriefingService(t)
 	defer cleanup()
-	_ = svc
 
-	result, err := toolBriefingMorning(context.Background(), &Config{}, json.RawMessage(`{"date":"2026-03-15"}`))
+	ctx := testBriefingAppCtx(svc)
+	result, err := toolBriefingMorning(ctx, &Config{}, json.RawMessage(`{"date":"2026-03-15"}`))
 	if err != nil {
 		t.Fatalf("toolBriefingMorning with date: %v", err)
 	}
@@ -442,9 +443,9 @@ func TestToolBriefingMorning_WithDate(t *testing.T) {
 func TestToolBriefingMorning_InvalidDate(t *testing.T) {
 	svc, _, cleanup := setupBriefingService(t)
 	defer cleanup()
-	_ = svc
 
-	_, err := toolBriefingMorning(context.Background(), &Config{}, json.RawMessage(`{"date":"bad-date"}`))
+	ctx := testBriefingAppCtx(svc)
+	_, err := toolBriefingMorning(ctx, &Config{}, json.RawMessage(`{"date":"bad-date"}`))
 	if err == nil {
 		t.Fatal("expected error for invalid date")
 	}
@@ -456,9 +457,9 @@ func TestToolBriefingMorning_InvalidDate(t *testing.T) {
 func TestToolBriefingEvening_WithDate(t *testing.T) {
 	svc, _, cleanup := setupBriefingService(t)
 	defer cleanup()
-	_ = svc
 
-	result, err := toolBriefingEvening(context.Background(), &Config{}, json.RawMessage(`{"date":"2026-03-15"}`))
+	ctx := testBriefingAppCtx(svc)
+	result, err := toolBriefingEvening(ctx, &Config{}, json.RawMessage(`{"date":"2026-03-15"}`))
 	if err != nil {
 		t.Fatalf("toolBriefingEvening with date: %v", err)
 	}
@@ -470,9 +471,9 @@ func TestToolBriefingEvening_WithDate(t *testing.T) {
 func TestToolBriefingMorning_InvalidJSON(t *testing.T) {
 	svc, _, cleanup := setupBriefingService(t)
 	defer cleanup()
-	_ = svc
 
-	_, err := toolBriefingMorning(context.Background(), &Config{}, json.RawMessage(`{invalid`))
+	ctx := testBriefingAppCtx(svc)
+	_, err := toolBriefingMorning(ctx, &Config{}, json.RawMessage(`{invalid`))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -481,9 +482,9 @@ func TestToolBriefingMorning_InvalidJSON(t *testing.T) {
 func TestToolBriefingEvening_InvalidJSON(t *testing.T) {
 	svc, _, cleanup := setupBriefingService(t)
 	defer cleanup()
-	_ = svc
 
-	_, err := toolBriefingEvening(context.Background(), &Config{}, json.RawMessage(`{invalid`))
+	ctx := testBriefingAppCtx(svc)
+	_, err := toolBriefingEvening(ctx, &Config{}, json.RawMessage(`{invalid`))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -492,88 +493,88 @@ func TestToolBriefingEvening_InvalidJSON(t *testing.T) {
 // --- Section-level tests ---
 
 func TestScheduleSection_NilService(t *testing.T) {
-	svc := &BriefingService{dbPath: "/tmp/test.db"}
-	old := globalSchedulingService
-	globalSchedulingService = nil
-	defer func() { globalSchedulingService = old }()
-
-	sec := svc.scheduleSection("2026-02-23")
+	svc := briefing.New("/tmp/test.db", briefing.Deps{
+		Query:  queryDB,
+		Escape: escapeSQLite,
+		// ViewSchedule is nil by default
+	})
+	sec := svc.ScheduleSection("2026-02-23")
 	if sec != nil {
-		t.Error("expected nil when globalSchedulingService is nil")
+		t.Error("expected nil when ViewSchedule is nil")
 	}
 }
 
 func TestRemindersSection_NoDB(t *testing.T) {
-	svc := &BriefingService{dbPath: ""}
-	sec := svc.remindersSection("2026-02-23")
+	svc := briefing.New("", briefing.Deps{Query: queryDB, Escape: escapeSQLite})
+	sec := svc.RemindersSection("2026-02-23")
 	if sec != nil {
 		t.Error("expected nil when dbPath is empty")
 	}
 }
 
 func TestTasksSection_NilService(t *testing.T) {
-	svc := &BriefingService{dbPath: "/tmp/test.db"}
-	old := globalTaskManager
-	globalTaskManager = nil
-	defer func() { globalTaskManager = old }()
-
-	sec := svc.tasksSection("2026-02-23")
+	svc := briefing.New("/tmp/test.db", briefing.Deps{
+		Query:          queryDB,
+		Escape:         escapeSQLite,
+		TasksAvailable: false,
+	})
+	sec := svc.TasksSection("2026-02-23")
 	if sec != nil {
-		t.Error("expected nil when globalTaskManager is nil")
+		t.Error("expected nil when TasksAvailable is false")
 	}
 }
 
 func TestHabitsSection_NilService(t *testing.T) {
-	svc := &BriefingService{dbPath: "/tmp/test.db"}
-	old := globalHabitsService
-	globalHabitsService = nil
-	defer func() { globalHabitsService = old }()
-
-	sec := svc.habitsSection("2026-02-23", time.Monday)
+	svc := briefing.New("/tmp/test.db", briefing.Deps{
+		Query:           queryDB,
+		Escape:          escapeSQLite,
+		HabitsAvailable: false,
+	})
+	sec := svc.HabitsSection("2026-02-23", time.Monday)
 	if sec != nil {
-		t.Error("expected nil when globalHabitsService is nil")
+		t.Error("expected nil when HabitsAvailable is false")
 	}
 }
 
 func TestGoalsSection_NilService(t *testing.T) {
-	svc := &BriefingService{dbPath: "/tmp/test.db"}
-	old := globalGoalsService
-	globalGoalsService = nil
-	defer func() { globalGoalsService = old }()
-
-	sec := svc.goalsSection("2026-02-23")
+	svc := briefing.New("/tmp/test.db", briefing.Deps{
+		Query:          queryDB,
+		Escape:         escapeSQLite,
+		GoalsAvailable: false,
+	})
+	sec := svc.GoalsSection("2026-02-23")
 	if sec != nil {
-		t.Error("expected nil when globalGoalsService is nil")
+		t.Error("expected nil when GoalsAvailable is false")
 	}
 }
 
 func TestContactsSection_NilService(t *testing.T) {
-	svc := &BriefingService{dbPath: "/tmp/test.db"}
-	old := globalContactsService
-	globalContactsService = nil
-	defer func() { globalContactsService = old }()
-
-	sec := svc.contactsSection()
+	svc := briefing.New("/tmp/test.db", briefing.Deps{
+		Query:  queryDB,
+		Escape: escapeSQLite,
+		// GetUpcomingEvents is nil by default
+	})
+	sec := svc.ContactsSection()
 	if sec != nil {
-		t.Error("expected nil when globalContactsService is nil")
+		t.Error("expected nil when GetUpcomingEvents is nil")
 	}
 }
 
 func TestSpendingSection_NilService(t *testing.T) {
-	svc := &BriefingService{dbPath: "/tmp/test.db"}
-	old := globalFinanceService
-	globalFinanceService = nil
-	defer func() { globalFinanceService = old }()
-
-	sec := svc.spendingSection("2026-02-23")
+	svc := briefing.New("/tmp/test.db", briefing.Deps{
+		Query:            queryDB,
+		Escape:           escapeSQLite,
+		FinanceAvailable: false,
+	})
+	sec := svc.SpendingSection("2026-02-23")
 	if sec != nil {
-		t.Error("expected nil when globalFinanceService is nil")
+		t.Error("expected nil when FinanceAvailable is false")
 	}
 }
 
 func TestDaySummarySection_NoDB(t *testing.T) {
-	svc := &BriefingService{dbPath: ""}
-	sec := svc.daySummarySection("2026-02-23")
+	svc := briefing.New("", briefing.Deps{Query: queryDB, Escape: escapeSQLite})
+	sec := svc.DaySummarySection("2026-02-23")
 	if sec != nil {
 		t.Error("expected nil when dbPath is empty")
 	}
@@ -594,7 +595,7 @@ func TestRemindersSection_WithData(t *testing.T) {
 		`INSERT INTO reminders (id, message, remind_at, status) VALUES ('r2', 'Call dentist', '%s', 'pending')`,
 		today+"T14:00:00Z"))
 
-	sec := svc.remindersSection(today)
+	sec := svc.RemindersSection(today)
 	if sec == nil {
 		t.Fatal("expected non-nil section")
 	}
@@ -610,9 +611,14 @@ func TestRemindersSection_WithData(t *testing.T) {
 }
 
 func TestTasksSection_WithData(t *testing.T) {
-	svc, dbPath, cleanup := setupBriefingService(t)
-	defer cleanup()
+	dbPath := setupBriefingTestDB(t)
+
+	// Set global BEFORE creating service so TasksAvailable=true is captured.
+	oldTaskMgr := globalTaskManager
 	globalTaskManager = newTaskManagerService(&Config{HistoryDB: dbPath})
+	defer func() { globalTaskManager = oldTaskMgr }()
+
+	svc := newBriefingService(&Config{HistoryDB: dbPath})
 
 	today := time.Now().UTC().Format("2006-01-02")
 	dueAt := today + "T23:59:59Z"
@@ -626,7 +632,7 @@ func TestTasksSection_WithData(t *testing.T) {
 		 VALUES ('t2', 'default', 'Normal task', 'todo', 3, '%s', '', '[]', '%s', '%s')`,
 		dueAt, now, now))
 
-	sec := svc.tasksSection(today)
+	sec := svc.TasksSection(today)
 	if sec == nil {
 		t.Fatal("expected non-nil section")
 	}
@@ -647,9 +653,14 @@ func TestTasksSection_WithData(t *testing.T) {
 }
 
 func TestHabitsSection_WithData(t *testing.T) {
-	svc, dbPath, cleanup := setupBriefingService(t)
-	defer cleanup()
+	dbPath := setupBriefingTestDB(t)
+
+	// Set global BEFORE creating service so HabitsAvailable=true is captured.
+	oldHabits := globalHabitsService
 	globalHabitsService = newHabitsService(&Config{HistoryDB: dbPath})
+	defer func() { globalHabitsService = oldHabits }()
+
+	svc := newBriefingService(&Config{HistoryDB: dbPath})
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	today := time.Now().UTC().Format("2006-01-02")
@@ -664,7 +675,7 @@ func TestHabitsSection_WithData(t *testing.T) {
 		`INSERT INTO habit_logs (id, habit_id, logged_at, value)
 		 VALUES ('l1', 'h1', '%s', 1.0)`, now))
 
-	sec := svc.habitsSection(today, time.Now().UTC().Weekday())
+	sec := svc.HabitsSection(today, time.Now().UTC().Weekday())
 	if sec == nil {
 		t.Fatal("expected non-nil section")
 	}
@@ -694,9 +705,14 @@ func TestHabitsSection_WithData(t *testing.T) {
 }
 
 func TestHabitsSection_WeeklyOnNonMonday(t *testing.T) {
-	svc, dbPath, cleanup := setupBriefingService(t)
-	defer cleanup()
+	dbPath := setupBriefingTestDB(t)
+
+	// Set global BEFORE creating service so HabitsAvailable=true is captured.
+	oldHabits := globalHabitsService
 	globalHabitsService = newHabitsService(&Config{HistoryDB: dbPath})
+	defer func() { globalHabitsService = oldHabits }()
+
+	svc := newBriefingService(&Config{HistoryDB: dbPath})
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	today := time.Now().UTC().Format("2006-01-02")
@@ -706,7 +722,7 @@ func TestHabitsSection_WeeklyOnNonMonday(t *testing.T) {
 		 VALUES ('h1', 'Weekly Review', 'weekly', 1, '', '%s', '')`, now))
 
 	// On a non-Monday, weekly habits should be filtered out.
-	sec := svc.habitsSection(today, time.Wednesday)
+	sec := svc.HabitsSection(today, time.Wednesday)
 	if sec != nil {
 		// Should be nil because only weekly habits, and it's not Monday.
 		t.Errorf("expected nil section on non-Monday for weekly-only habits, got %v", sec.Items)
@@ -714,9 +730,14 @@ func TestHabitsSection_WeeklyOnNonMonday(t *testing.T) {
 }
 
 func TestGoalsSection_WithData(t *testing.T) {
-	svc, dbPath, cleanup := setupBriefingService(t)
-	defer cleanup()
+	dbPath := setupBriefingTestDB(t)
+
+	// Set global BEFORE creating service so GoalsAvailable=true is captured.
+	oldGoals := globalGoalsService
 	globalGoalsService = newGoalsService(&Config{HistoryDB: dbPath})
+	defer func() { globalGoalsService = oldGoals }()
+
+	svc := newBriefingService(&Config{HistoryDB: dbPath})
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	today := time.Now().UTC().Format("2006-01-02")
@@ -727,7 +748,7 @@ func TestGoalsSection_WithData(t *testing.T) {
 		 VALUES ('g1', 'default', 'Ship feature', 'active', '%s', '[]', '[]', '%s', '%s')`,
 		deadline, now, now))
 
-	sec := svc.goalsSection(today)
+	sec := svc.GoalsSection(today)
 	if sec == nil {
 		t.Fatal("expected non-nil section")
 	}
@@ -740,9 +761,14 @@ func TestGoalsSection_WithData(t *testing.T) {
 }
 
 func TestSpendingSection_WithData(t *testing.T) {
-	svc, dbPath, cleanup := setupBriefingService(t)
-	defer cleanup()
+	dbPath := setupBriefingTestDB(t)
+
+	// Set global BEFORE creating service so FinanceAvailable=true is captured.
+	oldFinance := globalFinanceService
 	globalFinanceService = newFinanceService(&Config{HistoryDB: dbPath})
+	defer func() { globalFinanceService = oldFinance }()
+
+	svc := newBriefingService(&Config{HistoryDB: dbPath})
 
 	today := time.Now().UTC().Format("2006-01-02")
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -755,7 +781,7 @@ func TestSpendingSection_WithData(t *testing.T) {
 		 VALUES ('default', 200, 'TWD', 'transport', 'taxi', '[]', '%s', '%s')`,
 		today, now))
 
-	sec := svc.spendingSection(today)
+	sec := svc.SpendingSection(today)
 	if sec == nil {
 		t.Fatal("expected non-nil section")
 	}
@@ -768,9 +794,14 @@ func TestSpendingSection_WithData(t *testing.T) {
 }
 
 func TestTasksCompletedSection_WithData(t *testing.T) {
-	svc, dbPath, cleanup := setupBriefingService(t)
-	defer cleanup()
+	dbPath := setupBriefingTestDB(t)
+
+	// Set global BEFORE creating service so TasksAvailable=true is captured.
+	oldTaskMgr := globalTaskManager
 	globalTaskManager = newTaskManagerService(&Config{HistoryDB: dbPath})
+	defer func() { globalTaskManager = oldTaskMgr }()
+
+	svc := newBriefingService(&Config{HistoryDB: dbPath})
 
 	today := time.Now().UTC().Format("2006-01-02")
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -779,7 +810,7 @@ func TestTasksCompletedSection_WithData(t *testing.T) {
 		 VALUES ('t1', 'default', 'Done task', 'done', 2, '', '', '[]', '%s', '%s', '%s')`,
 		now, now, now))
 
-	sec := svc.tasksCompletedSection(today)
+	sec := svc.TasksCompletedSection(today)
 	if sec == nil {
 		t.Fatal("expected non-nil section")
 	}
@@ -807,7 +838,7 @@ func TestDaySummarySection_WithData(t *testing.T) {
 		`INSERT INTO history (channel, timestamp, message)
 		 VALUES ('line', '%s', 'hi')`, now))
 
-	sec := svc.daySummarySection(today)
+	sec := svc.DaySummarySection(today)
 	if sec == nil {
 		t.Fatal("expected non-nil section")
 	}
@@ -824,7 +855,7 @@ func TestTomorrowPreviewSection_NoData(t *testing.T) {
 	defer cleanup()
 
 	tomorrow := time.Now().UTC().Add(24 * time.Hour)
-	sec := svc.tomorrowPreviewSection(tomorrow)
+	sec := svc.TomorrowPreviewSection(tomorrow)
 	// No scheduling service and no tasks -> nil.
 	if sec != nil {
 		t.Errorf("expected nil with no data, got %v", sec)
@@ -925,4 +956,3 @@ func TestBriefingJSON(t *testing.T) {
 		t.Errorf("expected item1, got %s", decoded.Sections[0].Items[0])
 	}
 }
-

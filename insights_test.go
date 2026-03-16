@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"tetora/internal/automation/insights"
 )
 
 // setupInsightsTestDB creates a temp database with all required tables for testing.
@@ -128,8 +130,18 @@ CREATE TABLE IF NOT EXISTS expense_budgets (
 		t.Fatalf("create test tables: %v: %s", err, string(out))
 	}
 
-	cfg := &Config{HistoryDB: dbPath}
-	engine := &InsightsEngine{dbPath: dbPath, cfg: cfg}
+	deps := insights.Deps{
+		Query:          queryDB,
+		Escape:         escapeSQLite,
+		LogWarn:        logWarn,
+		UUID:           newUUID,
+		FinanceDBPath:  dbPath,
+		TasksDBPath:    dbPath,
+		ProfileDBPath:  dbPath,
+		ContactsDBPath: dbPath,
+		HabitsDBPath:   dbPath,
+	}
+	engine := insights.New(dbPath, deps)
 	return dbPath, engine
 }
 
@@ -142,7 +154,6 @@ func setupTestGlobals(t *testing.T, dbPath string, cfg *Config) func() {
 	oldProfile := globalUserProfileService
 	oldContacts := globalContactsService
 	oldHabits := globalHabitsService
-	oldInsights := globalInsightsEngine
 
 	globalFinanceService = newFinanceService(cfg)
 	globalTaskManager = newTaskManagerService(cfg)
@@ -156,8 +167,13 @@ func setupTestGlobals(t *testing.T, dbPath string, cfg *Config) func() {
 		globalUserProfileService = oldProfile
 		globalContactsService = oldContacts
 		globalHabitsService = oldHabits
-		globalInsightsEngine = oldInsights
 	}
+}
+
+// testInsightsAppCtx returns a context that carries an App with the given engine.
+func testInsightsAppCtx(engine *InsightsEngine) context.Context {
+	app := &App{Insights: engine}
+	return withApp(context.Background(), app)
 }
 
 func insertExpense(t *testing.T, dbPath string, amount float64, category, description, date string) {
@@ -455,19 +471,19 @@ func TestDetectAnomalies_SpendingAnomaly(t *testing.T) {
 	today := time.Now().UTC().Format("2006-01-02")
 	insertExpense(t, dbPath, 500, "shopping", "big purchase", today)
 
-	insights, err := engine.DetectAnomalies(7)
+	ins, err := engine.DetectAnomalies(7)
 	if err != nil {
 		t.Fatalf("DetectAnomalies: %v", err)
 	}
 
 	found := false
-	for _, ins := range insights {
-		if ins.Type == "spending_anomaly" {
+	for _, item := range ins {
+		if item.Type == "spending_anomaly" {
 			found = true
-			if ins.Severity != "warning" {
-				t.Errorf("severity: got %q, want warning", ins.Severity)
+			if item.Severity != "warning" {
+				t.Errorf("severity: got %q, want warning", item.Severity)
 			}
-			if ins.Data == nil {
+			if item.Data == nil {
 				t.Error("data should not be nil")
 			}
 			break
@@ -491,19 +507,19 @@ func TestDetectAnomalies_TaskOverload(t *testing.T) {
 		insertTask(t, dbPath, id, fmt.Sprintf("Overdue task %d", i), "todo", pastDue, pastDue, "")
 	}
 
-	insights, err := engine.DetectAnomalies(7)
+	ins, err := engine.DetectAnomalies(7)
 	if err != nil {
 		t.Fatalf("DetectAnomalies: %v", err)
 	}
 
 	found := false
-	for _, ins := range insights {
-		if ins.Type == "task_overload" {
+	for _, item := range ins {
+		if item.Type == "task_overload" {
 			found = true
-			if ins.Severity != "warning" {
-				t.Errorf("severity: got %q, want warning", ins.Severity)
+			if item.Severity != "warning" {
+				t.Errorf("severity: got %q, want warning", item.Severity)
 			}
-			overdue, ok := ins.Data["overdue_count"]
+			overdue, ok := item.Data["overdue_count"]
 			if !ok {
 				t.Error("data should contain overdue_count")
 			} else {
@@ -545,15 +561,15 @@ func TestDetectAnomalies_NoAnomalies(t *testing.T) {
 		insertTask(t, dbPath, fmt.Sprintf("normal-%d", i), fmt.Sprintf("Task %d", i), "todo", future, now, "")
 	}
 
-	insights, err := engine.DetectAnomalies(7)
+	ins, err := engine.DetectAnomalies(7)
 	if err != nil {
 		t.Fatalf("DetectAnomalies: %v", err)
 	}
 
 	// Should have no anomalies.
-	for _, ins := range insights {
-		if ins.Type == "spending_anomaly" || ins.Type == "task_overload" || ins.Type == "social_isolation" {
-			t.Errorf("unexpected anomaly: %s - %s", ins.Type, ins.Title)
+	for _, item := range ins {
+		if item.Type == "spending_anomaly" || item.Type == "task_overload" || item.Type == "social_isolation" {
+			t.Errorf("unexpected anomaly: %s - %s", item.Type, item.Title)
 		}
 	}
 }
@@ -580,12 +596,12 @@ func TestGetInsights(t *testing.T) {
 	}
 
 	// Get unacknowledged only.
-	insights, err := engine.GetInsights(20, false)
+	ins, err := engine.GetInsights(20, false)
 	if err != nil {
 		t.Fatalf("GetInsights: %v", err)
 	}
-	if len(insights) != 3 {
-		t.Errorf("unacknowledged count: got %d, want 3", len(insights))
+	if len(ins) != 3 {
+		t.Errorf("unacknowledged count: got %d, want 3", len(ins))
 	}
 
 	// Get all.
@@ -632,12 +648,12 @@ func TestAcknowledgeInsight(t *testing.T) {
 	}
 
 	// Should not appear in unacknowledged list.
-	insights, err := engine.GetInsights(20, false)
+	ins, err := engine.GetInsights(20, false)
 	if err != nil {
 		t.Fatalf("GetInsights: %v", err)
 	}
-	for _, ins := range insights {
-		if ins.ID == id {
+	for _, item := range ins {
+		if item.ID == id {
 			t.Error("acknowledged insight should not appear in unacknowledged list")
 		}
 	}
@@ -700,10 +716,15 @@ func TestSpendingForecast_InvalidMonth(t *testing.T) {
 }
 
 func TestSpendingForecast_NoFinanceService(t *testing.T) {
-	_, engine := setupInsightsTestDB(t)
-	oldFinance := globalFinanceService
-	globalFinanceService = nil
-	defer func() { globalFinanceService = oldFinance }()
+	dbPath, _ := setupInsightsTestDB(t)
+	// Create engine with no FinanceDBPath = finance service not available.
+	deps := insights.Deps{
+		Query:   queryDB,
+		Escape:  escapeSQLite,
+		LogWarn: logWarn,
+		UUID:    newUUID,
+	}
+	engine := insights.New(dbPath, deps)
 
 	_, err := engine.SpendingForecast("")
 	if err == nil {
@@ -716,7 +737,6 @@ func TestToolLifeReport(t *testing.T) {
 	cfg := &Config{HistoryDB: dbPath}
 	cleanup := setupTestGlobals(t, dbPath, cfg)
 	defer cleanup()
-	globalInsightsEngine = engine
 
 	today := time.Now().UTC().Format("2006-01-02")
 	insertExpense(t, dbPath, 300, "food", "lunch", today)
@@ -726,7 +746,8 @@ func TestToolLifeReport(t *testing.T) {
 		"date":   today,
 	})
 
-	result, err := toolLifeReport(context.Background(), cfg, input)
+	ctx := testInsightsAppCtx(engine)
+	result, err := toolLifeReport(ctx, cfg, input)
 	if err != nil {
 		t.Fatalf("toolLifeReport: %v", err)
 	}
@@ -747,25 +768,21 @@ func TestToolLifeReport(t *testing.T) {
 }
 
 func TestToolLifeReport_InvalidPeriod(t *testing.T) {
-	dbPath, engine := setupInsightsTestDB(t)
-	cfg := &Config{HistoryDB: dbPath}
-	globalInsightsEngine = engine
-	defer func() { globalInsightsEngine = nil }()
+	_, engine := setupInsightsTestDB(t)
+	ctx := testInsightsAppCtx(engine)
 
 	input, _ := json.Marshal(map[string]any{"period": "invalid"})
-	_, err := toolLifeReport(context.Background(), cfg, input)
+	_, err := toolLifeReport(ctx, &Config{}, input)
 	if err == nil {
 		t.Fatal("expected error for invalid period")
 	}
 }
 
 func TestToolLifeReport_NilEngine(t *testing.T) {
-	oldEngine := globalInsightsEngine
-	globalInsightsEngine = nil
-	defer func() { globalInsightsEngine = oldEngine }()
+	ctx := withApp(context.Background(), &App{})
 
 	input, _ := json.Marshal(map[string]any{"period": "weekly"})
-	_, err := toolLifeReport(context.Background(), &Config{}, input)
+	_, err := toolLifeReport(ctx, &Config{}, input)
 	if err == nil {
 		t.Fatal("expected error when engine is nil")
 	}
@@ -776,14 +793,14 @@ func TestToolLifeInsights_Detect(t *testing.T) {
 	cfg := &Config{HistoryDB: dbPath}
 	cleanup := setupTestGlobals(t, dbPath, cfg)
 	defer cleanup()
-	globalInsightsEngine = engine
 
+	ctx := testInsightsAppCtx(engine)
 	input, _ := json.Marshal(map[string]any{
 		"action": "detect",
 		"days":   7,
 	})
 
-	result, err := toolLifeInsights(context.Background(), cfg, input)
+	result, err := toolLifeInsights(ctx, cfg, input)
 	if err != nil {
 		t.Fatalf("toolLifeInsights detect: %v", err)
 	}
@@ -794,9 +811,6 @@ func TestToolLifeInsights_Detect(t *testing.T) {
 
 func TestToolLifeInsights_List(t *testing.T) {
 	dbPath, engine := setupInsightsTestDB(t)
-	cfg := &Config{HistoryDB: dbPath}
-	globalInsightsEngine = engine
-	defer func() { globalInsightsEngine = nil }()
 
 	// Insert an insight.
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -808,26 +822,24 @@ func TestToolLifeInsights_List(t *testing.T) {
 		t.Fatalf("insert: %v: %s", err, string(out))
 	}
 
+	ctx := testInsightsAppCtx(engine)
 	input, _ := json.Marshal(map[string]any{"action": "list"})
-	result, err := toolLifeInsights(context.Background(), cfg, input)
+	result, err := toolLifeInsights(ctx, &Config{}, input)
 	if err != nil {
 		t.Fatalf("toolLifeInsights list: %v", err)
 	}
 
-	var insights []LifeInsight
-	if err := json.Unmarshal([]byte(result), &insights); err != nil {
+	var ins []LifeInsight
+	if err := json.Unmarshal([]byte(result), &ins); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(insights) == 0 {
+	if len(ins) == 0 {
 		t.Error("expected at least 1 insight")
 	}
 }
 
 func TestToolLifeInsights_Acknowledge(t *testing.T) {
 	dbPath, engine := setupInsightsTestDB(t)
-	cfg := &Config{HistoryDB: dbPath}
-	globalInsightsEngine = engine
-	defer func() { globalInsightsEngine = nil }()
 
 	// Insert an insight.
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -839,11 +851,12 @@ func TestToolLifeInsights_Acknowledge(t *testing.T) {
 		t.Fatalf("insert: %v: %s", err, string(out))
 	}
 
+	ctx := testInsightsAppCtx(engine)
 	input, _ := json.Marshal(map[string]any{
 		"action":     "acknowledge",
 		"insight_id": "ack-tool-test",
 	})
-	result, err := toolLifeInsights(context.Background(), cfg, input)
+	result, err := toolLifeInsights(ctx, &Config{}, input)
 	if err != nil {
 		t.Fatalf("toolLifeInsights acknowledge: %v", err)
 	}
@@ -857,17 +870,17 @@ func TestToolLifeInsights_Forecast(t *testing.T) {
 	cfg := &Config{HistoryDB: dbPath}
 	cleanup := setupTestGlobals(t, dbPath, cfg)
 	defer cleanup()
-	globalInsightsEngine = engine
 
 	today := time.Now().UTC().Format("2006-01-02")
 	insertExpense(t, dbPath, 200, "food", "lunch", today)
 
+	ctx := testInsightsAppCtx(engine)
 	input, _ := json.Marshal(map[string]any{
 		"action": "forecast",
 		"month":  time.Now().UTC().Format("2006-01"),
 	})
 
-	result, err := toolLifeInsights(context.Background(), cfg, input)
+	result, err := toolLifeInsights(ctx, cfg, input)
 	if err != nil {
 		t.Fatalf("toolLifeInsights forecast: %v", err)
 	}
@@ -882,25 +895,21 @@ func TestToolLifeInsights_Forecast(t *testing.T) {
 }
 
 func TestToolLifeInsights_InvalidAction(t *testing.T) {
-	dbPath, engine := setupInsightsTestDB(t)
-	cfg := &Config{HistoryDB: dbPath}
-	globalInsightsEngine = engine
-	defer func() { globalInsightsEngine = nil }()
+	_, engine := setupInsightsTestDB(t)
+	ctx := testInsightsAppCtx(engine)
 
 	input, _ := json.Marshal(map[string]any{"action": "invalid"})
-	_, err := toolLifeInsights(context.Background(), cfg, input)
+	_, err := toolLifeInsights(ctx, &Config{}, input)
 	if err == nil {
 		t.Fatal("expected error for invalid action")
 	}
 }
 
 func TestToolLifeInsights_NilEngine(t *testing.T) {
-	oldEngine := globalInsightsEngine
-	globalInsightsEngine = nil
-	defer func() { globalInsightsEngine = oldEngine }()
+	ctx := withApp(context.Background(), &App{})
 
 	input, _ := json.Marshal(map[string]any{"action": "list"})
-	_, err := toolLifeInsights(context.Background(), &Config{}, input)
+	_, err := toolLifeInsights(ctx, &Config{}, input)
 	if err == nil {
 		t.Fatal("expected error when engine is nil")
 	}
@@ -960,24 +969,24 @@ func TestInsightDedup(t *testing.T) {
 
 	// Store same type insight twice.
 	insight1 := &LifeInsight{
-		ID:        newUUID(),
-		Type:      "test_dedup",
-		Severity:  "info",
-		Title:     "First",
+		ID:          newUUID(),
+		Type:        "test_dedup",
+		Severity:    "info",
+		Title:       "First",
 		Description: "First occurrence",
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 	}
-	engine.storeInsightDedup(insight1)
+	engine.StoreInsightDedup(insight1)
 
 	insight2 := &LifeInsight{
-		ID:        newUUID(),
-		Type:      "test_dedup",
-		Severity:  "info",
-		Title:     "Second",
+		ID:          newUUID(),
+		Type:        "test_dedup",
+		Severity:    "info",
+		Title:       "Second",
 		Description: "Second occurrence",
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 	}
-	engine.storeInsightDedup(insight2)
+	engine.StoreInsightDedup(insight2)
 
 	// Should only have one insight of this type.
 	rows, err := queryDB(dbPath, `SELECT COUNT(*) as cnt FROM life_insights WHERE type = 'test_dedup'`)
@@ -1060,28 +1069,16 @@ func TestSpendingReport_PrevPeriodComparison(t *testing.T) {
 }
 
 func TestGenerateReport_NilServices(t *testing.T) {
-	dbPath, engine := setupInsightsTestDB(t)
+	dbPath, _ := setupInsightsTestDB(t)
+	// Create engine with no service DB paths = all services unavailable.
+	deps := insights.Deps{
+		Query:   queryDB,
+		Escape:  escapeSQLite,
+		LogWarn: logWarn,
+		UUID:    newUUID,
+	}
+	engine := insights.New(dbPath, deps)
 
-	// Set all globals to nil.
-	oldFinance := globalFinanceService
-	oldTasks := globalTaskManager
-	oldProfile := globalUserProfileService
-	oldContacts := globalContactsService
-	oldHabits := globalHabitsService
-	globalFinanceService = nil
-	globalTaskManager = nil
-	globalUserProfileService = nil
-	globalContactsService = nil
-	globalHabitsService = nil
-	defer func() {
-		globalFinanceService = oldFinance
-		globalTaskManager = oldTasks
-		globalUserProfileService = oldProfile
-		globalContactsService = oldContacts
-		globalHabitsService = oldHabits
-	}()
-
-	_ = dbPath
 	report, err := engine.GenerateReport("weekly", time.Now().UTC())
 	if err != nil {
 		t.Fatalf("GenerateReport with nil services: %v", err)
