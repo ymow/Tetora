@@ -1,4 +1,4 @@
-package main
+package skill
 
 import (
 	"encoding/json"
@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"tetora/internal/classify"
 )
 
 func TestExtractChannelFromSource(t *testing.T) {
@@ -25,84 +27,84 @@ func TestExtractChannelFromSource(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := extractChannelFromSource(tt.source)
+		got := ExtractChannelFromSource(tt.source)
 		if got != tt.expected {
-			t.Errorf("extractChannelFromSource(%q) = %q, want %q", tt.source, got, tt.expected)
+			t.Errorf("ExtractChannelFromSource(%q) = %q, want %q", tt.source, got, tt.expected)
 		}
 	}
 }
 
 func TestShouldInjectSkill(t *testing.T) {
 	// No matcher — always inject.
-	skill := SkillConfig{Name: "test"}
-	task := Task{Agent: "琉璃", Prompt: "hello", Source: "telegram"}
-	if !shouldInjectSkill(skill, task) {
+	s := SkillConfig{Name: "test"}
+	task := TaskContext{Agent: "琉璃", Prompt: "hello", Source: "telegram"}
+	if !ShouldInjectSkill(s, task) {
 		t.Error("skill without matcher should always inject")
 	}
 
 	// Role match.
-	skill.Matcher = &SkillMatcher{Agents: []string{"琉璃"}}
-	if !shouldInjectSkill(skill, task) {
+	s.Matcher = &SkillMatcher{Agents: []string{"琉璃"}}
+	if !ShouldInjectSkill(s, task) {
 		t.Error("skill should match role 琉璃")
 	}
 
-	skill.Matcher.Agents = []string{"翡翠"}
-	if shouldInjectSkill(skill, task) {
+	s.Matcher.Agents = []string{"翡翠"}
+	if ShouldInjectSkill(s, task) {
 		t.Error("skill should not match role 翡翠")
 	}
 
 	// Keyword match.
-	skill.Matcher = &SkillMatcher{Keywords: []string{"deploy", "build"}}
+	s.Matcher = &SkillMatcher{Keywords: []string{"deploy", "build"}}
 	task.Prompt = "Please deploy the app"
-	if !shouldInjectSkill(skill, task) {
+	if !ShouldInjectSkill(s, task) {
 		t.Error("skill should match keyword 'deploy'")
 	}
 
 	task.Prompt = "Say hello"
-	if shouldInjectSkill(skill, task) {
+	if ShouldInjectSkill(s, task) {
 		t.Error("skill should not match without keyword")
 	}
 
 	// Channel match.
-	skill.Matcher = &SkillMatcher{Channels: []string{"slack", "discord"}}
+	s.Matcher = &SkillMatcher{Channels: []string{"slack", "discord"}}
 	task.Source = "slack:C123"
-	if !shouldInjectSkill(skill, task) {
+	if !ShouldInjectSkill(s, task) {
 		t.Error("skill should match channel slack")
 	}
 
 	task.Source = "telegram"
-	if shouldInjectSkill(skill, task) {
+	if ShouldInjectSkill(s, task) {
 		t.Error("skill should not match channel telegram")
 	}
 
 	// Multiple conditions (any match).
-	skill.Matcher = &SkillMatcher{
-		Agents:    []string{"琥珀"},
+	s.Matcher = &SkillMatcher{
+		Agents:   []string{"琥珀"},
 		Keywords: []string{"image"},
 		Channels: []string{"discord"},
 	}
 	task.Agent = "琥珀"
 	task.Prompt = "hello"
 	task.Source = "telegram"
-	if !shouldInjectSkill(skill, task) {
+	if !ShouldInjectSkill(s, task) {
 		t.Error("skill should match role 琥珀")
 	}
 
 	task.Agent = "琉璃"
 	task.Prompt = "generate an image"
-	if !shouldInjectSkill(skill, task) {
+	if !ShouldInjectSkill(s, task) {
 		t.Error("skill should match keyword 'image'")
 	}
 
 	task.Prompt = "hello"
 	task.Source = "discord:456"
-	if !shouldInjectSkill(skill, task) {
+	if !ShouldInjectSkill(s, task) {
 		t.Error("skill should match channel discord")
 	}
 }
 
 func TestSelectSkills(t *testing.T) {
-	cfg := &Config{
+	cfg := &AppConfig{
 		Skills: []SkillConfig{
 			{Name: "deploy", Matcher: &SkillMatcher{Keywords: []string{"deploy"}}},
 			{Name: "creative", Matcher: &SkillMatcher{Agents: []string{"琥珀"}}},
@@ -111,8 +113,8 @@ func TestSelectSkills(t *testing.T) {
 		},
 	}
 
-	task := Task{Agent: "琉璃", Prompt: "deploy the app", Source: "telegram"}
-	skills := selectSkills(cfg, task)
+	task := TaskContext{Agent: "琉璃", Prompt: "deploy the app", Source: "telegram"}
+	skills := SelectSkills(cfg, task)
 
 	if len(skills) != 2 {
 		t.Errorf("expected 2 skills, got %d", len(skills))
@@ -130,22 +132,22 @@ func TestSelectSkills(t *testing.T) {
 		}
 	}
 	if !hasDeploy || !hasAlways {
-		t.Error("selectSkills missing expected skills")
+		t.Error("SelectSkills missing expected skills")
 	}
 }
 
 func TestBuildSkillsPrompt(t *testing.T) {
-	cfg := &Config{
+	cfg := &AppConfig{
 		Skills: []SkillConfig{
 			{Name: "test", Description: "Test skill", Example: "test arg1 arg2"},
 		},
 	}
 
-	task := Task{Prompt: "hello"}
-	prompt := buildSkillsPrompt(cfg, task, ComplexityStandard)
+	task := TaskContext{Prompt: "hello"}
+	prompt := BuildSkillsPrompt(cfg, task, classify.Standard)
 
 	if prompt == "" {
-		t.Fatal("buildSkillsPrompt returned empty string")
+		t.Fatal("BuildSkillsPrompt returned empty string")
 	}
 
 	if !skillStringContains(prompt, "Available Skills") {
@@ -182,14 +184,14 @@ func TestBuildSkillsPromptTier2DocInjection(t *testing.T) {
 	docContent := "# Test Skill\n\nUsage: run with --flag\n\n## Examples\n\n```bash\n./run.sh --flag value\n```"
 	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(docContent), 0o644)
 
-	cfg := &Config{
+	cfg := &AppConfig{
 		WorkspaceDir: dir,
 	}
 
-	task := Task{Prompt: "test-skill related query"}
+	task := TaskContext{Prompt: "test-skill related query"}
 
 	// Standard complexity: should inject SKILL.md.
-	prompt := buildSkillsPrompt(cfg, task, ComplexityStandard)
+	prompt := BuildSkillsPrompt(cfg, task, classify.Standard)
 	if !skillStringContains(prompt, "<skill-doc name=\"test-skill\">") {
 		t.Error("Standard complexity should inject skill-doc tag")
 	}
@@ -198,7 +200,7 @@ func TestBuildSkillsPromptTier2DocInjection(t *testing.T) {
 	}
 
 	// Simple complexity: should NOT inject SKILL.md.
-	promptSimple := buildSkillsPrompt(cfg, task, ComplexitySimple)
+	promptSimple := BuildSkillsPrompt(cfg, task, classify.Simple)
 	if skillStringContains(promptSimple, "<skill-doc") {
 		t.Error("Simple complexity should not inject skill-doc")
 	}
@@ -215,10 +217,10 @@ func TestBuildSkillsPromptTier2LargeDoc(t *testing.T) {
 	os.MkdirAll(skillDir, 0o755)
 
 	meta := SkillMetadata{
-		Name:     "big-skill",
+		Name:        "big-skill",
 		Description: "A big skill",
-		Command:  "./run.sh",
-		Approved: true,
+		Command:     "./run.sh",
+		Approved:    true,
 	}
 	metaData, _ := json.Marshal(meta)
 	os.WriteFile(filepath.Join(skillDir, "metadata.json"), metaData, 0o644)
@@ -227,12 +229,12 @@ func TestBuildSkillsPromptTier2LargeDoc(t *testing.T) {
 	largeDoc := strings.Repeat("x", 5000)
 	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(largeDoc), 0o644)
 
-	cfg := &Config{
+	cfg := &AppConfig{
 		WorkspaceDir: dir,
 	}
 
-	task := Task{Prompt: "big-skill query"}
-	prompt := buildSkillsPrompt(cfg, task, ComplexityStandard)
+	task := TaskContext{Prompt: "big-skill query"}
+	prompt := BuildSkillsPrompt(cfg, task, classify.Standard)
 
 	// Should not inline the doc, but provide path hint.
 	if skillStringContains(prompt, "<skill-doc") {
@@ -251,10 +253,10 @@ func TestBuildSkillsPromptTier2BudgetExceeded(t *testing.T) {
 		skillDir := filepath.Join(dir, "skills", name)
 		os.MkdirAll(skillDir, 0o755)
 		meta := SkillMetadata{
-			Name:     name,
+			Name:        name,
 			Description: fmt.Sprintf("Skill %d", i),
-			Command:  "./run.sh",
-			Approved: true,
+			Command:     "./run.sh",
+			Approved:    true,
 		}
 		metaData, _ := json.Marshal(meta)
 		os.WriteFile(filepath.Join(skillDir, "metadata.json"), metaData, 0o644)
@@ -264,12 +266,12 @@ func TestBuildSkillsPromptTier2BudgetExceeded(t *testing.T) {
 		os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(doc), 0o644)
 	}
 
-	cfg := &Config{
+	cfg := &AppConfig{
 		WorkspaceDir: dir,
 	}
 
-	task := Task{Prompt: "skill query"}
-	prompt := buildSkillsPrompt(cfg, task, ComplexityComplex)
+	task := TaskContext{Prompt: "skill query"}
+	prompt := BuildSkillsPrompt(cfg, task, classify.Complex)
 
 	// First skill should be inlined, second should get budget exceeded hint.
 	if !skillStringContains(prompt, "<skill-doc name=\"skill-a\">") {

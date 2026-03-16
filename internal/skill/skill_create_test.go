@@ -1,4 +1,4 @@
-package main
+package skill
 
 import (
 	"context"
@@ -34,17 +34,17 @@ func TestIsValidSkillName(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := isValidSkillName(tt.name)
+		got := IsValidSkillName(tt.name)
 		if got != tt.valid {
-			t.Errorf("isValidSkillName(%q) = %v, want %v", tt.name, got, tt.valid)
+			t.Errorf("IsValidSkillName(%q) = %v, want %v", tt.name, got, tt.valid)
 		}
 	}
 }
 
 func TestCreateSkill(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{
-		baseDir: dir,
+	cfg := &AppConfig{
+		BaseDir: dir,
 		SkillStore: SkillStoreConfig{
 			AutoApprove: true,
 			MaxSkills:   50,
@@ -59,8 +59,8 @@ func TestCreateSkill(t *testing.T) {
 	}
 	script := "#!/bin/bash\necho hello"
 
-	if err := createSkill(cfg, meta, script); err != nil {
-		t.Fatalf("createSkill() error: %v", err)
+	if err := CreateSkill(cfg, meta, script); err != nil {
+		t.Fatalf("CreateSkill() error: %v", err)
 	}
 
 	// Verify files exist.
@@ -93,8 +93,8 @@ func TestCreateSkill(t *testing.T) {
 
 func TestCreateSkillDuplicate(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{
-		baseDir: dir,
+	cfg := &AppConfig{
+		BaseDir: dir,
 		SkillStore: SkillStoreConfig{
 			AutoApprove: true,
 		},
@@ -106,36 +106,36 @@ func TestCreateSkillDuplicate(t *testing.T) {
 		Command:     "./run.sh",
 		Approved:    true,
 	}
-	if err := createSkill(cfg, meta, "echo first"); err != nil {
-		t.Fatalf("first createSkill() error: %v", err)
+	if err := CreateSkill(cfg, meta, "echo first"); err != nil {
+		t.Fatalf("first CreateSkill() error: %v", err)
 	}
 
 	// Second creation should fail.
 	meta.Description = "Second"
-	if err := createSkill(cfg, meta, "echo second"); err == nil {
+	if err := CreateSkill(cfg, meta, "echo second"); err == nil {
 		t.Fatal("expected error for duplicate skill, got nil")
 	}
 }
 
 func TestCreateSkillInvalidName(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{
-		baseDir: dir,
+	cfg := &AppConfig{
+		BaseDir: dir,
 	}
 
 	meta := SkillMetadata{
 		Name:    "../evil",
 		Command: "./run.sh",
 	}
-	if err := createSkill(cfg, meta, "echo evil"); err == nil {
+	if err := CreateSkill(cfg, meta, "echo evil"); err == nil {
 		t.Fatal("expected error for invalid name, got nil")
 	}
 }
 
 func TestMaxSkillsLimit(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{
-		baseDir: dir,
+	cfg := &AppConfig{
+		BaseDir: dir,
 		SkillStore: SkillStoreConfig{
 			AutoApprove: true,
 			MaxSkills:   2,
@@ -149,8 +149,8 @@ func TestMaxSkillsLimit(t *testing.T) {
 			Command:  "./run.sh",
 			Approved: true,
 		}
-		if err := createSkill(cfg, meta, "echo ok"); err != nil {
-			t.Fatalf("createSkill(%d) error: %v", i, err)
+		if err := CreateSkill(cfg, meta, "echo ok"); err != nil {
+			t.Fatalf("CreateSkill(%d) error: %v", i, err)
 		}
 	}
 
@@ -160,15 +160,15 @@ func TestMaxSkillsLimit(t *testing.T) {
 		Command:  "./run.sh",
 		Approved: true,
 	}
-	if err := createSkill(cfg, meta, "echo overflow"); err == nil {
+	if err := CreateSkill(cfg, meta, "echo overflow"); err == nil {
 		t.Fatal("expected max skills limit error, got nil")
 	}
 }
 
 func TestLoadFileSkills(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{
-		baseDir: dir,
+	cfg := &AppConfig{
+		BaseDir: dir,
 		SkillStore: SkillStoreConfig{
 			AutoApprove: true,
 		},
@@ -181,7 +181,7 @@ func TestLoadFileSkills(t *testing.T) {
 		Command:     "./run.sh",
 		Approved:    true,
 	}
-	createSkill(cfg, meta1, "echo approved")
+	CreateSkill(cfg, meta1, "echo approved")
 
 	// Create an unapproved skill.
 	meta2 := SkillMetadata{
@@ -191,11 +191,11 @@ func TestLoadFileSkills(t *testing.T) {
 		Approved:    false,
 	}
 	cfg.SkillStore.MaxSkills = 50 // ensure room
-	createSkill(cfg, meta2, "echo pending")
+	CreateSkill(cfg, meta2, "echo pending")
 
-	skills := loadFileSkills(cfg)
+	skills := LoadFileSkills(cfg)
 	if len(skills) != 1 {
-		t.Fatalf("loadFileSkills() returned %d skills, want 1 (only approved)", len(skills))
+		t.Fatalf("LoadFileSkills() returned %d skills, want 1 (only approved)", len(skills))
 	}
 	if skills[0].Name != "approved-skill" {
 		t.Errorf("skill name = %q, want %q", skills[0].Name, "approved-skill")
@@ -212,9 +212,9 @@ func TestMergeSkills(t *testing.T) {
 		{Name: "shared-name", Description: "File version"},
 	}
 
-	merged := mergeSkills(configSkills, fileSkills)
+	merged := MergeSkills(configSkills, fileSkills)
 	if len(merged) != 3 {
-		t.Fatalf("mergeSkills() returned %d skills, want 3", len(merged))
+		t.Fatalf("MergeSkills() returned %d skills, want 3", len(merged))
 	}
 
 	// Check that config version wins for shared-name.
@@ -229,8 +229,8 @@ func TestMergeSkills(t *testing.T) {
 
 func TestApproveSkill(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{
-		baseDir: dir,
+	cfg := &AppConfig{
+		BaseDir: dir,
 		SkillStore: SkillStoreConfig{
 			MaxSkills: 50,
 		},
@@ -242,35 +242,35 @@ func TestApproveSkill(t *testing.T) {
 		Command:  "./run.sh",
 		Approved: false,
 	}
-	createSkill(cfg, meta, "echo pending")
+	CreateSkill(cfg, meta, "echo pending")
 
-	// Verify it's not in loadFileSkills.
-	skills := loadFileSkills(cfg)
+	// Verify it's not in LoadFileSkills.
+	skills := LoadFileSkills(cfg)
 	if len(skills) != 0 {
 		t.Fatalf("expected 0 approved skills, got %d", len(skills))
 	}
 
 	// Approve it.
-	if err := approveSkill(cfg, "pending"); err != nil {
-		t.Fatalf("approveSkill() error: %v", err)
+	if err := ApproveSkill(cfg, "pending"); err != nil {
+		t.Fatalf("ApproveSkill() error: %v", err)
 	}
 
 	// Now it should be loadable.
-	skills = loadFileSkills(cfg)
+	skills = LoadFileSkills(cfg)
 	if len(skills) != 1 {
 		t.Fatalf("expected 1 approved skill, got %d", len(skills))
 	}
 
 	// Double-approve should error.
-	if err := approveSkill(cfg, "pending"); err == nil {
+	if err := ApproveSkill(cfg, "pending"); err == nil {
 		t.Fatal("expected error for double approve, got nil")
 	}
 }
 
 func TestDeleteFileSkill(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{
-		baseDir: dir,
+	cfg := &AppConfig{
+		BaseDir: dir,
 		SkillStore: SkillStoreConfig{
 			AutoApprove: true,
 			MaxSkills:   50,
@@ -282,10 +282,10 @@ func TestDeleteFileSkill(t *testing.T) {
 		Command:  "./run.sh",
 		Approved: true,
 	}
-	createSkill(cfg, meta, "echo delete me")
+	CreateSkill(cfg, meta, "echo delete me")
 
-	if err := deleteFileSkill(cfg, "to-delete"); err != nil {
-		t.Fatalf("deleteFileSkill() error: %v", err)
+	if err := DeleteFileSkill(cfg, "to-delete"); err != nil {
+		t.Fatalf("DeleteFileSkill() error: %v", err)
 	}
 
 	// Directory should be gone.
@@ -294,25 +294,25 @@ func TestDeleteFileSkill(t *testing.T) {
 	}
 
 	// Deleting again should fail.
-	if err := deleteFileSkill(cfg, "to-delete"); err == nil {
+	if err := DeleteFileSkill(cfg, "to-delete"); err == nil {
 		t.Fatal("expected error for deleting nonexistent skill, got nil")
 	}
 }
 
 func TestListPendingSkills(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{
-		baseDir: dir,
+	cfg := &AppConfig{
+		BaseDir: dir,
 		SkillStore: SkillStoreConfig{
 			MaxSkills: 50,
 		},
 	}
 
 	// Create one approved and one pending.
-	createSkill(cfg, SkillMetadata{Name: "approved", Command: "./run.sh", Approved: true}, "echo ok")
-	createSkill(cfg, SkillMetadata{Name: "pending", Command: "./run.sh", Approved: false}, "echo pending")
+	CreateSkill(cfg, SkillMetadata{Name: "approved", Command: "./run.sh", Approved: true}, "echo ok")
+	CreateSkill(cfg, SkillMetadata{Name: "pending", Command: "./run.sh", Approved: false}, "echo pending")
 
-	pending := listPendingSkills(cfg)
+	pending := ListPendingSkills(cfg)
 	if len(pending) != 1 {
 		t.Fatalf("expected 1 pending skill, got %d", len(pending))
 	}
@@ -323,8 +323,8 @@ func TestListPendingSkills(t *testing.T) {
 
 func TestCreateSkillToolHandler(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{
-		baseDir: dir,
+	cfg := &AppConfig{
+		BaseDir: dir,
 		SkillStore: SkillStoreConfig{
 			AutoApprove: true,
 			MaxSkills:   50,
@@ -340,9 +340,9 @@ func TestCreateSkillToolHandler(t *testing.T) {
 	}`
 
 	ctx := context.Background()
-	result, err := createSkillToolHandler(ctx, cfg, json.RawMessage(input))
+	result, err := CreateSkillToolHandler(ctx, cfg, json.RawMessage(input))
 	if err != nil {
-		t.Fatalf("createSkillToolHandler() error: %v", err)
+		t.Fatalf("CreateSkillToolHandler() error: %v", err)
 	}
 
 	var res map[string]any
@@ -355,7 +355,7 @@ func TestCreateSkillToolHandler(t *testing.T) {
 	}
 
 	// Verify the skill is loadable.
-	skills := loadFileSkills(cfg)
+	skills := LoadFileSkills(cfg)
 	if len(skills) != 1 {
 		t.Fatalf("expected 1 skill after creation, got %d", len(skills))
 	}
@@ -363,8 +363,8 @@ func TestCreateSkillToolHandler(t *testing.T) {
 
 func TestCreateSkillToolHandlerPython(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{
-		baseDir: dir,
+	cfg := &AppConfig{
+		BaseDir: dir,
 		SkillStore: SkillStoreConfig{
 			AutoApprove: true,
 			MaxSkills:   50,
@@ -379,9 +379,9 @@ func TestCreateSkillToolHandlerPython(t *testing.T) {
 	}`
 
 	ctx := context.Background()
-	result, err := createSkillToolHandler(ctx, cfg, json.RawMessage(input))
+	result, err := CreateSkillToolHandler(ctx, cfg, json.RawMessage(input))
 	if err != nil {
-		t.Fatalf("createSkillToolHandler() error: %v", err)
+		t.Fatalf("CreateSkillToolHandler() error: %v", err)
 	}
 
 	var res map[string]any
@@ -411,8 +411,8 @@ func TestCreateSkillToolHandlerPython(t *testing.T) {
 
 func TestRecordSkillUsage(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{
-		baseDir: dir,
+	cfg := &AppConfig{
+		BaseDir: dir,
 		SkillStore: SkillStoreConfig{
 			AutoApprove: true,
 			MaxSkills:   50,
@@ -425,9 +425,9 @@ func TestRecordSkillUsage(t *testing.T) {
 		Command:  "./run.sh",
 		Approved: true,
 	}
-	createSkill(cfg, meta, "echo test")
+	CreateSkill(cfg, meta, "echo test")
 
-	recordSkillUsage(cfg, "usage-test")
+	RecordSkillUsage(cfg, "usage-test")
 
 	// Read back metadata.
 	metaPath := filepath.Join(dir, "skills", "usage-test", "metadata.json")
@@ -440,13 +440,5 @@ func TestRecordSkillUsage(t *testing.T) {
 	}
 	if loaded.LastUsedAt == "" {
 		t.Error("lastUsedAt should be set")
-	}
-}
-
-// fmt is used in TestMaxSkillsLimit
-func init() {
-	// Ensure structured logger is initialized for tests.
-	if defaultLogger == nil {
-		defaultLogger = initLogger(LoggingConfig{Level: "error"}, "")
 	}
 }

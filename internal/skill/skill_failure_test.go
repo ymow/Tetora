@@ -1,4 +1,4 @@
-package main
+package skill
 
 import (
 	"os"
@@ -9,14 +9,14 @@ import (
 
 func TestAppendSkillFailure(t *testing.T) {
 	tmpDir := t.TempDir()
-	cfg := &Config{
+	cfg := &AppConfig{
 		WorkspaceDir: tmpDir,
 	}
 
 	// First failure.
-	appendSkillFailure(cfg, "go-backend", "Fix login bug", "kokuyou", "connection refused")
+	AppendSkillFailure(cfg, "go-backend", "Fix login bug", "kokuyou", "connection refused")
 
-	fpath := filepath.Join(tmpDir, "skills", "go-backend", "failures.md")
+	fpath := filepath.Join(tmpDir, "skills", "go-backend", SkillFailuresFile)
 	data, err := os.ReadFile(fpath)
 	if err != nil {
 		t.Fatalf("expected failures.md to exist: %v", err)
@@ -39,16 +39,16 @@ func TestAppendSkillFailure(t *testing.T) {
 
 func TestAppendSkillFailureFIFO(t *testing.T) {
 	tmpDir := t.TempDir()
-	cfg := &Config{
+	cfg := &AppConfig{
 		WorkspaceDir: tmpDir,
 	}
 
 	// Append more than max entries.
-	for i := 0; i < skillFailuresMaxCount+3; i++ {
-		appendSkillFailure(cfg, "test-skill", "Task "+string(rune('A'+i)), "agent", "error "+string(rune('A'+i)))
+	for i := 0; i < SkillFailuresMaxCount+3; i++ {
+		AppendSkillFailure(cfg, "test-skill", "Task "+string(rune('A'+i)), "agent", "error "+string(rune('A'+i)))
 	}
 
-	fpath := filepath.Join(tmpDir, "skills", "test-skill", "failures.md")
+	fpath := filepath.Join(tmpDir, "skills", "test-skill", SkillFailuresFile)
 	data, err := os.ReadFile(fpath)
 	if err != nil {
 		t.Fatalf("expected failures.md to exist: %v", err)
@@ -58,12 +58,12 @@ func TestAppendSkillFailureFIFO(t *testing.T) {
 	// Count entries (## headers).
 	entries := strings.Count(content, "\n## ")
 	// The first entry also matches "## " at the start (after header line).
-	if entries > skillFailuresMaxCount {
-		t.Errorf("expected at most %d entries, got %d", skillFailuresMaxCount, entries)
+	if entries > SkillFailuresMaxCount {
+		t.Errorf("expected at most %d entries, got %d", SkillFailuresMaxCount, entries)
 	}
 
 	// Most recent entry should be present (the last one appended).
-	lastChar := rune('A' + skillFailuresMaxCount + 2)
+	lastChar := rune('A' + SkillFailuresMaxCount + 2)
 	if !strings.Contains(content, "Task "+string(lastChar)) {
 		t.Errorf("most recent entry (Task %s) should be present", string(lastChar))
 	}
@@ -76,14 +76,14 @@ func TestAppendSkillFailureFIFO(t *testing.T) {
 
 func TestAppendSkillFailureTruncatesError(t *testing.T) {
 	tmpDir := t.TempDir()
-	cfg := &Config{
+	cfg := &AppConfig{
 		WorkspaceDir: tmpDir,
 	}
 
-	longErr := strings.Repeat("x", skillFailuresMaxChars+100)
-	appendSkillFailure(cfg, "test-skill", "Long error task", "agent", longErr)
+	longErr := strings.Repeat("x", SkillFailuresMaxChars+100)
+	AppendSkillFailure(cfg, "test-skill", "Long error task", "agent", longErr)
 
-	fpath := filepath.Join(tmpDir, "skills", "test-skill", "failures.md")
+	fpath := filepath.Join(tmpDir, "skills", "test-skill", SkillFailuresFile)
 	data, err := os.ReadFile(fpath)
 	if err != nil {
 		t.Fatal(err)
@@ -103,21 +103,21 @@ func TestLoadSkillFailuresEmpty(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// No file.
-	result := loadSkillFailures(tmpDir)
+	result := LoadSkillFailures(tmpDir)
 	if result != "" {
 		t.Errorf("expected empty, got %q", result)
 	}
 
 	// Empty file.
-	os.WriteFile(filepath.Join(tmpDir, skillFailuresFile), []byte(""), 0o644)
-	result = loadSkillFailures(tmpDir)
+	os.WriteFile(filepath.Join(tmpDir, SkillFailuresFile), []byte(""), 0o644)
+	result = LoadSkillFailures(tmpDir)
 	if result != "" {
 		t.Errorf("expected empty, got %q", result)
 	}
 
 	// Header only.
-	os.WriteFile(filepath.Join(tmpDir, skillFailuresFile), []byte("# Skill Failures"), 0o644)
-	result = loadSkillFailures(tmpDir)
+	os.WriteFile(filepath.Join(tmpDir, SkillFailuresFile), []byte("# Skill Failures"), 0o644)
+	result = LoadSkillFailures(tmpDir)
 	if result != "" {
 		t.Errorf("expected empty for header-only, got %q", result)
 	}
@@ -125,14 +125,14 @@ func TestLoadSkillFailuresEmpty(t *testing.T) {
 
 func TestLoadSkillFailuresContent(t *testing.T) {
 	tmpDir := t.TempDir()
-	cfg := &Config{
+	cfg := &AppConfig{
 		WorkspaceDir: tmpDir,
 	}
 
-	appendSkillFailure(cfg, "my-skill", "Task A", "ruri", "some error")
-	appendSkillFailure(cfg, "my-skill", "Task B", "hisui", "another error")
+	AppendSkillFailure(cfg, "my-skill", "Task A", "ruri", "some error")
+	AppendSkillFailure(cfg, "my-skill", "Task B", "hisui", "another error")
 
-	result := loadSkillFailuresByName(cfg, "my-skill")
+	result := LoadSkillFailuresByName(cfg, "my-skill")
 	if result == "" {
 		t.Fatal("expected non-empty failures")
 	}
@@ -151,10 +151,10 @@ func TestLoadSkillFailuresTruncatesLargeContent(t *testing.T) {
 
 	// Write a large failures file.
 	large := "# Skill Failures\n\n" + strings.Repeat("## 2026-01-01T00:00:00Z — Big task (agent: x)\n"+strings.Repeat("e", 300)+"\n\n", 20)
-	os.WriteFile(filepath.Join(skillDir, skillFailuresFile), []byte(large), 0o644)
+	os.WriteFile(filepath.Join(skillDir, SkillFailuresFile), []byte(large), 0o644)
 
-	result := loadSkillFailures(skillDir)
-	if len(result) > skillFailuresMaxInject+50 { // +50 for "... (truncated)"
+	result := LoadSkillFailures(skillDir)
+	if len(result) > SkillFailuresMaxInject+50 { // +50 for "... (truncated)"
 		t.Errorf("result too large: %d chars", len(result))
 	}
 	if !strings.Contains(result, "truncated") {
@@ -176,7 +176,7 @@ error A
 `
 	os.WriteFile(fpath, []byte(content), 0o644)
 
-	entries := parseFailureEntries(fpath)
+	entries := ParseFailureEntries(fpath)
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
 	}

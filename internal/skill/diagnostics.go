@@ -1,4 +1,4 @@
-package main
+package skill
 
 // Native Go implementation of skill trigger diagnostics.
 // Replaces the python3 shim that called skills/scripts/skill_diagnostics.py.
@@ -15,6 +15,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"tetora/internal/db"
 )
 
 // ── Config ──
@@ -356,7 +358,7 @@ func diagQueryUsageStats(dbPath string, days int) map[string]map[string]any {
 		FROM skill_usage
 		WHERE created_at >= '%s'
 		GROUP BY skill_name`, cutoff)
-	rows, err := queryDB(dbPath, sql)
+	rows, err := db.Query(dbPath, sql)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not query DB: %v\n", err)
 		return nil
@@ -379,7 +381,7 @@ func diagQueryPromptTerms(dbPath string, days int) map[string]int {
 		WHERE event_type = 'injected' AND task_prompt != ''
 		AND created_at >= '%s'
 		LIMIT 200`, cutoff)
-	rows, err := queryDB(dbPath, sql)
+	rows, err := db.Query(dbPath, sql)
 	if err != nil {
 		return nil
 	}
@@ -572,7 +574,10 @@ func diagGenerateReport(
 		fmt.Print("## 5. Coverage Gaps\n\n")
 		if len(gaps) > 0 {
 			fmt.Print("Frequent prompt terms with no matching skill trigger:\n\n")
-			type tc struct{ term string; count int }
+			type tc struct {
+				term  string
+				count int
+			}
 			var sorted []tc
 			for t, c := range gaps {
 				sorted = append(sorted, tc{t, c})
@@ -602,9 +607,9 @@ func diagFloat(v any) float64 {
 	return 0
 }
 
-// skillDiagnosticsCmd is the entry point for `tetora skill diagnostics`.
+// SkillDiagnosticsCmd is the entry point for `tetora skill diagnostics`.
 // It is a pure Go replacement for the former python3 shim.
-func skillDiagnosticsCmd(args []string) {
+func SkillDiagnosticsCmd(args []string, historyDB string) {
 	fset := flag.NewFlagSet("diagnostics", flag.ContinueOnError)
 	days := fset.Int("days", 30, "analysis period in days")
 	asJSON := fset.Bool("json", false, "output as JSON")
@@ -617,13 +622,12 @@ func skillDiagnosticsCmd(args []string) {
 		os.Exit(1)
 	}
 
-	cfg := loadConfig(findConfigPath())
 	skills := diagDiscoverSkills()
 	if len(skills) == 0 {
 		fmt.Fprintln(os.Stderr, "No skills found.")
 		os.Exit(1)
 	}
 
-	diagGenerateReport(skills, cfg.HistoryDB, *days, *asJSON,
+	diagGenerateReport(skills, historyDB, *days, *asJSON,
 		*showScore, *showOverlap, *showDead, *showGap)
 }

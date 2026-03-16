@@ -1,4 +1,4 @@
-package main
+package skill
 
 import (
 	"context"
@@ -7,18 +7,16 @@ import (
 	"testing"
 )
 
-// --- P21.7: NotebookLM Skill Tests ---
+// --- NotebookLM Skill Tests ---
 
 func TestNotebookLMImport_NoRelay(t *testing.T) {
-	old := globalBrowserRelay
-	globalBrowserRelay = nil
-	defer func() { globalBrowserRelay = old }()
+	cfg := &AppConfig{Browser: nil}
 
 	input, _ := json.Marshal(map[string]any{
 		"notebook_url": "https://notebooklm.google.com/notebook/abc",
 		"urls":         []string{"https://example.com"},
 	})
-	_, err := toolNotebookLMImport(context.Background(), &Config{}, input)
+	_, err := ToolNotebookLMImport(context.Background(), cfg, input)
 	if err == nil {
 		t.Fatal("expected error when relay is nil")
 	}
@@ -28,11 +26,9 @@ func TestNotebookLMImport_NoRelay(t *testing.T) {
 }
 
 func TestNotebookLMListSources_NoRelay(t *testing.T) {
-	old := globalBrowserRelay
-	globalBrowserRelay = nil
-	defer func() { globalBrowserRelay = old }()
+	cfg := &AppConfig{Browser: nil}
 
-	_, err := toolNotebookLMListSources(context.Background(), &Config{}, json.RawMessage(`{}`))
+	_, err := ToolNotebookLMListSources(context.Background(), cfg, json.RawMessage(`{}`))
 	if err == nil {
 		t.Fatal("expected error when relay is nil")
 	}
@@ -42,14 +38,12 @@ func TestNotebookLMListSources_NoRelay(t *testing.T) {
 }
 
 func TestNotebookLMQuery_NoRelay(t *testing.T) {
-	old := globalBrowserRelay
-	globalBrowserRelay = nil
-	defer func() { globalBrowserRelay = old }()
+	cfg := &AppConfig{Browser: nil}
 
 	input, _ := json.Marshal(map[string]any{
 		"question": "What is the summary?",
 	})
-	_, err := toolNotebookLMQuery(context.Background(), &Config{}, input)
+	_, err := ToolNotebookLMQuery(context.Background(), cfg, input)
 	if err == nil {
 		t.Fatal("expected error when relay is nil")
 	}
@@ -59,10 +53,13 @@ func TestNotebookLMQuery_NoRelay(t *testing.T) {
 }
 
 func TestNotebookLMQuery_EmptyQuestion(t *testing.T) {
+	// Empty question is validated before the browser relay check.
+	cfg := &AppConfig{Browser: nil}
+
 	input, _ := json.Marshal(map[string]any{
 		"question": "",
 	})
-	_, err := toolNotebookLMQuery(context.Background(), &Config{}, input)
+	_, err := ToolNotebookLMQuery(context.Background(), cfg, input)
 	if err == nil {
 		t.Fatal("expected error for empty question")
 	}
@@ -72,8 +69,11 @@ func TestNotebookLMQuery_EmptyQuestion(t *testing.T) {
 }
 
 func TestNotebookLMDeleteSource_NoArgs(t *testing.T) {
+	// Missing source args are validated before the browser relay check.
+	cfg := &AppConfig{Browser: nil}
+
 	input, _ := json.Marshal(map[string]any{})
-	_, err := toolNotebookLMDeleteSource(context.Background(), &Config{}, input)
+	_, err := ToolNotebookLMDeleteSource(context.Background(), cfg, input)
 	if err == nil {
 		t.Fatal("expected error when neither source_name nor source_id provided")
 	}
@@ -83,11 +83,14 @@ func TestNotebookLMDeleteSource_NoArgs(t *testing.T) {
 }
 
 func TestNotebookLMImport_NoURLs(t *testing.T) {
+	// Empty urls validated before relay check.
+	cfg := &AppConfig{Browser: nil}
+
 	input, _ := json.Marshal(map[string]any{
 		"notebook_url": "https://notebooklm.google.com/notebook/abc",
 		"urls":         []string{},
 	})
-	_, err := toolNotebookLMImport(context.Background(), &Config{}, input)
+	_, err := ToolNotebookLMImport(context.Background(), cfg, input)
 	if err == nil {
 		t.Fatal("expected error for empty urls")
 	}
@@ -97,11 +100,14 @@ func TestNotebookLMImport_NoURLs(t *testing.T) {
 }
 
 func TestNotebookLMImport_NoNotebookURL(t *testing.T) {
+	// Empty notebook_url validated before relay check.
+	cfg := &AppConfig{Browser: nil}
+
 	input, _ := json.Marshal(map[string]any{
 		"notebook_url": "",
 		"urls":         []string{"https://example.com"},
 	})
-	_, err := toolNotebookLMImport(context.Background(), &Config{}, input)
+	_, err := ToolNotebookLMImport(context.Background(), cfg, input)
 	if err == nil {
 		t.Fatal("expected error for empty notebook_url")
 	}

@@ -1,4 +1,4 @@
-package main
+package skill
 
 import (
 	"context"
@@ -104,8 +104,8 @@ func severityScore(severity string) int {
 	}
 }
 
-// sentoriScan performs a security scan on a skill script and returns a report.
-func sentoriScan(skillName, content string) *SentoriReport {
+// SentoriScan performs a security scan on a skill script and returns a report.
+func SentoriScan(skillName, content string) *SentoriReport {
 	report := &SentoriReport{
 		SkillName: skillName,
 		ScannedAt: time.Now().UTC().Format(time.RFC3339),
@@ -152,14 +152,14 @@ func sentoriScan(skillName, content string) *SentoriReport {
 	return report
 }
 
-// loadFileSkillScript reads the script file from a file-based skill directory.
+// LoadFileSkillScript reads the script file from a file-based skill directory.
 // It looks for skills/{name}/script.* (first glob match) or falls back to run.sh/run.py.
-func loadFileSkillScript(cfg *Config, name string) (string, error) {
-	if !isValidSkillName(name) {
+func LoadFileSkillScript(cfg *AppConfig, name string) (string, error) {
+	if !IsValidSkillName(name) {
 		return "", fmt.Errorf("invalid skill name %q", name)
 	}
 
-	dir := filepath.Join(skillsDir(cfg), name)
+	dir := filepath.Join(SkillsDir(cfg), name)
 	if _, err := os.Stat(dir); err != nil {
 		return "", fmt.Errorf("skill %q not found", name)
 	}
@@ -188,8 +188,8 @@ func loadFileSkillScript(cfg *Config, name string) (string, error) {
 
 // --- Tool Handlers ---
 
-// toolSentoriScan is the tool handler for the sentori_scan built-in tool.
-func toolSentoriScan(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+// ToolSentoriScan is the tool handler for the sentori_scan built-in tool.
+func ToolSentoriScan(ctx context.Context, cfg *AppConfig, input json.RawMessage) (string, error) {
 	var args struct {
 		Name    string `json:"name"`
 		Content string `json:"content"`
@@ -215,14 +215,14 @@ func toolSentoriScan(ctx context.Context, cfg *Config, input json.RawMessage) (s
 	} else {
 		// Load skill script by name.
 		var err error
-		content, err = loadFileSkillScript(cfg, args.Name)
+		content, err = LoadFileSkillScript(cfg, args.Name)
 		if err != nil {
 			return "", fmt.Errorf("load skill script: %w", err)
 		}
 		skillName = args.Name
 	}
 
-	report := sentoriScan(skillName, content)
+	report := SentoriScan(skillName, content)
 
 	b, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
@@ -234,8 +234,8 @@ func toolSentoriScan(ctx context.Context, cfg *Config, input json.RawMessage) (s
 // skillInstallMaxSize is the maximum size for a downloaded skill package (1MB).
 const skillInstallMaxSize = 1 << 20
 
-// toolSkillInstall is the tool handler for the skill_install built-in tool.
-func toolSkillInstall(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+// ToolSkillInstall is the tool handler for the skill_install built-in tool.
+func ToolSkillInstall(ctx context.Context, cfg *AppConfig, input json.RawMessage) (string, error) {
 	var args struct {
 		URL         string `json:"url"`
 		AutoApprove bool   `json:"auto_approve"`
@@ -289,12 +289,12 @@ func toolSkillInstall(ctx context.Context, cfg *Config, input json.RawMessage) (
 	if pkg.Script == "" {
 		return "", fmt.Errorf("skill package missing 'script' field")
 	}
-	if !isValidSkillName(pkg.Name) {
+	if !IsValidSkillName(pkg.Name) {
 		return "", fmt.Errorf("invalid skill name %q in package", pkg.Name)
 	}
 
 	// Run sentori security scan on the script.
-	report := sentoriScan(pkg.Name, pkg.Script)
+	report := SentoriScan(pkg.Name, pkg.Script)
 
 	// If dangerous, refuse installation.
 	if report.OverallRisk == "dangerous" {
@@ -333,7 +333,7 @@ func toolSkillInstall(ctx context.Context, cfg *Config, input json.RawMessage) (
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 	}
 
-	if err := createSkill(cfg, meta, pkg.Script); err != nil {
+	if err := CreateSkill(cfg, meta, pkg.Script); err != nil {
 		return "", fmt.Errorf("create skill: %w", err)
 	}
 
@@ -342,7 +342,7 @@ func toolSkillInstall(ctx context.Context, cfg *Config, input json.RawMessage) (
 	if err != nil {
 		logWarn("marshal sentori report failed", "error", err)
 	} else {
-		reportPath := filepath.Join(skillsDir(cfg), pkg.Name, "sentori-report.json")
+		reportPath := filepath.Join(SkillsDir(cfg), pkg.Name, "sentori-report.json")
 		if err := os.WriteFile(reportPath, reportJSON, 0o644); err != nil {
 			logWarn("write sentori report failed", "path", reportPath, "error", err)
 		}
@@ -361,14 +361,14 @@ func toolSkillInstall(ctx context.Context, cfg *Config, input json.RawMessage) (
 		"risk":     report.OverallRisk,
 		"score":    report.Score,
 		"findings": len(report.Findings),
-		"path":     filepath.Join(skillsDir(cfg), pkg.Name),
+		"path":     filepath.Join(SkillsDir(cfg), pkg.Name),
 	}
 	b, _ := json.Marshal(result)
 	return string(b), nil
 }
 
-// toolSkillSearch is the tool handler for the skill_search built-in tool.
-func toolSkillSearch(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+// ToolSkillSearch is the tool handler for the skill_search built-in tool.
+func ToolSkillSearch(ctx context.Context, cfg *AppConfig, input json.RawMessage) (string, error) {
 	var args struct {
 		Query string `json:"query"`
 	}
@@ -381,7 +381,7 @@ func toolSkillSearch(ctx context.Context, cfg *Config, input json.RawMessage) (s
 	}
 
 	// Load registry file.
-	registryPath := filepath.Join(cfg.baseDir, "skill-registry.json")
+	registryPath := filepath.Join(cfg.BaseDir, "skill-registry.json")
 	data, err := os.ReadFile(registryPath)
 	if err != nil {
 		result := map[string]any{

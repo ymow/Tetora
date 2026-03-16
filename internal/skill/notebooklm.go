@@ -1,4 +1,4 @@
-package main
+package skill
 
 import (
 	"context"
@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// toolNotebookLMImport imports URLs as sources into a NotebookLM notebook.
-func toolNotebookLMImport(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+// ToolNotebookLMImport imports URLs as sources into a NotebookLM notebook.
+func ToolNotebookLMImport(ctx context.Context, cfg *AppConfig, input json.RawMessage) (string, error) {
 	var args struct {
 		NotebookURL string   `json:"notebook_url"`
 		URLs        []string `json:"urls"`
@@ -27,13 +27,13 @@ func toolNotebookLMImport(ctx context.Context, cfg *Config, input json.RawMessag
 		args.BatchSize = 10
 	}
 
-	if globalBrowserRelay == nil || !globalBrowserRelay.Connected() {
+	if cfg.Browser == nil || !cfg.Browser.Connected() {
 		return "", fmt.Errorf("browser extension not connected")
 	}
 
 	// Navigate to the notebook.
 	navParams, _ := json.Marshal(map[string]string{"url": args.NotebookURL})
-	if _, err := globalBrowserRelay.SendCommand("navigate", navParams, 30*time.Second); err != nil {
+	if _, err := cfg.Browser.SendCommand("navigate", navParams, 30*time.Second); err != nil {
 		return "", fmt.Errorf("navigate to notebook: %w", err)
 	}
 
@@ -55,7 +55,7 @@ func toolNotebookLMImport(ctx context.Context, cfg *Config, input json.RawMessag
 			clickParams, _ := json.Marshal(map[string]string{
 				"selector": `button[aria-label="Add source"], button.add-source-button, [data-action="add-source"]`,
 			})
-			if _, err := globalBrowserRelay.SendCommand("click", clickParams, 10*time.Second); err != nil {
+			if _, err := cfg.Browser.SendCommand("click", clickParams, 10*time.Second); err != nil {
 				errors = append(errors, fmt.Sprintf("click add source: %v", err))
 				continue
 			}
@@ -65,7 +65,7 @@ func toolNotebookLMImport(ctx context.Context, cfg *Config, input json.RawMessag
 			clickWebsite, _ := json.Marshal(map[string]string{
 				"selector": `[data-value="website"], button:has-text("Website"), [aria-label="Website"]`,
 			})
-			if _, err := globalBrowserRelay.SendCommand("click", clickWebsite, 10*time.Second); err != nil {
+			if _, err := cfg.Browser.SendCommand("click", clickWebsite, 10*time.Second); err != nil {
 				errors = append(errors, fmt.Sprintf("click website option: %v", err))
 				continue
 			}
@@ -76,7 +76,7 @@ func toolNotebookLMImport(ctx context.Context, cfg *Config, input json.RawMessag
 				"selector": `input[type="url"], input[placeholder*="URL"], input[aria-label*="URL"]`,
 				"text":     url,
 			})
-			if _, err := globalBrowserRelay.SendCommand("type", typeParams, 10*time.Second); err != nil {
+			if _, err := cfg.Browser.SendCommand("type", typeParams, 10*time.Second); err != nil {
 				errors = append(errors, fmt.Sprintf("type URL %s: %v", url, err))
 				continue
 			}
@@ -86,7 +86,7 @@ func toolNotebookLMImport(ctx context.Context, cfg *Config, input json.RawMessag
 			submitParams, _ := json.Marshal(map[string]string{
 				"selector": `button[type="submit"], button:has-text("Insert"), button:has-text("Add")`,
 			})
-			if _, err := globalBrowserRelay.SendCommand("click", submitParams, 10*time.Second); err != nil {
+			if _, err := cfg.Browser.SendCommand("click", submitParams, 10*time.Second); err != nil {
 				errors = append(errors, fmt.Sprintf("submit URL %s: %v", url, err))
 				continue
 			}
@@ -109,9 +109,9 @@ func toolNotebookLMImport(ctx context.Context, cfg *Config, input json.RawMessag
 	return string(b), nil
 }
 
-// toolNotebookLMListSources lists sources in the current NotebookLM notebook.
-func toolNotebookLMListSources(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
-	if globalBrowserRelay == nil || !globalBrowserRelay.Connected() {
+// ToolNotebookLMListSources lists sources in the current NotebookLM notebook.
+func ToolNotebookLMListSources(ctx context.Context, cfg *AppConfig, input json.RawMessage) (string, error) {
+	if cfg.Browser == nil || !cfg.Browser.Connected() {
 		return "", fmt.Errorf("browser extension not connected")
 	}
 
@@ -136,15 +136,15 @@ func toolNotebookLMListSources(ctx context.Context, cfg *Config, input json.RawM
 		})()
 	`
 	evalParams, _ := json.Marshal(map[string]string{"code": js})
-	result, err := globalBrowserRelay.SendCommand("eval", evalParams, 15*time.Second)
+	result, err := cfg.Browser.SendCommand("eval", evalParams, 15*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("list sources: %w", err)
 	}
 	return result, nil
 }
 
-// toolNotebookLMQuery asks a question in the current NotebookLM notebook.
-func toolNotebookLMQuery(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+// ToolNotebookLMQuery asks a question in the current NotebookLM notebook.
+func ToolNotebookLMQuery(ctx context.Context, cfg *AppConfig, input json.RawMessage) (string, error) {
 	var args struct {
 		Question string `json:"question"`
 	}
@@ -155,7 +155,7 @@ func toolNotebookLMQuery(ctx context.Context, cfg *Config, input json.RawMessage
 		return "", fmt.Errorf("question is required")
 	}
 
-	if globalBrowserRelay == nil || !globalBrowserRelay.Connected() {
+	if cfg.Browser == nil || !cfg.Browser.Connected() {
 		return "", fmt.Errorf("browser extension not connected")
 	}
 
@@ -164,7 +164,7 @@ func toolNotebookLMQuery(ctx context.Context, cfg *Config, input json.RawMessage
 		"selector": `textarea, input[aria-label*="question"], input[aria-label*="Ask"], [contenteditable="true"]`,
 		"text":     args.Question,
 	})
-	if _, err := globalBrowserRelay.SendCommand("type", typeParams, 10*time.Second); err != nil {
+	if _, err := cfg.Browser.SendCommand("type", typeParams, 10*time.Second); err != nil {
 		return "", fmt.Errorf("type question: %w", err)
 	}
 
@@ -172,7 +172,7 @@ func toolNotebookLMQuery(ctx context.Context, cfg *Config, input json.RawMessage
 	submitParams, _ := json.Marshal(map[string]string{
 		"selector": `button[aria-label="Send"], button[type="submit"], button.send-button`,
 	})
-	if _, err := globalBrowserRelay.SendCommand("click", submitParams, 10*time.Second); err != nil {
+	if _, err := cfg.Browser.SendCommand("click", submitParams, 10*time.Second); err != nil {
 		return "", fmt.Errorf("submit question: %w", err)
 	}
 
@@ -194,15 +194,15 @@ func toolNotebookLMQuery(ctx context.Context, cfg *Config, input json.RawMessage
 		})()
 	`
 	evalParams, _ := json.Marshal(map[string]string{"code": js})
-	result, err := globalBrowserRelay.SendCommand("eval", evalParams, 15*time.Second)
+	result, err := cfg.Browser.SendCommand("eval", evalParams, 15*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("get response: %w", err)
 	}
 	return result, nil
 }
 
-// toolNotebookLMDeleteSource deletes a source from the current NotebookLM notebook.
-func toolNotebookLMDeleteSource(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+// ToolNotebookLMDeleteSource deletes a source from the current NotebookLM notebook.
+func ToolNotebookLMDeleteSource(ctx context.Context, cfg *AppConfig, input json.RawMessage) (string, error) {
 	var args struct {
 		SourceName string `json:"source_name"`
 		SourceID   string `json:"source_id"`
@@ -214,7 +214,7 @@ func toolNotebookLMDeleteSource(ctx context.Context, cfg *Config, input json.Raw
 		return "", fmt.Errorf("source_name or source_id is required")
 	}
 
-	if globalBrowserRelay == nil || !globalBrowserRelay.Connected() {
+	if cfg.Browser == nil || !cfg.Browser.Connected() {
 		return "", fmt.Errorf("browser extension not connected")
 	}
 
@@ -222,7 +222,7 @@ func toolNotebookLMDeleteSource(ctx context.Context, cfg *Config, input json.Raw
 	if args.SourceID != "" {
 		selector := fmt.Sprintf(`[data-source-id="%s"]`, args.SourceID)
 		clickParams, _ := json.Marshal(map[string]string{"selector": selector})
-		if _, err := globalBrowserRelay.SendCommand("click", clickParams, 10*time.Second); err != nil {
+		if _, err := cfg.Browser.SendCommand("click", clickParams, 10*time.Second); err != nil {
 			return "", fmt.Errorf("click source: %w", err)
 		}
 	} else {
@@ -240,7 +240,7 @@ func toolNotebookLMDeleteSource(ctx context.Context, cfg *Config, input json.Raw
 			})()
 		`, args.SourceName)
 		evalParams, _ := json.Marshal(map[string]string{"code": js})
-		result, err := globalBrowserRelay.SendCommand("eval", evalParams, 10*time.Second)
+		result, err := cfg.Browser.SendCommand("eval", evalParams, 10*time.Second)
 		if err != nil {
 			return "", fmt.Errorf("find source: %w", err)
 		}
@@ -254,7 +254,7 @@ func toolNotebookLMDeleteSource(ctx context.Context, cfg *Config, input json.Raw
 	deleteParams, _ := json.Marshal(map[string]string{
 		"selector": `button[aria-label="Delete"], button[aria-label="Remove"], button:has-text("Delete"), .delete-source-button`,
 	})
-	if _, err := globalBrowserRelay.SendCommand("click", deleteParams, 10*time.Second); err != nil {
+	if _, err := cfg.Browser.SendCommand("click", deleteParams, 10*time.Second); err != nil {
 		return "", fmt.Errorf("click delete: %w", err)
 	}
 	time.Sleep(1 * time.Second)
@@ -263,7 +263,7 @@ func toolNotebookLMDeleteSource(ctx context.Context, cfg *Config, input json.Raw
 	confirmParams, _ := json.Marshal(map[string]string{
 		"selector": `button:has-text("Confirm"), button:has-text("Yes"), button[aria-label="Confirm"]`,
 	})
-	globalBrowserRelay.SendCommand("click", confirmParams, 5*time.Second) // Best effort.
+	cfg.Browser.SendCommand("click", confirmParams, 5*time.Second) // Best effort.
 
 	name := args.SourceName
 	if name == "" {

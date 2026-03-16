@@ -1,21 +1,23 @@
-package main
+package skill
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"tetora/internal/db"
 )
 
 func TestInitSkillUsageTable(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	if err := initSkillUsageTable(dbPath); err != nil {
-		t.Fatalf("initSkillUsageTable() error: %v", err)
+	if err := InitSkillUsageTable(dbPath); err != nil {
+		t.Fatalf("InitSkillUsageTable() error: %v", err)
 	}
 
 	// Verify table exists by querying it.
-	rows, err := queryDB(dbPath, "SELECT COUNT(*) as cnt FROM skill_usage")
+	rows, err := db.Query(dbPath, "SELECT COUNT(*) as cnt FROM skill_usage")
 	if err != nil {
 		t.Fatalf("query skill_usage failed: %v", err)
 	}
@@ -28,14 +30,14 @@ func TestRecordSkillEvent(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	if err := initSkillUsageTable(dbPath); err != nil {
-		t.Fatalf("initSkillUsageTable() error: %v", err)
+	if err := InitSkillUsageTable(dbPath); err != nil {
+		t.Fatalf("InitSkillUsageTable() error: %v", err)
 	}
 
-	recordSkillEvent(dbPath, "my-skill", "created", "build a greeting tool", "琉璃")
-	recordSkillEvent(dbPath, "my-skill", "used", "", "黒曜")
+	RecordSkillEvent(dbPath, "my-skill", "created", "build a greeting tool", "琉璃")
+	RecordSkillEvent(dbPath, "my-skill", "used", "", "黒曜")
 
-	rows, err := queryDB(dbPath, "SELECT * FROM skill_usage ORDER BY id")
+	rows, err := db.Query(dbPath, "SELECT * FROM skill_usage ORDER BY id")
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -57,15 +59,15 @@ func TestRecordSkillEvent(t *testing.T) {
 func TestSuggestSkillsForPrompt(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
-	initSkillUsageTable(dbPath)
+	InitSkillUsageTable(dbPath)
 
 	// Record creation events with prompts.
-	recordSkillEvent(dbPath, "deploy-app", "created", "deploy the application to production server", "黒曜")
-	recordSkillEvent(dbPath, "check-logs", "created", "check and analyze server error logs", "翡翠")
-	recordSkillEvent(dbPath, "greet-user", "created", "greet the user with a friendly hello message", "琥珀")
+	RecordSkillEvent(dbPath, "deploy-app", "created", "deploy the application to production server", "黒曜")
+	RecordSkillEvent(dbPath, "check-logs", "created", "check and analyze server error logs", "翡翠")
+	RecordSkillEvent(dbPath, "greet-user", "created", "greet the user with a friendly hello message", "琥珀")
 
 	// Query with related prompt.
-	suggestions := suggestSkillsForPrompt(dbPath, "deploy the application to staging server", 5)
+	suggestions := SuggestSkillsForPrompt(dbPath, "deploy the application to staging server", 5)
 	if len(suggestions) == 0 {
 		t.Fatal("expected suggestions for deploy-related prompt")
 	}
@@ -74,7 +76,7 @@ func TestSuggestSkillsForPrompt(t *testing.T) {
 	}
 
 	// Query with unrelated prompt should return nothing or fewer results.
-	unrelated := suggestSkillsForPrompt(dbPath, "play some music and dance", 5)
+	unrelated := SuggestSkillsForPrompt(dbPath, "play some music and dance", 5)
 	// This should have no meaningful overlap.
 	if len(unrelated) > 0 {
 		t.Logf("unrelated suggestions: %v (may be noise)", unrelated)
@@ -84,8 +86,8 @@ func TestSuggestSkillsForPrompt(t *testing.T) {
 func TestAutoInjectLearnedSkills(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
-	cfg := &Config{
-		baseDir:   dir,
+	cfg := &AppConfig{
+		BaseDir:   dir,
 		HistoryDB: dbPath,
 		SkillStore: SkillStoreConfig{
 			AutoApprove: true,
@@ -93,7 +95,7 @@ func TestAutoInjectLearnedSkills(t *testing.T) {
 		},
 	}
 
-	initSkillUsageTable(dbPath)
+	InitSkillUsageTable(dbPath)
 
 	// Create an approved skill with keywords.
 	meta := SkillMetadata{
@@ -102,18 +104,18 @@ func TestAutoInjectLearnedSkills(t *testing.T) {
 		Approved: true,
 		Matcher:  &SkillMatcher{Keywords: []string{"deploy"}},
 	}
-	createSkill(cfg, meta, "echo deploying")
+	CreateSkill(cfg, meta, "echo deploying")
 
 	// Record creation event.
-	recordSkillEvent(dbPath, "deploy-tool", "created", "deploy application to production", "黒曜")
+	RecordSkillEvent(dbPath, "deploy-tool", "created", "deploy application to production", "黒曜")
 
 	// Task with matching keyword.
-	task := Task{
+	task := TaskContext{
 		Prompt: "please deploy the app",
-		Agent:   "黒曜",
+		Agent:  "黒曜",
 	}
 
-	skills := autoInjectLearnedSkills(cfg, task)
+	skills := AutoInjectLearnedSkills(cfg, task)
 	if len(skills) == 0 {
 		t.Fatal("expected at least one auto-injected skill")
 	}
@@ -130,7 +132,7 @@ func TestAutoInjectLearnedSkills(t *testing.T) {
 }
 
 func TestSkillTokenize(t *testing.T) {
-	words := skillTokenize("Hello, World! This is a test.")
+	words := SkillTokenize("Hello, World! This is a test.")
 	// "is" and "a" are < 3 chars, filtered out
 	expected := []string{"hello", "world", "this", "test"}
 	if len(words) != len(expected) {
@@ -157,12 +159,12 @@ func TestWordOverlap(t *testing.T) {
 func TestSQLiteAvailable(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "check.db")
-	_, err := queryDB(dbPath, "SELECT 1")
+	_, err := db.Query(dbPath, "SELECT 1")
 	if err != nil {
 		// Try to detect if sqlite3 is just not installed.
 		if _, statErr := os.Stat("/usr/bin/sqlite3"); statErr != nil {
 			t.Skip("sqlite3 not available, skipping DB tests")
 		}
-		t.Fatalf("queryDB failed: %v", err)
+		t.Fatalf("db.Query failed: %v", err)
 	}
 }

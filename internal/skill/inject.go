@@ -1,38 +1,40 @@
-package main
+package skill
 
 import (
 	"fmt"
 	"os"
 	"strings"
+
+	"tetora/internal/classify"
 )
 
 // --- P17.3c: Dynamic Skill Injection ---
 
 // SkillMatcher defines conditions for when a skill should be injected into a prompt.
 type SkillMatcher struct {
-	Agents    []string `json:"agents,omitempty"`    // inject for these agents
+	Agents   []string `json:"agents,omitempty"`   // inject for these agents
 	Keywords []string `json:"keywords,omitempty"` // inject when prompt matches
 	Channels []string `json:"channels,omitempty"` // inject for these channels (telegram, slack, discord, etc.)
 }
 
-// selectSkills filters skills based on task context (role, keywords, channel).
+// SelectSkills filters skills based on task context (role, keywords, channel).
 // Returns only the skills that match the current task's context.
 // This reduces token usage by avoiding injection of all skills into every prompt.
 // Includes both config-based and learned file-based skills.
-func selectSkills(cfg *Config, task Task) []SkillConfig {
+func SelectSkills(cfg *AppConfig, task TaskContext) []SkillConfig {
 	var selected []SkillConfig
 	seen := make(map[string]bool)
 
 	// Config-based skills.
 	for _, skill := range cfg.Skills {
-		if shouldInjectSkill(skill, task) {
+		if ShouldInjectSkill(skill, task) {
 			selected = append(selected, skill)
 			seen[skill.Name] = true
 		}
 	}
 
 	// Also include learned skills from file store.
-	learned := autoInjectLearnedSkills(cfg, task)
+	learned := AutoInjectLearnedSkills(cfg, task)
 	for _, skill := range learned {
 		if !seen[skill.Name] {
 			selected = append(selected, skill)
@@ -43,8 +45,8 @@ func selectSkills(cfg *Config, task Task) []SkillConfig {
 	return selected
 }
 
-// shouldInjectSkill determines if a skill should be injected for this task.
-func shouldInjectSkill(skill SkillConfig, task Task) bool {
+// ShouldInjectSkill determines if a skill should be injected for this task.
+func ShouldInjectSkill(skill SkillConfig, task TaskContext) bool {
 	// If no matcher is defined, always inject (backward compatible).
 	if skill.Matcher == nil {
 		return true
@@ -78,7 +80,7 @@ func shouldInjectSkill(skill SkillConfig, task Task) bool {
 
 	// Check channel match (extract from task.Source).
 	if len(matcher.Channels) > 0 {
-		channel := extractChannelFromSource(task.Source)
+		channel := ExtractChannelFromSource(task.Source)
 		for _, ch := range matcher.Channels {
 			if ch == channel {
 				return true
@@ -90,9 +92,9 @@ func shouldInjectSkill(skill SkillConfig, task Task) bool {
 	return false
 }
 
-// extractChannelFromSource extracts the channel name from task.Source.
+// ExtractChannelFromSource extracts the channel name from task.Source.
 // Source format examples: "telegram", "slack:C123", "discord:456", "chat:telegram:789", "cron"
-func extractChannelFromSource(source string) string {
+func ExtractChannelFromSource(source string) string {
 	if source == "" {
 		return ""
 	}
@@ -110,25 +112,25 @@ func extractChannelFromSource(source string) string {
 	return parts[0]
 }
 
-// buildSkillsPrompt builds the skills section of the system prompt.
+// BuildSkillsPrompt builds the skills section of the system prompt.
 // Only includes skills that are relevant to this task.
 // Tier 1 (always): one-line summary per skill.
 // Tier 2 (Standard/Complex only): SKILL.md doc injection when available.
-func buildSkillsPrompt(cfg *Config, task Task, complexity RequestComplexity) string {
-	skills := selectSkills(cfg, task)
+func BuildSkillsPrompt(cfg *AppConfig, task TaskContext, complexity classify.Complexity) string {
+	skills := SelectSkills(cfg, task)
 	if len(skills) == 0 {
 		return ""
 	}
 
 	// Limit number of injected skills per task (SkillsBench: 2-3 curated > many).
-	maxN := cfg.PromptBudget.maxSkillsPerTaskOrDefault()
+	maxN := cfg.maxSkillsPerTaskOrDefault()
 	if len(skills) > maxN {
 		skills = skills[:maxN]
 	}
 
 	// Track which skills were injected for this task.
 	for _, s := range skills {
-		recordSkillEventEx(cfg.HistoryDB, s.Name, "injected", task.Prompt, task.Agent, SkillEventOpts{
+		RecordSkillEventEx(cfg.HistoryDB, s.Name, "injected", task.Prompt, task.Agent, SkillEventOpts{
 			SessionID: task.SessionID,
 		})
 	}
@@ -159,8 +161,8 @@ func buildSkillsPrompt(cfg *Config, task Task, complexity RequestComplexity) str
 	sb.WriteString("\nTo invoke a skill, use the `execute_skill` tool.\n")
 
 	// --- Tier 2: Skill documentation (Standard/Complex only) ---
-	if complexity != ComplexitySimple {
-		docBudget := cfg.PromptBudget.skillsMaxOrDefault()
+	if complexity != classify.Simple {
+		docBudget := cfg.skillsMaxOrDefault()
 		docUsed := 0
 		for _, skill := range skills {
 			if skill.DocPath == "" {
@@ -191,7 +193,7 @@ func buildSkillsPrompt(cfg *Config, task Task, complexity RequestComplexity) str
 
 		// --- Tier 3: Skill failure context injection ---
 		for _, skill := range skills {
-			failures := loadSkillFailuresByName(cfg, skill.Name)
+			failures := LoadSkillFailuresByName(cfg, skill.Name)
 			if failures == "" {
 				continue
 			}
@@ -203,12 +205,12 @@ func buildSkillsPrompt(cfg *Config, task Task, complexity RequestComplexity) str
 	return sb.String()
 }
 
-// skillMatchesContext is a helper for testing skill selection logic.
-func skillMatchesContext(skill SkillConfig, role, prompt, source string) bool {
-	task := Task{
+// SkillMatchesContext is a helper for testing skill selection logic.
+func SkillMatchesContext(skill SkillConfig, role, prompt, source string) bool {
+	task := TaskContext{
 		Agent:  role,
 		Prompt: prompt,
 		Source: source,
 	}
-	return shouldInjectSkill(skill, task)
+	return ShouldInjectSkill(skill, task)
 }

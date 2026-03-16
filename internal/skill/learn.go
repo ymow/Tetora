@@ -1,16 +1,18 @@
-package main
+package skill
 
 import (
 	"fmt"
 	"strings"
 	"time"
+
+	"tetora/internal/db"
 )
 
 // --- P18.4: Self-Improving Skills — Learning ---
 
-// initSkillUsageTable creates the skill_usage table if it doesn't exist,
+// InitSkillUsageTable creates the skill_usage table if it doesn't exist,
 // and migrates it to include observability columns.
-func initSkillUsageTable(dbPath string) error {
+func InitSkillUsageTable(dbPath string) error {
 	sql := `CREATE TABLE IF NOT EXISTS skill_usage (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		skill_name TEXT NOT NULL,
@@ -19,7 +21,7 @@ func initSkillUsageTable(dbPath string) error {
 		role TEXT DEFAULT '',
 		created_at TEXT NOT NULL
 	)`
-	if _, err := queryDB(dbPath, sql); err != nil {
+	if _, err := db.Query(dbPath, sql); err != nil {
 		return err
 	}
 	// Migration: add observability columns (idempotent — silently ignores if already exist).
@@ -35,7 +37,7 @@ func initSkillUsageTable(dbPath string) error {
 		`ALTER TABLE skill_usage ADD COLUMN error_msg TEXT DEFAULT ''`,
 	}
 	for _, m := range migrations {
-		_, _ = queryDB(dbPath, m) // ignore "duplicate column" errors
+		_, _ = db.Query(dbPath, m) // ignore "duplicate column" errors
 	}
 	return nil
 }
@@ -49,35 +51,35 @@ type SkillEventOpts struct {
 	ErrorMsg   string // failure reason
 }
 
-// recordSkillEvent inserts a skill usage event into the database (basic form).
-func recordSkillEvent(dbPath, skillName, eventType, taskPrompt, role string) {
-	recordSkillEventEx(dbPath, skillName, eventType, taskPrompt, role, SkillEventOpts{})
+// RecordSkillEvent inserts a skill usage event into the database (basic form).
+func RecordSkillEvent(dbPath, skillName, eventType, taskPrompt, role string) {
+	RecordSkillEventEx(dbPath, skillName, eventType, taskPrompt, role, SkillEventOpts{})
 }
 
-// recordSkillEventEx inserts a skill usage event with extended observability fields.
-func recordSkillEventEx(dbPath, skillName, eventType, taskPrompt, role string, opts SkillEventOpts) {
+// RecordSkillEventEx inserts a skill usage event with extended observability fields.
+func RecordSkillEventEx(dbPath, skillName, eventType, taskPrompt, role string, opts SkillEventOpts) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	sql := fmt.Sprintf(
 		`INSERT INTO skill_usage (skill_name, event_type, task_prompt, role, created_at, status, duration_ms, source, session_id, error_msg)
 		 VALUES ('%s', '%s', '%s', '%s', '%s', '%s', %d, '%s', '%s', '%s')`,
-		escapeSQLite(skillName),
-		escapeSQLite(eventType),
-		escapeSQLite(taskPrompt),
-		escapeSQLite(role),
+		db.Escape(skillName),
+		db.Escape(eventType),
+		db.Escape(taskPrompt),
+		db.Escape(role),
 		now,
-		escapeSQLite(opts.Status),
+		db.Escape(opts.Status),
 		opts.DurationMs,
-		escapeSQLite(opts.Source),
-		escapeSQLite(opts.SessionID),
-		escapeSQLite(opts.ErrorMsg),
+		db.Escape(opts.Source),
+		db.Escape(opts.SessionID),
+		db.Escape(opts.ErrorMsg),
 	)
-	if _, err := queryDB(dbPath, sql); err != nil {
+	if _, err := db.Query(dbPath, sql); err != nil {
 		logWarn("record skill event failed", "skill", skillName, "event", eventType, "error", err)
 	}
 }
 
-// querySkillStats returns per-skill aggregated usage statistics.
-func querySkillStats(dbPath string, skillName string, days int) ([]map[string]any, error) {
+// QuerySkillStats returns per-skill aggregated usage statistics.
+func QuerySkillStats(dbPath string, skillName string, days int) ([]map[string]any, error) {
 	if days <= 0 {
 		days = 30
 	}
@@ -85,7 +87,7 @@ func querySkillStats(dbPath string, skillName string, days int) ([]map[string]an
 
 	var where string
 	if skillName != "" {
-		where = fmt.Sprintf("AND skill_name = '%s'", escapeSQLite(skillName))
+		where = fmt.Sprintf("AND skill_name = '%s'", db.Escape(skillName))
 	}
 
 	sql := fmt.Sprintf(`
@@ -101,11 +103,11 @@ func querySkillStats(dbPath string, skillName string, days int) ([]map[string]an
 		GROUP BY skill_name
 		ORDER BY invoked DESC, injected DESC
 	`, cutoff, where)
-	return queryDB(dbPath, sql)
+	return db.Query(dbPath, sql)
 }
 
-// querySkillHistory returns recent events for a specific skill.
-func querySkillHistory(dbPath, skillName string, limit int) ([]map[string]any, error) {
+// QuerySkillHistory returns recent events for a specific skill.
+func QuerySkillHistory(dbPath, skillName string, limit int) ([]map[string]any, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -114,26 +116,26 @@ func querySkillHistory(dbPath, skillName string, limit int) ([]map[string]any, e
 		 FROM skill_usage
 		 WHERE skill_name = '%s'
 		 ORDER BY created_at DESC LIMIT %d`,
-		escapeSQLite(skillName), limit)
-	return queryDB(dbPath, sql)
+		db.Escape(skillName), limit)
+	return db.Query(dbPath, sql)
 }
 
-// suggestSkillsForPrompt finds previously created skills whose creation prompt
+// SuggestSkillsForPrompt finds previously created skills whose creation prompt
 // overlaps with the current prompt. Returns skill names sorted by relevance.
-func suggestSkillsForPrompt(dbPath, prompt string, limit int) []string {
+func SuggestSkillsForPrompt(dbPath, prompt string, limit int) []string {
 	if prompt == "" || limit <= 0 {
 		return nil
 	}
 
 	// Get all "created" events with their prompts.
 	sql := `SELECT DISTINCT skill_name, task_prompt FROM skill_usage WHERE event_type = 'created' AND task_prompt != ''`
-	rows, err := queryDB(dbPath, sql)
+	rows, err := db.Query(dbPath, sql)
 	if err != nil {
 		return nil
 	}
 
 	// Simple word overlap scoring.
-	promptWords := skillTokenize(prompt)
+	promptWords := SkillTokenize(prompt)
 	if len(promptWords) == 0 {
 		return nil
 	}
@@ -148,7 +150,7 @@ func suggestSkillsForPrompt(dbPath, prompt string, limit int) []string {
 		name := fmt.Sprintf("%v", row["skill_name"])
 		taskPrompt := fmt.Sprintf("%v", row["task_prompt"])
 
-		taskWords := skillTokenize(taskPrompt)
+		taskWords := SkillTokenize(taskPrompt)
 		if len(taskWords) == 0 {
 			continue
 		}
@@ -192,10 +194,10 @@ func suggestSkillsForPrompt(dbPath, prompt string, limit int) []string {
 	return result
 }
 
-// autoInjectLearnedSkills returns file-based skills that match the current task
-// via both shouldInjectSkill and historical prompt matching.
-func autoInjectLearnedSkills(cfg *Config, task Task) []SkillConfig {
-	fileSkills := loadFileSkills(cfg)
+// AutoInjectLearnedSkills returns file-based skills that match the current task
+// via both ShouldInjectSkill and historical prompt matching.
+func AutoInjectLearnedSkills(cfg *AppConfig, task TaskContext) []SkillConfig {
+	fileSkills := LoadFileSkills(cfg)
 	if len(fileSkills) == 0 {
 		return nil
 	}
@@ -204,7 +206,7 @@ func autoInjectLearnedSkills(cfg *Config, task Task) []SkillConfig {
 	var matched []SkillConfig
 	matchedNames := make(map[string]bool)
 	for _, s := range fileSkills {
-		if shouldInjectSkill(s, task) {
+		if ShouldInjectSkill(s, task) {
 			matched = append(matched, s)
 			matchedNames[s.Name] = true
 		}
@@ -212,7 +214,7 @@ func autoInjectLearnedSkills(cfg *Config, task Task) []SkillConfig {
 
 	// Then, check historical prompt overlap for additional suggestions.
 	if cfg.HistoryDB != "" {
-		suggested := suggestSkillsForPrompt(cfg.HistoryDB, task.Prompt, 5)
+		suggested := SuggestSkillsForPrompt(cfg.HistoryDB, task.Prompt, 5)
 		for _, name := range suggested {
 			if matchedNames[name] {
 				continue
@@ -231,8 +233,8 @@ func autoInjectLearnedSkills(cfg *Config, task Task) []SkillConfig {
 	return matched
 }
 
-// skillTokenize splits text into lowercase words for skill prompt comparison.
-func skillTokenize(text string) []string {
+// SkillTokenize splits text into lowercase words for skill prompt comparison.
+func SkillTokenize(text string) []string {
 	text = strings.ToLower(text)
 	words := strings.Fields(text)
 	// Filter out very short words (noise).
@@ -247,9 +249,9 @@ func skillTokenize(text string) []string {
 	return result
 }
 
-// recordSkillCompletion records completed/failed events for skills
+// RecordSkillCompletion records completed/failed events for skills
 // that were injected for this task (matching by agent + recent timing).
-func recordSkillCompletion(dbPath string, task Task, result TaskResult, role, startedAt, finishedAt string) {
+func RecordSkillCompletion(dbPath string, task TaskContext, result TaskCompletion, role, startedAt, finishedAt string) {
 	if dbPath == "" {
 		return
 	}
@@ -262,10 +264,10 @@ func recordSkillCompletion(dbPath string, task Task, result TaskResult, role, st
 		`SELECT DISTINCT skill_name FROM skill_usage
 		 WHERE event_type = 'injected' AND role = '%s'
 		 AND session_id = '%s'`,
-		escapeSQLite(role),
-		escapeSQLite(task.SessionID),
+		db.Escape(role),
+		db.Escape(task.SessionID),
 	)
-	rows, err := queryDB(dbPath, sql)
+	rows, err := db.Query(dbPath, sql)
 	if err != nil || len(rows) == 0 {
 		return
 	}
@@ -286,12 +288,12 @@ func recordSkillCompletion(dbPath string, task Task, result TaskResult, role, st
 	if result.Status != "success" {
 		status = "fail"
 		eventType = "failed"
-		errMsg = truncateStr(result.Error, 200)
+		errMsg = db.Truncate(result.Error, 200)
 	}
 
 	for _, row := range rows {
 		skillName := fmt.Sprintf("%v", row["skill_name"])
-		recordSkillEventEx(dbPath, skillName, eventType, "", role, SkillEventOpts{
+		RecordSkillEventEx(dbPath, skillName, eventType, "", role, SkillEventOpts{
 			Status:     status,
 			DurationMs: durationMs,
 			Source:     "dispatch",

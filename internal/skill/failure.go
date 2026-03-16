@@ -1,4 +1,4 @@
-package main
+package skill
 
 import (
 	"fmt"
@@ -15,26 +15,26 @@ import (
 // is injected into the prompt so the agent avoids repeating mistakes.
 
 const (
-	skillFailuresFile      = "failures.md"
-	skillFailuresMaxCount  = 5   // FIFO: keep only the most recent N entries
-	skillFailuresMaxChars  = 500 // max chars per error message
-	skillFailuresMaxInject = 2048 // max chars to inject into prompt per skill
+	SkillFailuresFile     = "failures.md"
+	SkillFailuresMaxCount = 5    // FIFO: keep only the most recent N entries
+	SkillFailuresMaxChars = 500  // max chars per error message
+	SkillFailuresMaxInject = 2048 // max chars to inject into prompt per skill
 )
 
-// appendSkillFailure appends a failure entry to skills/<skillName>/failures.md.
-// Maintains a FIFO of at most skillFailuresMaxCount entries.
-func appendSkillFailure(cfg *Config, skillName, taskTitle, agentName, errMsg string) {
-	dir := filepath.Join(skillsDir(cfg), skillName)
+// AppendSkillFailure appends a failure entry to skills/<skillName>/failures.md.
+// Maintains a FIFO of at most SkillFailuresMaxCount entries.
+func AppendSkillFailure(cfg *AppConfig, skillName, taskTitle, agentName, errMsg string) {
+	dir := filepath.Join(SkillsDir(cfg), skillName)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		logWarn("skill failure: mkdir failed", "skill", skillName, "error", err)
 		return
 	}
 
-	fpath := filepath.Join(dir, skillFailuresFile)
+	fpath := filepath.Join(dir, SkillFailuresFile)
 
 	// Truncate error message.
-	if len(errMsg) > skillFailuresMaxChars {
-		errMsg = errMsg[:skillFailuresMaxChars] + "..."
+	if len(errMsg) > SkillFailuresMaxChars {
+		errMsg = errMsg[:SkillFailuresMaxChars] + "..."
 	}
 
 	// Build new entry.
@@ -42,10 +42,10 @@ func appendSkillFailure(cfg *Config, skillName, taskTitle, agentName, errMsg str
 	entry := fmt.Sprintf("## %s — %s (agent: %s)\n%s\n", ts, taskTitle, agentName, errMsg)
 
 	// Read existing entries, parse, and prepend the new one.
-	existing := parseFailureEntries(fpath)
+	existing := ParseFailureEntries(fpath)
 	entries := append([]string{entry}, existing...)
-	if len(entries) > skillFailuresMaxCount {
-		entries = entries[:skillFailuresMaxCount]
+	if len(entries) > SkillFailuresMaxCount {
+		entries = entries[:SkillFailuresMaxCount]
 	}
 
 	content := "# Skill Failures\n\n" + strings.Join(entries, "\n")
@@ -54,9 +54,9 @@ func appendSkillFailure(cfg *Config, skillName, taskTitle, agentName, errMsg str
 	}
 }
 
-// parseFailureEntries reads failures.md and splits into individual entries.
+// ParseFailureEntries reads failures.md and splits into individual entries.
 // Each entry starts with "## ".
-func parseFailureEntries(fpath string) []string {
+func ParseFailureEntries(fpath string) []string {
 	data, err := os.ReadFile(fpath)
 	if err != nil {
 		return nil
@@ -76,11 +76,11 @@ func parseFailureEntries(fpath string) []string {
 	return entries
 }
 
-// loadSkillFailures reads the failures.md for a skill directory
+// LoadSkillFailures reads the failures.md for a skill directory
 // and returns the content (truncated to budget).
 // Returns empty string if no failures file or empty.
-func loadSkillFailures(skillDir string) string {
-	fpath := filepath.Join(skillDir, skillFailuresFile)
+func LoadSkillFailures(skillDir string) string {
+	fpath := filepath.Join(skillDir, SkillFailuresFile)
 	data, err := os.ReadFile(fpath)
 	if err != nil {
 		return ""
@@ -89,13 +89,13 @@ func loadSkillFailures(skillDir string) string {
 	if content == "" || content == "# Skill Failures" {
 		return ""
 	}
-	if len(content) > skillFailuresMaxInject {
-		content = content[:skillFailuresMaxInject] + "\n... (truncated)"
+	if len(content) > SkillFailuresMaxInject {
+		content = content[:SkillFailuresMaxInject] + "\n... (truncated)"
 	}
 	return content
 }
 
-// loadSkillFailuresByName loads failures for a skill by name using the config's skills directory.
-func loadSkillFailuresByName(cfg *Config, skillName string) string {
-	return loadSkillFailures(filepath.Join(skillsDir(cfg), skillName))
+// LoadSkillFailuresByName loads failures for a skill by name using the config's skills directory.
+func LoadSkillFailuresByName(cfg *AppConfig, skillName string) string {
+	return LoadSkillFailures(filepath.Join(SkillsDir(cfg), skillName))
 }

@@ -1,4 +1,4 @@
-package main
+package skill
 
 import (
 	"context"
@@ -48,9 +48,9 @@ func (c SkillStoreConfig) maxSkillsOrDefault() int {
 // skillNameRegex validates skill names: alphanumeric and hyphens only.
 var skillNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]*$`)
 
-// isValidSkillName checks that a skill name is safe and valid.
+// IsValidSkillName checks that a skill name is safe and valid.
 // Must be alphanumeric + hyphens only, no path traversal, max 64 chars.
-func isValidSkillName(name string) bool {
+func IsValidSkillName(name string) bool {
 	if name == "" || len(name) > 64 {
 		return false
 	}
@@ -61,24 +61,24 @@ func isValidSkillName(name string) bool {
 	return skillNameRegex.MatchString(name)
 }
 
-// skillsDir returns the path to the file-based skills directory.
+// SkillsDir returns the path to the file-based skills directory.
 // Uses WorkspaceDir/skills/ (consistent with memory/rules/knowledge),
-// falling back to baseDir/skills/ for tests that only set baseDir.
-func skillsDir(cfg *Config) string {
+// falling back to BaseDir/skills/ for tests that only set BaseDir.
+func SkillsDir(cfg *AppConfig) string {
 	if cfg.WorkspaceDir != "" {
 		return filepath.Join(cfg.WorkspaceDir, "skills")
 	}
-	return filepath.Join(cfg.baseDir, "skills")
+	return filepath.Join(cfg.BaseDir, "skills")
 }
 
-// createSkill creates a new file-based skill with metadata and script.
-func createSkill(cfg *Config, meta SkillMetadata, script string) error {
-	if !isValidSkillName(meta.Name) {
+// CreateSkill creates a new file-based skill with metadata and script.
+func CreateSkill(cfg *AppConfig, meta SkillMetadata, script string) error {
+	if !IsValidSkillName(meta.Name) {
 		return fmt.Errorf("invalid skill name %q: must be alphanumeric+hyphens, max 64 chars", meta.Name)
 	}
 
 	// Check max skills limit.
-	existing := loadFileSkills(cfg)
+	existing := LoadFileSkills(cfg)
 	if len(existing) >= cfg.SkillStore.maxSkillsOrDefault() {
 		return fmt.Errorf("max skills limit reached (%d)", cfg.SkillStore.maxSkillsOrDefault())
 	}
@@ -90,7 +90,7 @@ func createSkill(cfg *Config, meta SkillMetadata, script string) error {
 		}
 	}
 
-	dir := filepath.Join(skillsDir(cfg), meta.Name)
+	dir := filepath.Join(SkillsDir(cfg), meta.Name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create skill dir: %w", err)
 	}
@@ -134,10 +134,10 @@ func scriptFilename(command string) string {
 	return "run.sh"
 }
 
-// loadFileSkills scans the skills directory and returns all file-based skills.
+// LoadFileSkills scans the skills directory and returns all file-based skills.
 // Only approved skills are returned as usable SkillConfigs.
-func loadFileSkills(cfg *Config) []SkillConfig {
-	dir := skillsDir(cfg)
+func LoadFileSkills(cfg *AppConfig) []SkillConfig {
+	dir := SkillsDir(cfg)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -188,9 +188,9 @@ func loadFileSkills(cfg *Config) []SkillConfig {
 	return skills
 }
 
-// loadAllFileSkillMetas scans the skills directory and returns all metadata (including unapproved).
-func loadAllFileSkillMetas(cfg *Config) []SkillMetadata {
-	dir := skillsDir(cfg)
+// LoadAllFileSkillMetas scans the skills directory and returns all metadata (including unapproved).
+func LoadAllFileSkillMetas(cfg *AppConfig) []SkillMetadata {
+	dir := SkillsDir(cfg)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -216,9 +216,9 @@ func loadAllFileSkillMetas(cfg *Config) []SkillMetadata {
 	return metas
 }
 
-// mergeSkills merges config-based skills and file-based skills.
+// MergeSkills merges config-based skills and file-based skills.
 // Config-based skills take priority on name collision.
-func mergeSkills(configSkills, fileSkills []SkillConfig) []SkillConfig {
+func MergeSkills(configSkills, fileSkills []SkillConfig) []SkillConfig {
 	seen := make(map[string]bool, len(configSkills))
 	result := make([]SkillConfig, 0, len(configSkills)+len(fileSkills))
 
@@ -234,13 +234,13 @@ func mergeSkills(configSkills, fileSkills []SkillConfig) []SkillConfig {
 	return result
 }
 
-// approveSkill sets Approved=true for a file-based skill and makes its script executable.
-func approveSkill(cfg *Config, name string) error {
-	if !isValidSkillName(name) {
+// ApproveSkill sets Approved=true for a file-based skill and makes its script executable.
+func ApproveSkill(cfg *AppConfig, name string) error {
+	if !IsValidSkillName(name) {
 		return fmt.Errorf("invalid skill name %q", name)
 	}
 
-	metaPath := filepath.Join(skillsDir(cfg), name, "metadata.json")
+	metaPath := filepath.Join(SkillsDir(cfg), name, "metadata.json")
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
 		return fmt.Errorf("skill %q not found: %w", name, err)
@@ -258,7 +258,7 @@ func approveSkill(cfg *Config, name string) error {
 	meta.Approved = true
 
 	// Make script executable.
-	scriptPath := filepath.Join(skillsDir(cfg), name, scriptFilename(meta.Command))
+	scriptPath := filepath.Join(SkillsDir(cfg), name, scriptFilename(meta.Command))
 	if err := os.Chmod(scriptPath, 0o755); err != nil {
 		logWarn("chmod script failed", "path", scriptPath, "error", err)
 	}
@@ -275,18 +275,18 @@ func approveSkill(cfg *Config, name string) error {
 	return nil
 }
 
-// rejectSkill deletes a file-based skill directory (rejection removes it entirely).
-func rejectSkill(cfg *Config, name string) error {
-	return deleteFileSkill(cfg, name)
+// RejectSkill deletes a file-based skill directory (rejection removes it entirely).
+func RejectSkill(cfg *AppConfig, name string) error {
+	return DeleteFileSkill(cfg, name)
 }
 
-// deleteFileSkill removes a file-based skill directory.
-func deleteFileSkill(cfg *Config, name string) error {
-	if !isValidSkillName(name) {
+// DeleteFileSkill removes a file-based skill directory.
+func DeleteFileSkill(cfg *AppConfig, name string) error {
+	if !IsValidSkillName(name) {
 		return fmt.Errorf("invalid skill name %q", name)
 	}
 
-	dir := filepath.Join(skillsDir(cfg), name)
+	dir := filepath.Join(SkillsDir(cfg), name)
 	if _, err := os.Stat(dir); err != nil {
 		return fmt.Errorf("skill %q not found", name)
 	}
@@ -299,9 +299,9 @@ func deleteFileSkill(cfg *Config, name string) error {
 	return nil
 }
 
-// recordSkillUsage updates UsageCount and LastUsedAt in a file-based skill's metadata.
-func recordSkillUsage(cfg *Config, name string) {
-	metaPath := filepath.Join(skillsDir(cfg), name, "metadata.json")
+// RecordSkillUsage updates UsageCount and LastUsedAt in a file-based skill's metadata.
+func RecordSkillUsage(cfg *AppConfig, name string) {
+	metaPath := filepath.Join(SkillsDir(cfg), name, "metadata.json")
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
 		return // not a file-based skill, ignore
@@ -322,9 +322,9 @@ func recordSkillUsage(cfg *Config, name string) {
 	os.WriteFile(metaPath, newData, 0o644)
 }
 
-// listPendingSkills returns skills that have not been approved.
-func listPendingSkills(cfg *Config) []SkillMetadata {
-	all := loadAllFileSkillMetas(cfg)
+// ListPendingSkills returns skills that have not been approved.
+func ListPendingSkills(cfg *AppConfig) []SkillMetadata {
+	all := LoadAllFileSkillMetas(cfg)
 	var pending []SkillMetadata
 	for _, m := range all {
 		if !m.Approved {
@@ -334,8 +334,16 @@ func listPendingSkills(cfg *Config) []SkillMetadata {
 	return pending
 }
 
-// createSkillToolHandler is the tool handler for the create_skill built-in tool.
-func createSkillToolHandler(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+// Context keys for passing task info to tool handlers.
+type ctxKey string
+
+const (
+	ctxKeyRole   ctxKey = "role"
+	ctxKeyPrompt ctxKey = "prompt"
+)
+
+// CreateSkillToolHandler is the tool handler for the create_skill built-in tool.
+func CreateSkillToolHandler(ctx context.Context, cfg *AppConfig, input json.RawMessage) (string, error) {
 	var args struct {
 		Name        string        `json:"name"`
 		Description string        `json:"description"`
@@ -357,7 +365,7 @@ func createSkillToolHandler(ctx context.Context, cfg *Config, input json.RawMess
 	if args.Script == "" {
 		return "", fmt.Errorf("script is required")
 	}
-	if !isValidSkillName(args.Name) {
+	if !IsValidSkillName(args.Name) {
 		return "", fmt.Errorf("invalid skill name %q: alphanumeric and hyphens only, max 64 chars", args.Name)
 	}
 
@@ -392,13 +400,13 @@ func createSkillToolHandler(ctx context.Context, cfg *Config, input json.RawMess
 		meta.Command = "./run.sh"
 	}
 
-	if err := createSkill(cfg, meta, args.Script); err != nil {
+	if err := CreateSkill(cfg, meta, args.Script); err != nil {
 		return "", err
 	}
 
 	// Write SKILL.md if doc content was provided.
 	if args.Doc != "" {
-		skillMDPath := filepath.Join(skillsDir(cfg), args.Name, "SKILL.md")
+		skillMDPath := filepath.Join(SkillsDir(cfg), args.Name, "SKILL.md")
 		if err := os.WriteFile(skillMDPath, []byte(args.Doc), 0o644); err != nil {
 			logWarn("failed to write SKILL.md", "skill", args.Name, "error", err)
 		}
@@ -410,7 +418,7 @@ func createSkillToolHandler(ctx context.Context, cfg *Config, input json.RawMess
 		if p, ok := ctx.Value(ctxKeyPrompt).(string); ok {
 			prompt = p
 		}
-		recordSkillEvent(cfg.HistoryDB, args.Name, "created", prompt, meta.CreatedBy)
+		RecordSkillEvent(cfg.HistoryDB, args.Name, "created", prompt, meta.CreatedBy)
 	}
 
 	status := "created (pending approval)"
@@ -421,16 +429,9 @@ func createSkillToolHandler(ctx context.Context, cfg *Config, input json.RawMess
 	result := map[string]any{
 		"name":   args.Name,
 		"status": status,
-		"path":   filepath.Join(skillsDir(cfg), args.Name),
+		"path":   filepath.Join(SkillsDir(cfg), args.Name),
 	}
 	b, _ := json.Marshal(result)
 	return string(b), nil
 }
 
-// Context keys for passing task info to tool handlers.
-type ctxKey string
-
-const (
-	ctxKeyRole   ctxKey = "role"
-	ctxKeyPrompt ctxKey = "prompt"
-)

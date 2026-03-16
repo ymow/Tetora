@@ -1,4 +1,4 @@
-package main
+package skill
 
 import (
 	"context"
@@ -34,8 +34,8 @@ type SkillResult struct {
 	Duration int64  `json:"durationMs"`
 }
 
-// executeSkill runs a skill command and returns the result.
-func executeSkill(ctx context.Context, skill SkillConfig, vars map[string]string) (*SkillResult, error) {
+// ExecuteSkill runs a skill command and returns the result.
+func ExecuteSkill(ctx context.Context, skill SkillConfig, vars map[string]string) (*SkillResult, error) {
 	timeout, err := time.ParseDuration(skill.Timeout)
 	if err != nil || timeout <= 0 {
 		timeout = 30 * time.Second
@@ -45,10 +45,10 @@ func executeSkill(ctx context.Context, skill SkillConfig, vars map[string]string
 	defer cancel()
 
 	// Expand template vars in command and args.
-	command := expandSkillVars(skill.Command, vars)
+	command := ExpandSkillVars(skill.Command, vars)
 	args := make([]string, len(skill.Args))
 	for i, a := range skill.Args {
-		args[i] = expandSkillVars(a, vars)
+		args[i] = ExpandSkillVars(a, vars)
 	}
 
 	// Validate command exists.
@@ -62,7 +62,7 @@ func executeSkill(ctx context.Context, skill SkillConfig, vars map[string]string
 
 	cmd := exec.CommandContext(skillCtx, command, args...)
 	if skill.Workdir != "" {
-		cmd.Dir = expandSkillVars(skill.Workdir, vars)
+		cmd.Dir = ExpandSkillVars(skill.Workdir, vars)
 	}
 
 	// Set environment.
@@ -71,7 +71,7 @@ func executeSkill(ctx context.Context, skill SkillConfig, vars map[string]string
 		// Resolve $ENV_VAR references first.
 		resolved := resolveEnvRef(v, fmt.Sprintf("skill.%s.env.%s", skill.Name, k))
 		// Then expand template vars.
-		expanded := expandSkillVars(resolved, vars)
+		expanded := ExpandSkillVars(resolved, vars)
 		cmd.Env = append(cmd.Env, k+"="+expanded)
 	}
 
@@ -98,33 +98,33 @@ func executeSkill(ctx context.Context, skill SkillConfig, vars map[string]string
 	return result, nil
 }
 
-// expandSkillVars replaces {{key}} with values from the vars map.
-func expandSkillVars(s string, vars map[string]string) string {
+// ExpandSkillVars replaces {{key}} with values from the vars map.
+func ExpandSkillVars(s string, vars map[string]string) string {
 	for k, v := range vars {
 		s = strings.ReplaceAll(s, "{{"+k+"}}", v)
 	}
 	return s
 }
 
-// listSkills returns all configured skills (config-based + file-based, merged).
-func listSkills(cfg *Config) []SkillConfig {
+// ListSkills returns all configured skills (config-based + file-based, merged).
+func ListSkills(cfg *AppConfig) []SkillConfig {
 	configSkills := cfg.Skills
 	if configSkills == nil {
 		configSkills = []SkillConfig{}
 	}
-	fileSkills := loadFileSkills(cfg)
-	return mergeSkills(configSkills, fileSkills)
+	fileSkills := LoadFileSkills(cfg)
+	return MergeSkills(configSkills, fileSkills)
 }
 
-// getSkill returns a skill by name, searching both config and file-based skills.
-func getSkill(cfg *Config, name string) *SkillConfig {
+// GetSkill returns a skill by name, searching both config and file-based skills.
+func GetSkill(cfg *AppConfig, name string) *SkillConfig {
 	for i, s := range cfg.Skills {
 		if s.Name == name {
 			return &cfg.Skills[i]
 		}
 	}
 	// Also search file-based skills.
-	fileSkills := loadFileSkills(cfg)
+	fileSkills := LoadFileSkills(cfg)
 	for i, s := range fileSkills {
 		if s.Name == name {
 			return &fileSkills[i]
@@ -133,8 +133,15 @@ func getSkill(cfg *Config, name string) *SkillConfig {
 	return nil
 }
 
-// testSkill runs a skill with a quick timeout to verify it works.
-func testSkill(ctx context.Context, skill SkillConfig) (*SkillResult, error) {
+// TestSkill runs a skill with a quick timeout to verify it works.
+func TestSkill(ctx context.Context, skill SkillConfig) (*SkillResult, error) {
 	skill.Timeout = "5s"
-	return executeSkill(ctx, skill, nil)
+	return ExecuteSkill(ctx, skill, nil)
+}
+
+// resolveEnvRef resolves a value that may reference an environment variable.
+// If the value looks like $VARNAME or ${VARNAME}, it is expanded from the OS env.
+// The fieldName is used for logging purposes.
+func resolveEnvRef(value, fieldName string) string {
+	return os.ExpandEnv(value)
 }
