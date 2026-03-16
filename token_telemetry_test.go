@@ -4,19 +4,21 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"tetora/internal/telemetry"
 )
 
 func TestInitTokenTelemetry(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "test.db")
 
-	if err := initTokenTelemetry(dbPath); err != nil {
-		t.Fatalf("initTokenTelemetry failed: %v", err)
+	if err := telemetry.Init(dbPath); err != nil {
+		t.Fatalf("telemetry.Init failed: %v", err)
 	}
 
 	// Calling it again should be idempotent (CREATE TABLE IF NOT EXISTS).
-	if err := initTokenTelemetry(dbPath); err != nil {
-		t.Fatalf("second initTokenTelemetry failed: %v", err)
+	if err := telemetry.Init(dbPath); err != nil {
+		t.Fatalf("second telemetry.Init failed: %v", err)
 	}
 
 	// Verify table exists by querying it.
@@ -34,7 +36,7 @@ func TestInitTokenTelemetry(t *testing.T) {
 
 func TestInitTokenTelemetryEmptyPath(t *testing.T) {
 	// Empty dbPath should be a no-op.
-	if err := initTokenTelemetry(""); err != nil {
+	if err := telemetry.Init(""); err != nil {
 		t.Fatalf("expected nil error for empty path, got: %v", err)
 	}
 }
@@ -43,14 +45,14 @@ func TestRecordAndQueryTokenTelemetry(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "test.db")
 
-	if err := initTokenTelemetry(dbPath); err != nil {
-		t.Fatalf("initTokenTelemetry failed: %v", err)
+	if err := telemetry.Init(dbPath); err != nil {
+		t.Fatalf("telemetry.Init failed: %v", err)
 	}
 
 	now := time.Now().Format(time.RFC3339)
 
 	// Record two entries with different complexity levels.
-	recordTokenTelemetry(dbPath, TokenTelemetryEntry{
+	telemetry.Record(dbPath, telemetry.Entry{
 		TaskID:             "task-001",
 		Agent:               "ruri",
 		Complexity:         "simple",
@@ -67,7 +69,7 @@ func TestRecordAndQueryTokenTelemetry(t *testing.T) {
 		CreatedAt:          now,
 	})
 
-	recordTokenTelemetry(dbPath, TokenTelemetryEntry{
+	telemetry.Record(dbPath, telemetry.Entry{
 		TaskID:             "task-002",
 		Agent:               "kohaku",
 		Complexity:         "complex",
@@ -84,7 +86,7 @@ func TestRecordAndQueryTokenTelemetry(t *testing.T) {
 		CreatedAt:          now,
 	})
 
-	recordTokenTelemetry(dbPath, TokenTelemetryEntry{
+	telemetry.Record(dbPath, telemetry.Entry{
 		TaskID:             "task-003",
 		Agent:               "ruri",
 		Complexity:         "complex",
@@ -102,12 +104,12 @@ func TestRecordAndQueryTokenTelemetry(t *testing.T) {
 	})
 
 	// Query summary (by complexity).
-	summaryRows, err := queryTokenUsageSummary(dbPath, 7)
+	summaryRows, err := telemetry.QueryUsageSummary(dbPath, 7)
 	if err != nil {
-		t.Fatalf("queryTokenUsageSummary failed: %v", err)
+		t.Fatalf("QueryUsageSummary failed: %v", err)
 	}
 
-	summary := parseTokenSummaryRows(summaryRows)
+	summary := telemetry.ParseSummaryRows(summaryRows)
 
 	if len(summary) != 2 {
 		t.Fatalf("expected 2 complexity groups, got %d", len(summary))
@@ -138,12 +140,12 @@ func TestRecordAndQueryTokenTelemetry(t *testing.T) {
 	}
 
 	// Query by role.
-	roleRows, err := queryTokenUsageByRole(dbPath, 7)
+	roleRows, err := telemetry.QueryUsageByRole(dbPath, 7)
 	if err != nil {
-		t.Fatalf("queryTokenUsageByRole failed: %v", err)
+		t.Fatalf("QueryUsageByRole failed: %v", err)
 	}
 
-	roles := parseTokenAgentRows(roleRows)
+	roles := telemetry.ParseAgentRows(roleRows)
 
 	if len(roles) != 3 {
 		t.Fatalf("expected 3 role/complexity groups, got %d", len(roles))
@@ -159,13 +161,13 @@ func TestQueryTokenUsageSummaryEmptyDB(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "test.db")
 
-	if err := initTokenTelemetry(dbPath); err != nil {
-		t.Fatalf("initTokenTelemetry failed: %v", err)
+	if err := telemetry.Init(dbPath); err != nil {
+		t.Fatalf("telemetry.Init failed: %v", err)
 	}
 
-	rows, err := queryTokenUsageSummary(dbPath, 7)
+	rows, err := telemetry.QueryUsageSummary(dbPath, 7)
 	if err != nil {
-		t.Fatalf("queryTokenUsageSummary on empty DB failed: %v", err)
+		t.Fatalf("QueryUsageSummary on empty DB failed: %v", err)
 	}
 	if rows != nil {
 		t.Errorf("expected nil for empty DB, got %v", rows)
@@ -173,7 +175,7 @@ func TestQueryTokenUsageSummaryEmptyDB(t *testing.T) {
 }
 
 func TestQueryTokenUsageSummaryNoDBPath(t *testing.T) {
-	rows, err := queryTokenUsageSummary("", 7)
+	rows, err := telemetry.QueryUsageSummary("", 7)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
@@ -186,13 +188,13 @@ func TestQueryTokenUsageByRoleEmptyDB(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "test.db")
 
-	if err := initTokenTelemetry(dbPath); err != nil {
-		t.Fatalf("initTokenTelemetry failed: %v", err)
+	if err := telemetry.Init(dbPath); err != nil {
+		t.Fatalf("telemetry.Init failed: %v", err)
 	}
 
-	rows, err := queryTokenUsageByRole(dbPath, 7)
+	rows, err := telemetry.QueryUsageByRole(dbPath, 7)
 	if err != nil {
-		t.Fatalf("queryTokenUsageByRole on empty DB failed: %v", err)
+		t.Fatalf("QueryUsageByRole on empty DB failed: %v", err)
 	}
 	if rows != nil {
 		t.Errorf("expected nil for empty DB, got %v", rows)
@@ -200,7 +202,7 @@ func TestQueryTokenUsageByRoleEmptyDB(t *testing.T) {
 }
 
 func TestQueryTokenUsageByRoleNoDBPath(t *testing.T) {
-	rows, err := queryTokenUsageByRole("", 7)
+	rows, err := telemetry.QueryUsageByRole("", 7)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
@@ -211,27 +213,27 @@ func TestQueryTokenUsageByRoleNoDBPath(t *testing.T) {
 
 func TestRecordTokenTelemetryEmptyPath(t *testing.T) {
 	// Should be a no-op, not panic.
-	recordTokenTelemetry("", TokenTelemetryEntry{
+	telemetry.Record("", telemetry.Entry{
 		TaskID: "test", Agent: "ruri", Complexity: "simple",
 	})
 }
 
 func TestFormatTokenSummaryEmpty(t *testing.T) {
-	result := formatTokenSummary(nil)
+	result := telemetry.FormatSummary(nil)
 	if result != "  (no data)" {
 		t.Errorf("expected '  (no data)', got %q", result)
 	}
 }
 
 func TestFormatTokenByRoleEmpty(t *testing.T) {
-	result := formatTokenByRole(nil)
+	result := telemetry.FormatByRole(nil)
 	if result != "  (no data)" {
 		t.Errorf("expected '  (no data)', got %q", result)
 	}
 }
 
 func TestFormatTokenSummaryWithData(t *testing.T) {
-	rows := []TokenSummaryRow{
+	rows := []telemetry.SummaryRow{
 		{
 			Complexity: "complex", RequestCount: 5,
 			AvgInput: 3000, AvgOutput: 1200,
@@ -244,7 +246,7 @@ func TestFormatTokenSummaryWithData(t *testing.T) {
 		},
 	}
 
-	result := formatTokenSummary(rows)
+	result := telemetry.FormatSummary(rows)
 	if result == "  (no data)" {
 		t.Error("expected formatted output, got (no data)")
 	}
@@ -255,14 +257,14 @@ func TestFormatTokenSummaryWithData(t *testing.T) {
 }
 
 func TestFormatTokenByRoleWithData(t *testing.T) {
-	rows := []TokenAgentRow{
+	rows := []telemetry.AgentRow{
 		{
 			Agent: "ruri", Complexity: "complex", RequestCount: 3,
 			TotalInput: 9000, TotalOutput: 3600, TotalCost: 0.18,
 		},
 	}
 
-	result := formatTokenByRole(rows)
+	result := telemetry.FormatByRole(rows)
 	if result == "  (no data)" {
 		t.Error("expected formatted output, got (no data)")
 	}
@@ -270,7 +272,7 @@ func TestFormatTokenByRoleWithData(t *testing.T) {
 
 func TestParseTokenSummaryRows(t *testing.T) {
 	// Test with nil input.
-	result := parseTokenSummaryRows(nil)
+	result := telemetry.ParseSummaryRows(nil)
 	if result != nil {
 		t.Errorf("expected nil for nil input, got %v", result)
 	}
@@ -291,7 +293,7 @@ func TestParseTokenSummaryRows(t *testing.T) {
 		},
 	}
 
-	parsed := parseTokenSummaryRows(rows)
+	parsed := telemetry.ParseSummaryRows(rows)
 	if len(parsed) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(parsed))
 	}
@@ -304,7 +306,7 @@ func TestParseTokenSummaryRows(t *testing.T) {
 }
 
 func TestParseTokenAgentRows(t *testing.T) {
-	result := parseTokenAgentRows(nil)
+	result := telemetry.ParseAgentRows(nil)
 	if result != nil {
 		t.Errorf("expected nil for nil input, got %v", result)
 	}
@@ -320,7 +322,7 @@ func TestParseTokenAgentRows(t *testing.T) {
 		},
 	}
 
-	parsed := parseTokenAgentRows(rows)
+	parsed := telemetry.ParseAgentRows(rows)
 	if len(parsed) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(parsed))
 	}

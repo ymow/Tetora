@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"tetora/internal/cost"
+	"tetora/internal/telemetry"
 	"tetora/internal/trace"
 )
 
@@ -641,7 +642,7 @@ func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem ch
 		"status", result.Status)
 
 	// Record token telemetry (async).
-	go recordTokenTelemetry(cfg.HistoryDB, TokenTelemetryEntry{
+	go telemetry.Record(cfg.HistoryDB, telemetry.Entry{
 		TaskID:             task.ID,
 		Agent:               agentName,
 		Complexity:         complexity.String(),
@@ -927,7 +928,7 @@ func runTask(ctx context.Context, cfg *Config, task Task, state *dispatchState) 
 		"status", result.Status)
 
 	// Record token telemetry (async).
-	go recordTokenTelemetry(cfg.HistoryDB, TokenTelemetryEntry{
+	go telemetry.Record(cfg.HistoryDB, telemetry.Entry{
 		TaskID:             task.ID,
 		Agent:               agentName,
 		Complexity:         complexity.String(),

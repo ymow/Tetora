@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"tetora/internal/cost"
+	"tetora/internal/telemetry"
 	"tetora/internal/trace"
 )
 
@@ -347,7 +348,7 @@ func main() {
 				logWarn("init oauth_tokens failed", "error", err)
 			}
 			// Init token telemetry table.
-			if err := initTokenTelemetry(cfg.HistoryDB); err != nil {
+			if err := telemetry.Init(cfg.HistoryDB); err != nil {
 				logWarn("init token_telemetry failed", "error", err)
 			}
 			// Init projects table.

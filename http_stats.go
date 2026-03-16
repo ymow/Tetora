@@ -10,6 +10,7 @@ import (
 
 	"tetora/internal/cost"
 	"tetora/internal/sla"
+	"tetora/internal/telemetry"
 )
 
 func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
@@ -471,24 +472,24 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 			}
 		}
 
-		summaryRows, err := queryTokenUsageSummary(cfg.HistoryDB, days)
+		summaryRows, err := telemetry.QueryUsageSummary(cfg.HistoryDB, days)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
 		}
-		roleRows, err := queryTokenUsageByRole(cfg.HistoryDB, days)
+		roleRows, err := telemetry.QueryUsageByRole(cfg.HistoryDB, days)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
 		}
 
-		summary := parseTokenSummaryRows(summaryRows)
-		byRole := parseTokenAgentRows(roleRows)
+		summary := telemetry.ParseSummaryRows(summaryRows)
+		byRole := telemetry.ParseAgentRows(roleRows)
 		if summary == nil {
-			summary = []TokenSummaryRow{}
+			summary = []telemetry.SummaryRow{}
 		}
 		if byRole == nil {
-			byRole = []TokenAgentRow{}
+			byRole = []telemetry.AgentRow{}
 		}
 
 		json.NewEncoder(w).Encode(map[string]any{
