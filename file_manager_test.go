@@ -22,12 +22,12 @@ func testFileManagerService(t *testing.T) (*FileManagerService, string) {
 		t.Fatalf("initFileManagerDB: %v", err)
 	}
 
-	svc := &FileManagerService{
-		dbPath:     dbPath,
-		storageDir: storageDir,
-		maxSizeMB:  10,
+	cfg := &Config{
+		HistoryDB:   dbPath,
+		FileManager: FileManagerConfig{Enabled: true, StorageDir: storageDir, MaxSizeMB: 10},
 	}
-	return svc, dir
+	cfg.baseDir = dir
+	return newFileManagerService(cfg), dir
 }
 
 func TestInitFileManagerDB(t *testing.T) {
@@ -106,8 +106,18 @@ func TestStoreFileDuplicate(t *testing.T) {
 }
 
 func TestStoreFileMaxSize(t *testing.T) {
-	svc, _ := testFileManagerService(t)
-	svc.maxSizeMB = 1 // 1 MB limit
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	storageDir := filepath.Join(dir, "files")
+	os.MkdirAll(storageDir, 0o755)
+	initFileManagerDB(dbPath)
+
+	cfg := &Config{
+		HistoryDB:   dbPath,
+		FileManager: FileManagerConfig{Enabled: true, StorageDir: storageDir, MaxSizeMB: 1},
+	}
+	cfg.baseDir = dir
+	svc := newFileManagerService(cfg)
 
 	bigData := make([]byte, 2*1024*1024) // 2 MB
 	_, _, err := svc.StoreFile("user1", "big.bin", "", "", "", bigData)
@@ -251,7 +261,7 @@ func TestFindDuplicates(t *testing.T) {
 	// Since dedup returns existing, manually insert a second record.
 	hash := mf.ContentHash
 	id2 := newUUID()
-	queryDB(svc.dbPath, "INSERT INTO managed_files (id, user_id, filename, original_name, category, mime_type, file_size, content_hash, storage_path, source, source_id, metadata, created_at, updated_at) VALUES ('"+id2+"','user1','dup2.txt','dup2.txt','docs','text/plain',20,'"+hash+"','/tmp/fake','','','{}','2025-01-01T00:00:00Z','2025-01-01T00:00:00Z')")
+	queryDB(svc.DBPath(), "INSERT INTO managed_files (id, user_id, filename, original_name, category, mime_type, file_size, content_hash, storage_path, source, source_id, metadata, created_at, updated_at) VALUES ('"+id2+"','user1','dup2.txt','dup2.txt','docs','text/plain',20,'"+hash+"','/tmp/fake','','','{}','2025-01-01T00:00:00Z','2025-01-01T00:00:00Z')")
 
 	svc.StoreFile("user1", "unique.txt", "docs", "", "", data2)
 
@@ -351,11 +361,14 @@ func TestContentHash(t *testing.T) {
 
 // --- Tool Handler Tests ---
 
+func testFileAppCtx(fm *FileManagerService) context.Context {
+	app := &App{FileManager: fm}
+	return withApp(context.Background(), app)
+}
+
 func TestToolFileStore(t *testing.T) {
 	svc, _ := testFileManagerService(t)
-	oldGlobal := globalFileManager
-	globalFileManager = svc
-	defer func() { globalFileManager = oldGlobal }()
+	ctx := testFileAppCtx(svc)
 
 	cfg := &Config{}
 
@@ -365,7 +378,7 @@ func TestToolFileStore(t *testing.T) {
 		"content":  "hello world",
 		"category": "docs",
 	})
-	result, err := toolFileStore(context.Background(), cfg, input)
+	result, err := toolFileStore(ctx, cfg, input)
 	if err != nil {
 		t.Fatalf("toolFileStore: %v", err)
 	}
@@ -379,9 +392,7 @@ func TestToolFileStore(t *testing.T) {
 
 func TestToolFileStoreBase64(t *testing.T) {
 	svc, _ := testFileManagerService(t)
-	oldGlobal := globalFileManager
-	globalFileManager = svc
-	defer func() { globalFileManager = oldGlobal }()
+	ctx := testFileAppCtx(svc)
 
 	cfg := &Config{}
 	encoded := base64.StdEncoding.EncodeToString([]byte("binary data"))
@@ -389,7 +400,7 @@ func TestToolFileStoreBase64(t *testing.T) {
 		"filename": "data.bin",
 		"base64":   encoded,
 	})
-	result, err := toolFileStore(context.Background(), cfg, input)
+	result, err := toolFileStore(ctx, cfg, input)
 	if err != nil {
 		t.Fatalf("toolFileStore base64: %v", err)
 	}
@@ -400,9 +411,7 @@ func TestToolFileStoreBase64(t *testing.T) {
 
 func TestToolFileList(t *testing.T) {
 	svc, _ := testFileManagerService(t)
-	oldGlobal := globalFileManager
-	globalFileManager = svc
-	defer func() { globalFileManager = oldGlobal }()
+	ctx := testFileAppCtx(svc)
 
 	cfg := &Config{}
 
@@ -411,7 +420,7 @@ func TestToolFileList(t *testing.T) {
 	svc.StoreFile("user1", "b.txt", "docs", "", "", []byte("bbb"))
 
 	input, _ := json.Marshal(map[string]string{"category": "docs"})
-	result, err := toolFileList(context.Background(), cfg, input)
+	result, err := toolFileList(ctx, cfg, input)
 	if err != nil {
 		t.Fatalf("toolFileList: %v", err)
 	}
@@ -422,13 +431,11 @@ func TestToolFileList(t *testing.T) {
 
 func TestToolFileDuplicates(t *testing.T) {
 	svc, _ := testFileManagerService(t)
-	oldGlobal := globalFileManager
-	globalFileManager = svc
-	defer func() { globalFileManager = oldGlobal }()
+	ctx := testFileAppCtx(svc)
 
 	cfg := &Config{}
 	input := json.RawMessage(`{}`)
-	result, err := toolFileDuplicates(context.Background(), cfg, input)
+	result, err := toolFileDuplicates(ctx, cfg, input)
 	if err != nil {
 		t.Fatalf("toolFileDuplicates: %v", err)
 	}
@@ -439,9 +446,7 @@ func TestToolFileDuplicates(t *testing.T) {
 
 func TestToolFileOrganize(t *testing.T) {
 	svc, _ := testFileManagerService(t)
-	oldGlobal := globalFileManager
-	globalFileManager = svc
-	defer func() { globalFileManager = oldGlobal }()
+	ctx := testFileAppCtx(svc)
 
 	cfg := &Config{}
 
@@ -451,7 +456,7 @@ func TestToolFileOrganize(t *testing.T) {
 		"file_id":  mf.ID,
 		"category": "archive",
 	})
-	result, err := toolFileOrganize(context.Background(), cfg, input)
+	result, err := toolFileOrganize(ctx, cfg, input)
 	if err != nil {
 		t.Fatalf("toolFileOrganize: %v", err)
 	}
@@ -462,9 +467,7 @@ func TestToolFileOrganize(t *testing.T) {
 
 func TestToolDocSummarize(t *testing.T) {
 	svc, _ := testFileManagerService(t)
-	oldGlobal := globalFileManager
-	globalFileManager = svc
-	defer func() { globalFileManager = oldGlobal }()
+	ctx := testFileAppCtx(svc)
 
 	cfg := &Config{}
 
@@ -472,7 +475,7 @@ func TestToolDocSummarize(t *testing.T) {
 	mf, _, _ := svc.StoreFile("user1", "readme.md", "docs", "", "", []byte(content))
 
 	input, _ := json.Marshal(map[string]string{"file_id": mf.ID})
-	result, err := toolDocSummarize(context.Background(), cfg, input)
+	result, err := toolDocSummarize(ctx, cfg, input)
 	if err != nil {
 		t.Fatalf("toolDocSummarize: %v", err)
 	}
@@ -490,9 +493,7 @@ func TestToolPdfRead(t *testing.T) {
 	}
 
 	svc, dir := testFileManagerService(t)
-	oldGlobal := globalFileManager
-	globalFileManager = svc
-	defer func() { globalFileManager = oldGlobal }()
+	ctx := testFileAppCtx(svc)
 
 	cfg := &Config{}
 
@@ -522,7 +523,7 @@ startxref
 	os.WriteFile(pdfPath, []byte(pdfContent), 0o644)
 
 	input, _ := json.Marshal(map[string]string{"file_path": pdfPath})
-	result, err := toolPdfRead(context.Background(), cfg, input)
+	result, err := toolPdfRead(ctx, cfg, input)
 	if err != nil {
 		t.Fatalf("toolPdfRead: %v", err)
 	}
