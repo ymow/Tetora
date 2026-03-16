@@ -73,4 +73,34 @@ type BotRuntime interface {
 	SessionContextLimit() int
 	// AgentConfig returns the model and permission mode for a named agent.
 	AgentConfig(agent string) (model, permMode string, found bool)
+	// ArchiveSession archives a channel session by key.
+	ArchiveSession(channelKey string) error
+	// SetMemory stores a key-value pair in agent memory.
+	SetMemory(agent, key, value string)
+	// SendWebhooks sends webhook notifications for task completion.
+	SendWebhooks(status string, payload map[string]interface{})
+	// StatusJSON returns the current dispatch status as JSON bytes.
+	StatusJSON() []byte
+	// ListCronJobs returns cron job summaries.
+	ListCronJobs() []CronJobInfo
+	// SmartDispatchEnabled returns whether smart dispatch is enabled.
+	SmartDispatchEnabled() bool
+	// DefaultAgent returns the default agent name.
+	DefaultAgent() string
+	// DefaultModel returns the default model name.
+	DefaultModel() string
+	// CostAlertDailyLimit returns the configured daily cost limit.
+	CostAlertDailyLimit() float64
+	// ApprovalGatesEnabled returns whether approval gates are enabled.
+	ApprovalGatesEnabled() bool
+	// ApprovalGatesAutoApproveTools returns the auto-approve tool list.
+	ApprovalGatesAutoApproveTools() []string
+	// ProviderHasNativeSession returns whether a provider supports native sessions.
+	ProviderHasNativeSession(agent string) bool
+	// DownloadFile downloads a file from a URL with auth and saves it.
+	DownloadFile(url, filename, authHeader string) (path string, err error)
+	// BuildFilePromptPrefix builds a prompt prefix from uploaded file paths.
+	BuildFilePromptPrefix(filePaths []string) string
+	// AgentModels returns a map of agent names to their configured models.
+	AgentModels() map[string]string
 }

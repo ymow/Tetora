@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -183,41 +182,8 @@ func parseSourceChannel(source string) (channel, ref string) {
 
 // --- PresenceSetter Implementations ---
 
-// Telegram Bot — uses sendChatAction API.
-func (b *Bot) SetTyping(ctx context.Context, channelRef string) error {
-	chatID, _ := strconv.ParseInt(channelRef, 10, 64)
-	if chatID == 0 {
-		chatID = b.chatID
-	}
-	if chatID == 0 {
-		return fmt.Errorf("telegram: no chat ID")
-	}
-	b.sendTypingAction(chatID)
-	return nil
-}
-
-func (b *Bot) PresenceName() string { return "telegram" }
-
-// Slack Bot — uses the undocumented but widely-used typing indicator endpoint.
-// Note: Slack's official API doesn't have a dedicated typing endpoint for bots,
-// but we can approximate by posting a transient "typing" indicator.
-func (sb *SlackBot) SetTyping(ctx context.Context, channelRef string) error {
-	if channelRef == "" {
-		return nil
-	}
-	token := sb.cfg.Slack.BotToken
-	if token == "" {
-		return nil
-	}
-
-	// Use Slack's chat.meMessage or a lightweight API call to indicate typing.
-	// Slack doesn't have an official bot typing API, so this is a best-effort no-op.
-	// The real typing indicator is shown automatically when the bot is processing
-	// via the Events API response pattern.
-	return nil
-}
-
-func (sb *SlackBot) PresenceName() string { return "slack" }
+// Telegram and Slack PresenceSetter implementations are in their
+// respective internal/messaging/ packages.
 
 // Discord Bot — POST /channels/{channelRef}/typing
 func (db *DiscordBot) SetTyping(ctx context.Context, channelRef string) error {

@@ -22,6 +22,7 @@ type messagingRuntime struct {
 	state    *dispatchState
 	sem      chan struct{}
 	childSem chan struct{}
+	cron     *CronEngine
 }
 
 // newMessagingRuntime creates a new messagingRuntime.
@@ -246,4 +247,147 @@ func (r *messagingRuntime) AgentConfig(agent string) (model, permMode string, fo
 		return "", "", false
 	}
 	return rc.Model, rc.PermissionMode, true
+}
+
+func (r *messagingRuntime) ArchiveSession(channelKey string) error {
+	return archiveChannelSession(r.cfg.HistoryDB, channelKey)
+}
+
+func (r *messagingRuntime) SetMemory(agent, key, value string) {
+	setMemory(r.cfg, agent, key, value)
+}
+
+func (r *messagingRuntime) SendWebhooks(status string, payload map[string]interface{}) {
+	wp := WebhookPayload{}
+	if v, ok := payload["job_id"].(string); ok {
+		wp.JobID = v
+	}
+	if v, ok := payload["name"].(string); ok {
+		wp.Name = v
+	}
+	if v, ok := payload["source"].(string); ok {
+		wp.Source = v
+	}
+	if v, ok := payload["status"].(string); ok {
+		wp.Status = v
+	}
+	if v, ok := payload["cost"].(float64); ok {
+		wp.Cost = v
+	}
+	if v, ok := payload["duration"].(int64); ok {
+		wp.Duration = v
+	}
+	if v, ok := payload["model"].(string); ok {
+		wp.Model = v
+	}
+	if v, ok := payload["output"].(string); ok {
+		wp.Output = v
+	}
+	if v, ok := payload["error"].(string); ok {
+		wp.Error = v
+	}
+	sendWebhooks(r.cfg, status, wp)
+}
+
+func (r *messagingRuntime) StatusJSON() []byte {
+	if r.state == nil {
+		return []byte("{}")
+	}
+	return r.state.statusJSON()
+}
+
+func (r *messagingRuntime) ListCronJobs() []messaging.CronJobInfo {
+	if r.cron == nil {
+		return nil
+	}
+	jobs := r.cron.ListJobs()
+	result := make([]messaging.CronJobInfo, len(jobs))
+	for i, j := range jobs {
+		nextRun := ""
+		if !j.NextRun.IsZero() {
+			nextRun = j.NextRun.Format(time.RFC3339)
+		}
+		result[i] = messaging.CronJobInfo{
+			Name:     j.Name,
+			Schedule: j.Schedule,
+			Enabled:  j.Enabled,
+			Running:  j.Running,
+			NextRun:  nextRun,
+			AvgCost:  j.AvgCost,
+		}
+	}
+	return result
+}
+
+func (r *messagingRuntime) SmartDispatchEnabled() bool {
+	return r.cfg.SmartDispatch.Enabled
+}
+
+func (r *messagingRuntime) DefaultAgent() string {
+	return r.cfg.SmartDispatch.DefaultAgent
+}
+
+func (r *messagingRuntime) DefaultModel() string {
+	return r.cfg.DefaultModel
+}
+
+func (r *messagingRuntime) CostAlertDailyLimit() float64 {
+	return r.cfg.CostAlert.DailyLimit
+}
+
+func (r *messagingRuntime) ApprovalGatesEnabled() bool {
+	return r.cfg.ApprovalGates.Enabled
+}
+
+func (r *messagingRuntime) ApprovalGatesAutoApproveTools() []string {
+	return r.cfg.ApprovalGates.AutoApproveTools
+}
+
+func (r *messagingRuntime) ProviderHasNativeSession(agent string) bool {
+	providerName := resolveProviderName(r.cfg, Task{Agent: agent}, agent)
+	return providerHasNativeSession(providerName)
+}
+
+func (r *messagingRuntime) DownloadFile(url, filename, authHeader string) (string, error) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("HTTP %d downloading %s", resp.StatusCode, filename)
+	}
+	uploadDir := initUploadDir(r.cfg.baseDir)
+	f, err := saveUpload(uploadDir, filename, resp.Body, resp.ContentLength, "messaging")
+	if err != nil {
+		return "", err
+	}
+	return f.Path, nil
+}
+
+func (r *messagingRuntime) BuildFilePromptPrefix(filePaths []string) string {
+	var files []*UploadedFile
+	for _, p := range filePaths {
+		files = append(files, &UploadedFile{Path: p})
+	}
+	return buildFilePromptPrefix(files)
+}
+
+func (r *messagingRuntime) AgentModels() map[string]string {
+	result := make(map[string]string)
+	for name, rc := range r.cfg.Agents {
+		m := rc.Model
+		if m == "" {
+			m = r.cfg.DefaultModel
+		}
+		result[name] = m
+	}
+	return result
 }

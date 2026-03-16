@@ -23,7 +23,9 @@ import (
 	linebot "tetora/internal/messaging/line"
 	"tetora/internal/messaging/matrix"
 	signalbot "tetora/internal/messaging/signal"
+	slackbot "tetora/internal/messaging/slack"
 	teamsbot "tetora/internal/messaging/teams"
+	tgbot "tetora/internal/messaging/telegram"
 	"tetora/internal/messaging/whatsapp"
 	"tetora/internal/telemetry"
 	"tetora/internal/trace"
@@ -579,7 +581,7 @@ func main() {
 		}()
 
 		// Notification setup.
-		var bot *Bot
+		var bot *tgbot.Bot
 		extraNotifiers := buildNotifiers(cfg)
 
 		// Build base fallback function (Telegram bot direct send).
@@ -587,7 +589,7 @@ func main() {
 		if cfg.Telegram.Enabled && cfg.Telegram.BotToken != "" {
 			telegramFn = func(text string) {
 				if bot != nil {
-					bot.sendNotify(text)
+					bot.SendNotify(text)
 				}
 			}
 		}
@@ -754,9 +756,11 @@ func main() {
 		}
 
 		// Initialize Slack bot (uses HTTP push, no polling needed).
-		var slackBot *SlackBot
+		var slackBot *slackbot.Bot
 		if cfg.Slack.Enabled && cfg.Slack.BotToken != "" {
-			slackBot = newSlackBot(cfg, state, sem, childSem, cron)
+			rt := newMessagingRuntime(cfg, state, sem, childSem)
+			rt.cron = cron
+			slackBot = slackbot.NewBot(cfg.Slack, rt)
 			logInfo("slack bot enabled", "endpoint", "/slack/events")
 
 			// Wire Slack into notification chain.
@@ -765,7 +769,7 @@ func main() {
 				if prevNotifyFn != nil {
 					prevNotifyFn(text)
 				}
-				slackBot.sendSlackNotify(text)
+				slackBot.SendNotify(text)
 			}
 		}
 
@@ -1067,16 +1071,17 @@ func main() {
 
 		// Start Telegram bot.
 		if cfg.Telegram.Enabled && cfg.Telegram.BotToken != "" {
-			bot = newBot(cfg, state, sem, childSem, cron)
+			tgrt := newTelegramRuntime(cfg, state, sem, childSem, cron)
+			bot = tgbot.NewBot(cfg.Telegram, tgrt)
 			// Wire up keyboard notification for approval gate.
 			cron.notifyKeyboardFn = func(text string, keyboard [][]tgInlineButton) {
-				bot.replyWithKeyboard(bot.chatID, text, keyboard)
+				bot.ReplyWithKeyboard(bot.ChatID(), text, keyboard)
 			}
 			// Register Telegram bot for presence/typing indicators.
 			if app.Presence != nil {
 				app.Presence.RegisterSetter("telegram", bot)
 			}
-			go bot.pollLoop(ctx)
+			go bot.PollLoop(ctx)
 		} else {
 			logInfo("telegram disabled or no bot token, HTTP-only mode")
 		}

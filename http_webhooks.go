@@ -9,7 +9,7 @@ func (s *Server) registerWebhookRoutes(mux *http.ServeMux) {
 
 	// Register Slack events endpoint (uses its own auth via signing secret).
 	if s.slackBot != nil {
-		mux.HandleFunc("/slack/events", s.slackBot.slackEventHandler)
+		mux.HandleFunc("/slack/events", s.slackBot.EventHandler)
 	}
 
 	// Register WhatsApp webhook endpoint (uses its own auth via signature verification).

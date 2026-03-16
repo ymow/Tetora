@@ -32,3 +32,13 @@ type TaskResult struct {
 type Dispatcher interface {
 	Submit(ctx context.Context, req TaskRequest) (TaskResult, error)
 }
+
+// CronJobInfo represents summary information about a cron job.
+type CronJobInfo struct {
+	Name     string
+	Schedule string
+	Enabled  bool
+	Running  bool
+	NextRun  string // RFC3339 or empty
+	AvgCost  float64
+}

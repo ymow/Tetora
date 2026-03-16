@@ -5,7 +5,7 @@ package telegram
 type Config struct {
 	Enabled     bool   `json:"enabled,omitempty"`
 	BotToken    string `json:"botToken,omitempty"`    // Telegram bot token ($ENV_VAR)
-	ChatID      int64  `json:"chatId,omitempty"`      // allowed chat ID (0 = unrestricted)
+	ChatID      int64  `json:"chatID,omitempty"`      // allowed chat ID (0 = unrestricted)
 	PollTimeout int    `json:"pollTimeout,omitempty"` // long-poll timeout in seconds (default 30)
 	WebhookMode bool   `json:"webhookMode,omitempty"` // use webhook instead of polling
 	WebhookPath string `json:"webhookPath,omitempty"` // webhook URL path

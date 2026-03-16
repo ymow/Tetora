@@ -63,6 +63,21 @@ func (m *mockRuntime) MaybeCompactSession(_ string, _ int, _ float64)           
 func (m *mockRuntime) UpdateSessionTitle(_, _ string)                                              {}
 func (m *mockRuntime) SessionContextLimit() int                                                     { return 10 }
 func (m *mockRuntime) AgentConfig(_ string) (string, string, bool)                                 { return "", "", false }
+func (m *mockRuntime) ArchiveSession(string) error                                                 { return nil }
+func (m *mockRuntime) SetMemory(string, string, string)                                            {}
+func (m *mockRuntime) SendWebhooks(string, map[string]interface{})                                 {}
+func (m *mockRuntime) StatusJSON() []byte                                                          { return []byte("{}") }
+func (m *mockRuntime) ListCronJobs() []messaging.CronJobInfo                                      { return nil }
+func (m *mockRuntime) SmartDispatchEnabled() bool                                                  { return false }
+func (m *mockRuntime) DefaultAgent() string                                                        { return "" }
+func (m *mockRuntime) DefaultModel() string                                                        { return "" }
+func (m *mockRuntime) CostAlertDailyLimit() float64                                                { return 0 }
+func (m *mockRuntime) ApprovalGatesEnabled() bool                                                  { return false }
+func (m *mockRuntime) ApprovalGatesAutoApproveTools() []string                                     { return nil }
+func (m *mockRuntime) ProviderHasNativeSession(string) bool                                        { return false }
+func (m *mockRuntime) DownloadFile(string, string, string) (string, error)                         { return "", nil }
+func (m *mockRuntime) BuildFilePromptPrefix([]string) string                                       { return "" }
+func (m *mockRuntime) AgentModels() map[string]string                                              { return nil }
 
 var testRT = &mockRuntime{}
 

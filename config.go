@@ -18,7 +18,9 @@ import (
 	"tetora/internal/messaging/line"
 	"tetora/internal/messaging/matrix"
 	"tetora/internal/messaging/signal"
+	"tetora/internal/messaging/slack"
 	"tetora/internal/messaging/teams"
+	tgbot "tetora/internal/messaging/telegram"
 	"tetora/internal/messaging/whatsapp"
 )
 
@@ -30,6 +32,7 @@ type GoogleChatConfig = gchat.Config
 type LINEConfig = line.Config
 type TeamsConfig = teams.Config
 type IMessageConfig = imessage.Config
+type SlackBotConfig = slack.Config
 
 // --- Config Types ---
 
@@ -478,12 +481,9 @@ type WebhookConfig struct {
 	Events  []string          `json:"events,omitempty"` // "success", "error", "timeout", "all"; empty = all
 }
 
-type TelegramConfig struct {
-	Enabled     bool   `json:"enabled"`
-	BotToken    string `json:"botToken"`
-	ChatID      int64  `json:"chatID"`
-	PollTimeout int    `json:"pollTimeout"`
-}
+// TelegramConfig is an alias for the internal telegram.Config.
+// Note: JSON tag for chatId uses internal package's convention.
+type TelegramConfig = tgbot.Config
 
 type AgentConfig struct {
 	SoulFile          string          `json:"soulFile"`

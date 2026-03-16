@@ -9,6 +9,7 @@ import (
 	"tetora/internal/messaging/line"
 	"tetora/internal/messaging/matrix"
 	"tetora/internal/messaging/signal"
+	slackbot "tetora/internal/messaging/slack"
 	"tetora/internal/messaging/teams"
 	"tetora/internal/messaging/whatsapp"
 )
@@ -26,7 +27,7 @@ type Server struct {
 	proactiveEngine *ProactiveEngine
 	groupChatEngine *GroupChatEngine
 	voiceEngine     *VoiceEngine
-	slackBot        *SlackBot
+	slackBot        *slackbot.Bot
 	whatsappBot     *whatsapp.Bot
 	pluginHost      *PluginHost
 	lineBot         *line.Bot
