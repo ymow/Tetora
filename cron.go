@@ -496,7 +496,7 @@ func (ce *CronEngine) tick(ctx context.Context) {
 	ce.checkJobsReload()
 
 	// Check quiet hours transition (flush digest if just left quiet period).
-	quiet.checkQuietTransition(ce.cfg, ce.notifyFn)
+	quietGlobal.CheckTransition(toQuietCfg(ce.cfg), ce.notifyFn)
 
 	// Check daily digest trigger.
 	ce.checkDigest()
@@ -1045,7 +1045,7 @@ func (ce *CronEngine) runJob(ctx context.Context, j *cronJob) {
 
 			if isQuietHours(ce.cfg) {
 				if ce.cfg.QuietHours.Digest {
-					quiet.enqueue(msg)
+					quietGlobal.Enqueue(msg)
 				}
 				// else: discard silently
 			} else {

@@ -161,7 +161,7 @@ func cmdStatus(args []string) {
 	// 6. Quiet hours.
 	if cfg.QuietHours.Enabled {
 		if isQuietHours(cfg) {
-			queued := quiet.queuedCount()
+			queued := quietGlobal.QueuedCount()
 			fmt.Printf("  Quiet:    \033[33mactive\033[0m (%s - %s)", cfg.QuietHours.Start, cfg.QuietHours.End)
 			if queued > 0 {
 				fmt.Printf(", %d queued", queued)
@@ -258,7 +258,7 @@ func cmdStatusJSON(cfg *Config, api *apiClient) {
 			"active":  isQuietHours(cfg),
 			"start":   cfg.QuietHours.Start,
 			"end":     cfg.QuietHours.End,
-			"queued":  quiet.queuedCount(),
+			"queued":  quietGlobal.QueuedCount(),
 		}
 	}
 
