@@ -9,8 +9,14 @@ import (
 	"strings"
 	"time"
 
+	dtypes "tetora/internal/dispatch"
 	"tetora/internal/trace"
 )
+
+// --- Type Aliases (canonical definitions in internal/dispatch) ---
+
+type ApprovalGate = dtypes.ApprovalGate
+type ApprovalRequest = dtypes.ApprovalRequest
 
 // --- Tool Profiles ---
 
@@ -397,27 +403,6 @@ func listAvailableProfiles(cfg *Config) []string {
 
 // --- P28.0: Approval Gates ---
 
-// ApprovalGate requests user confirmation before executing a tool.
-type ApprovalGate interface {
-	// RequestApproval blocks until user approves/rejects or context expires.
-	// Returns true if approved, false if rejected or timed out.
-	RequestApproval(ctx context.Context, req ApprovalRequest) (bool, error)
-	// AutoApprove adds a tool to the runtime auto-approved list.
-	AutoApprove(toolName string)
-	// IsAutoApproved checks if a tool has been auto-approved.
-	IsAutoApproved(toolName string) bool
-}
-
-// ApprovalRequest describes a tool call pending user approval.
-type ApprovalRequest struct {
-	ID      string          `json:"id"`
-	Tool    string          `json:"tool"`
-	Input   json.RawMessage `json:"input"`
-	Summary string          `json:"summary"` // human-readable description
-	TaskID  string          `json:"taskId"`
-	Role    string          `json:"role"`
-}
-
 // needsApproval checks if a tool requires approval gate confirmation.
 func needsApproval(cfg *Config, toolName string) bool {
 	if !cfg.ApprovalGates.Enabled {
@@ -449,7 +434,7 @@ func requestToolApproval(ctx context.Context, cfg *Config, task Task, tc ToolCal
 		Role:    task.Agent,
 	}
 
-	return task.approvalGate.RequestApproval(gateCtx, req)
+	return task.ApprovalGate.RequestApproval(gateCtx, req)
 }
 
 // summarizeToolCall creates a human-readable summary of what the tool will do.

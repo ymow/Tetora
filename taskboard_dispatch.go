@@ -531,7 +531,7 @@ func (d *TaskBoardDispatcher) dispatchTask(t TaskBoard) {
 		Prompt: prompt,
 		Agent:  t.Assignee,
 		Source: "taskboard",
-		onStart: func() {
+		OnStart: func() {
 			if _, err := d.engine.MoveTask(taskID, "doing"); err != nil {
 				logWarn("taskboard dispatch: failed to move task to doing on start", "id", taskID, "error", err)
 			}
@@ -1082,9 +1082,9 @@ func (d *TaskBoardDispatcher) runTaskWithWorkflow(ctx context.Context, t TaskBoa
 		"task", t.ID, "workflow", workflowName, "steps", len(w.Steps))
 
 	// Fire onStart callback (moves task to "doing") — executeWorkflow creates its
-	// own step tasks, so the original task.onStart would never be triggered otherwise.
-	if task.onStart != nil {
-		task.onStart()
+	// own step tasks, so the original task.OnStart would never be triggered otherwise.
+	if task.OnStart != nil {
+		task.OnStart()
 	}
 
 	// Inject taskId into vars so workflow runs can be traced back to tasks.

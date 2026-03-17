@@ -1023,7 +1023,7 @@ func (db *DiscordBot) executeRoute(msg discordMessage, prompt string, route Rout
 
 	// P28.0: Attach approval gate.
 	if db.approvalGate != nil {
-		task.approvalGate = db.approvalGate
+		task.ApprovalGate = db.approvalGate
 	}
 
 	// P14.3: Transition to thinking phase before task execution.
@@ -1049,7 +1049,7 @@ func (db *DiscordBot) executeRoute(msg discordMessage, prompt string, route Rout
 
 	// Wire up SSE streaming so dashboard can show live output.
 	if db.state != nil && db.state.broker != nil {
-		task.sseBroker = db.state.broker
+		task.SSEBroker = db.state.broker
 	}
 
 	// Start progress message for live Discord updates.

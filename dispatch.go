@@ -10,85 +10,17 @@ import (
 	"time"
 
 	"tetora/internal/cost"
+	dtypes "tetora/internal/dispatch"
 	"tetora/internal/telemetry"
 	"tetora/internal/trace"
 )
 
-// --- P27.3: Channel Notifier Interface ---
+// --- Type Aliases (canonical definitions in internal/dispatch) ---
 
-// ChannelNotifier sends typing indicators and status updates to a messaging channel.
-type ChannelNotifier interface {
-	SendTyping(ctx context.Context) error
-	SendStatus(ctx context.Context, msg string) error
-}
-
-// --- Task Types ---
-
-type Task struct {
-	ID             string   `json:"id"`
-	Name           string   `json:"name"`
-	Prompt         string   `json:"prompt"`
-	Workdir        string   `json:"workdir"`
-	Model          string   `json:"model"`
-	Provider       string   `json:"provider,omitempty"`
-	Docker         *bool    `json:"docker,omitempty"` // per-task Docker sandbox override
-	Timeout        string   `json:"timeout"`
-	Budget         float64  `json:"budget"`
-	PermissionMode string   `json:"permissionMode"`
-	MCP            string   `json:"mcp"`
-	AddDirs        []string `json:"addDirs"`
-	SystemPrompt   string   `json:"systemPrompt"`
-	SessionID      string   `json:"sessionId"`
-	Resume         bool     `json:"resume,omitempty"`         // use --continue (resume existing CLI session)
-	PersistSession bool     `json:"persistSession,omitempty"` // don't add --no-session-persistence
-	Agent           string   `json:"agent,omitempty"`    // role name for smart dispatch
-	ReviewLoop     bool     `json:"reviewLoop,omitempty"` // enable Dev↔QA retry loop for this task
-	Source         string   `json:"source,omitempty"`  // "dispatch", "cron", "ask", "route:*"
-	TraceID        string   `json:"traceId,omitempty"` // trace ID for request correlation
-	Depth          int      `json:"depth,omitempty"`    // --- P13.3: Nested Sub-Agents --- nesting depth (0 = top-level)
-	ParentID       string   `json:"parentId,omitempty"` // --- P13.3: Nested Sub-Agents --- parent task ID
-	channelNotifier ChannelNotifier                     // P27.3: unexported, not serialized
-	approvalGate    ApprovalGate                        // P28.0: unexported, not serialized
-	sseBroker       *sseBroker                          // streaming: unexported, not serialized
-	onStart         func()                              // called after semaphore acquired, before execution
-	workflowRunID   string                              // workflow run ID for SSE forwarding
-}
-
-type TaskResult struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
-	Status     string  `json:"status"`
-	ExitCode   int     `json:"exitCode"`
-	Output     string  `json:"output"`
-	Error      string  `json:"error,omitempty"`
-	DurationMs int64   `json:"durationMs"`
-	CostUSD    float64 `json:"costUsd"`
-	Model      string  `json:"model"`
-	SessionID  string  `json:"sessionId"`
-	OutputFile string  `json:"outputFile,omitempty"`
-	// Observability metrics.
-	TokensIn   int    `json:"tokensIn,omitempty"`
-	TokensOut  int    `json:"tokensOut,omitempty"`
-	ProviderMs int64  `json:"providerMs,omitempty"`
-	TraceID    string `json:"traceId,omitempty"`
-	Provider   string `json:"provider,omitempty"`
-	TrustLevel   string `json:"trustLevel,omitempty"`
-	Agent        string `json:"agent,omitempty"`
-	SlotWarning  string `json:"slotWarning,omitempty"`
-	// Dev↔QA loop fields (populated when ReviewLoop is enabled).
-	QAApproved *bool  `json:"qaApproved,omitempty"` // nil=no review, true=passed, false=failed
-	QAComment  string `json:"qaComment,omitempty"`  // reviewer feedback
-	Attempts   int    `json:"attempts,omitempty"`   // total execution attempts (0=no loop)
-}
-
-type DispatchResult struct {
-	StartedAt  time.Time    `json:"startedAt"`
-	FinishedAt time.Time    `json:"finishedAt"`
-	DurationMs int64        `json:"durationMs"`
-	TotalCost  float64      `json:"totalCostUsd"`
-	Tasks      []TaskResult `json:"tasks"`
-	Summary    string       `json:"summary"`
-}
+type ChannelNotifier = dtypes.ChannelNotifier
+type Task = dtypes.Task
+type TaskResult = dtypes.TaskResult
+type DispatchResult = dtypes.DispatchResult
 
 // --- Failed Task Storage (for retry/reroute) ---
 
@@ -212,7 +144,7 @@ func emitAgentState(broker *sseBroker, agent, state string) {
 
 // publishToSSEBroker publishes an SSE event directly via a broker reference.
 // Used by runSingleTask which has no access to dispatchState.
-func publishToSSEBroker(broker *sseBroker, event SSEEvent) {
+func publishToSSEBroker(broker dtypes.SSEBrokerPublisher, event SSEEvent) {
 	if broker == nil {
 		return
 	}
@@ -512,8 +444,8 @@ func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem ch
 	}
 
 	// Signal that this task has acquired a slot and is about to execute.
-	if task.onStart != nil {
-		task.onStart()
+	if task.OnStart != nil {
+		task.OnStart()
 	}
 
 	// Budget check before execution.
@@ -551,12 +483,12 @@ func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem ch
 
 	// SSE streaming: publish started event and create eventCh when sseBroker is set.
 	var eventCh chan SSEEvent
-	if task.sseBroker != nil {
-		publishToSSEBroker(task.sseBroker, SSEEvent{
+	if task.SSEBroker != nil {
+		publishToSSEBroker(task.SSEBroker, SSEEvent{
 			Type:           SSEStarted,
 			TaskID:         task.ID,
 			SessionID:      task.SessionID,
-			WorkflowRunID:  task.workflowRunID,
+			WorkflowRunID:  task.WorkflowRunID,
 			Data: map[string]any{
 				"name":  task.Name,
 				"role":  agentName,
@@ -567,11 +499,11 @@ func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem ch
 		go func() {
 			for ev := range eventCh {
 				// Stamp workflow run ID so events route to the workflow SSE channel.
-				if task.workflowRunID != "" {
-					ev.WorkflowRunID = task.workflowRunID
+				if task.WorkflowRunID != "" {
+					ev.WorkflowRunID = task.WorkflowRunID
 				}
 				logDebug("sse forward", "type", ev.Type, "taskID", ev.TaskID, "sessionID", ev.SessionID)
-				publishToSSEBroker(task.sseBroker, ev)
+				publishToSSEBroker(task.SSEBroker, ev)
 			}
 		}()
 	}
@@ -665,12 +597,12 @@ func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem ch
 	}
 
 	// SSE streaming: publish completed/error event.
-	if task.sseBroker != nil && result.Status != "queued" {
+	if task.SSEBroker != nil && result.Status != "queued" {
 		evType := SSECompleted
 		if result.Status != "success" {
 			evType = SSEError
 		}
-		publishToSSEBroker(task.sseBroker, SSEEvent{
+		publishToSSEBroker(task.SSEBroker, SSEEvent{
 			Type:      evType,
 			TaskID:    task.ID,
 			SessionID: task.SessionID,

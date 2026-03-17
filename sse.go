@@ -7,45 +7,41 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	dtypes "tetora/internal/dispatch"
 )
 
-// --- SSE Event Types ---
+// --- SSE Event Types (aliases to internal/dispatch) ---
 
-// SSEEvent represents a Server-Sent Event for task/session streaming.
-type SSEEvent struct {
-	Type           string `json:"type"`                      // "started", "progress", "output_chunk", "completed", "error", "heartbeat"
-	TaskID         string `json:"taskId,omitempty"`           // which task produced this event
-	SessionID      string `json:"sessionId,omitempty"`        // which session this belongs to
-	WorkflowRunID  string `json:"workflowRunId,omitempty"`    // workflow run ID for routing
-	Data           any    `json:"data,omitempty"`             // event-specific payload
-	Timestamp      string `json:"timestamp"`                  // RFC3339
-}
+type SSEEvent = dtypes.SSEEvent
 
-// SSE event type constants.
 const (
-	SSEStarted     = "started"
-	SSEProgress    = "progress"
-	SSEOutputChunk = "output_chunk"
-	SSECompleted   = "completed"
-	SSEError       = "error"
-	SSEHeartbeat   = "heartbeat"
-	SSEQueued       = "task_queued"
-	SSETaskReceived = "task_received"
-	SSETaskRouting       = "task_routing"
-	SSEDiscordProcessing = "discord_processing"
-	SSEDiscordReplying   = "discord_replying"
-	SSEDashboardKey      = "__dashboard__"
-	SSEToolCall          = "tool_call"
-	SSEToolResult        = "tool_result"
-	SSESessionMessage    = "session_message"
-	SSEAgentState        = "agent_state"
-	SSEHeartbeatAlert    = "heartbeat_alert"
-	SSETaskStalled       = "task_stalled"
-	SSETaskRecovered     = "task_recovered"
-	SSEWorkerUpdate      = "worker_update"
-	SSEHookEvent         = "hook_event"
-	SSEPlanReview        = "plan_review"
+	SSEStarted           = dtypes.SSEStarted
+	SSEProgress          = dtypes.SSEProgress
+	SSEOutputChunk       = dtypes.SSEOutputChunk
+	SSECompleted         = dtypes.SSECompleted
+	SSEError             = dtypes.SSEError
+	SSEHeartbeat         = dtypes.SSEHeartbeat
+	SSEQueued            = dtypes.SSEQueued
+	SSETaskReceived      = dtypes.SSETaskReceived
+	SSETaskRouting       = dtypes.SSETaskRouting
+	SSEDiscordProcessing = dtypes.SSEDiscordProcessing
+	SSEDiscordReplying   = dtypes.SSEDiscordReplying
+	SSEDashboardKey      = dtypes.SSEDashboardKey
+	SSEToolCall          = dtypes.SSEToolCall
+	SSEToolResult        = dtypes.SSEToolResult
+	SSESessionMessage    = dtypes.SSESessionMessage
+	SSEAgentState        = dtypes.SSEAgentState
+	SSEHeartbeatAlert    = dtypes.SSEHeartbeatAlert
+	SSETaskStalled       = dtypes.SSETaskStalled
+	SSETaskRecovered     = dtypes.SSETaskRecovered
+	SSEWorkerUpdate      = dtypes.SSEWorkerUpdate
+	SSEHookEvent         = dtypes.SSEHookEvent
+	SSEPlanReview        = dtypes.SSEPlanReview
 )
+
+// Compile-time check: sseBroker implements dtypes.SSEBrokerPublisher.
+var _ dtypes.SSEBrokerPublisher = (*sseBroker)(nil)
 
 // --- SSE Broker ---
 

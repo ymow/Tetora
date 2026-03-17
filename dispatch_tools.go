@@ -140,8 +140,8 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 		req.Messages = messages
 
 		// P27.3: Send typing indicator at iteration start.
-		if cfg.StreamToChannels && task.channelNotifier != nil {
-			go task.channelNotifier.SendTyping(ctx)
+		if cfg.StreamToChannels && task.ChannelNotifier != nil {
+			go task.ChannelNotifier.SendTyping(ctx)
 		}
 
 		// Call provider.
@@ -256,7 +256,7 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 			}
 
 			// P28.0: Pre-execution approval gate.
-			if needsApproval(cfg, tc.Name) && task.approvalGate != nil && !task.approvalGate.IsAutoApproved(tc.Name) {
+			if needsApproval(cfg, tc.Name) && task.ApprovalGate != nil && !task.ApprovalGate.IsAutoApproved(tc.Name) {
 				approved, gateErr := requestToolApproval(ctx, cfg, task, rootTC)
 				if gateErr != nil || !approved {
 					toolResults = append(toolResults, ToolResult{
@@ -303,9 +303,9 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 			toolResults = append(toolResults, tr)
 
 			// P27.3: Send tool status to channel.
-			if cfg.StreamToChannels && task.channelNotifier != nil {
+			if cfg.StreamToChannels && task.ChannelNotifier != nil {
 				statusMsg := fmt.Sprintf("%s: done (%dms)", tc.Name, toolDuration.Milliseconds())
-				go task.channelNotifier.SendStatus(ctx, statusMsg)
+				go task.ChannelNotifier.SendStatus(ctx, statusMsg)
 			}
 
 			// Publish SSE event for tool result.

@@ -141,7 +141,7 @@ func (r *telegramRuntime) RouteAndRun(ctx context.Context, prompt, source, sessi
 	task.Prompt = expandPrompt(task.Prompt, "", r.cfg.HistoryDB, route.Agent, r.cfg.KnowledgeDir, r.cfg)
 
 	if r.state != nil && r.state.broker != nil {
-		task.sseBroker = r.state.broker
+		task.SSEBroker = r.state.broker
 	}
 
 	result := runSingleTask(ctx, r.cfg, task, r.sem, r.childSem, route.Agent)
@@ -191,7 +191,7 @@ func (r *telegramRuntime) RunAsk(ctx context.Context, prompt, sessionID, session
 	fillDefaults(r.cfg, &task)
 
 	if r.state != nil && r.state.broker != nil {
-		task.sseBroker = r.state.broker
+		task.SSEBroker = r.state.broker
 	}
 
 	result := runSingleTask(ctx, r.cfg, task, r.sem, r.childSem, "")

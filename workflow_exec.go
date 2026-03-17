@@ -949,8 +949,8 @@ func (e *workflowExecutor) runDispatchStep(ctx context.Context, step *WorkflowSt
 	})
 
 	// Enable streaming when broker is available.
-	task.sseBroker = e.broker
-	task.workflowRunID = e.run.ID
+	task.SSEBroker = e.broker
+	task.WorkflowRunID = e.run.ID
 
 	// Execute using runSingleTask (respects semaphore).
 	taskResult := runSingleTask(ctx, e.cfg, task, e.sem, e.childSem, task.Agent)
@@ -1236,8 +1236,8 @@ func (e *workflowExecutor) runHandoffStep(ctx context.Context, step *WorkflowSte
 	updateHandoffStatus(e.cfg.HistoryDB, handoffID, "active")
 
 	// Enable streaming when broker is available.
-	task.sseBroker = e.broker
-	task.workflowRunID = e.run.ID
+	task.SSEBroker = e.broker
+	task.WorkflowRunID = e.run.ID
 
 	// Execute.
 	taskResult := runSingleTask(ctx, e.cfg, task, e.sem, e.childSem, resolvedAgent)
@@ -1550,8 +1550,8 @@ func runSingleTaskNoRecord(ctx context.Context, cfg *Config, task Task, sem, chi
 	}
 
 	// Signal that this task has acquired a slot and is about to execute.
-	if task.onStart != nil {
-		task.onStart()
+	if task.OnStart != nil {
+		task.OnStart()
 	}
 
 	providerName := resolveProviderName(cfg, task, agentName)
