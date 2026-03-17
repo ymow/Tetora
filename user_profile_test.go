@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"tetora/internal/life/profile"
+	"tetora/internal/nlp"
 )
 
 // testProfileDB creates a temp DB file and initializes schema.
@@ -23,10 +24,10 @@ func testProfileService(t *testing.T, dbPath string) *UserProfileService {
 	t.Helper()
 	cfg := profile.Config{Enabled: true, SentimentEnabled: false}
 	sentimentFn := func(text string) (float64, []string) {
-		r := analyzeSentiment(text)
+		r := nlp.Analyze(text)
 		return r.Score, r.Keywords
 	}
-	return profile.New(dbPath, cfg, makeLifeDB(), newUUID, sentimentFn, sentimentLabel)
+	return profile.New(dbPath, cfg, makeLifeDB(), newUUID, sentimentFn, nlp.Label)
 }
 
 func TestInitUserProfileDB(t *testing.T) {
@@ -290,10 +291,10 @@ func TestRecordMessage(t *testing.T) {
 		SentimentEnabled: true,
 	}
 	sentimentFn := func(text string) (float64, []string) {
-		r := analyzeSentiment(text)
+		r := nlp.Analyze(text)
 		return r.Score, r.Keywords
 	}
-	svc := profile.New(dbPath, cfg, makeLifeDB(), newUUID, sentimentFn, sentimentLabel)
+	svc := profile.New(dbPath, cfg, makeLifeDB(), newUUID, sentimentFn, nlp.Label)
 
 	// Record a positive message.
 	err := svc.RecordMessage("tg:msg-001", "TestUser", "I'm so happy today!")
@@ -328,10 +329,10 @@ func TestRecordMessage_NoSentiment(t *testing.T) {
 		SentimentEnabled: false,
 	}
 	sentimentFn := func(text string) (float64, []string) {
-		r := analyzeSentiment(text)
+		r := nlp.Analyze(text)
 		return r.Score, r.Keywords
 	}
-	svc := profile.New(dbPath, cfg, makeLifeDB(), newUUID, sentimentFn, sentimentLabel)
+	svc := profile.New(dbPath, cfg, makeLifeDB(), newUUID, sentimentFn, nlp.Label)
 
 	// Record a message -- should not log mood.
 	err := svc.RecordMessage("tg:nosenti-001", "TestUser", "I'm so happy today!")
@@ -353,10 +354,10 @@ func TestGetMoodTrend(t *testing.T) {
 		SentimentEnabled: true,
 	}
 	sentimentFn := func(text string) (float64, []string) {
-		r := analyzeSentiment(text)
+		r := nlp.Analyze(text)
 		return r.Score, r.Keywords
 	}
-	svc := profile.New(dbPath, cfg, makeLifeDB(), newUUID, sentimentFn, sentimentLabel)
+	svc := profile.New(dbPath, cfg, makeLifeDB(), newUUID, sentimentFn, nlp.Label)
 
 	// Record multiple messages with different sentiments.
 	svc.RecordMessage("tg:mood-001", "MoodUser", "I'm so happy and love this!")
@@ -381,10 +382,10 @@ func TestGetUserContext(t *testing.T) {
 		SentimentEnabled: true,
 	}
 	sentimentFn := func(text string) (float64, []string) {
-		r := analyzeSentiment(text)
+		r := nlp.Analyze(text)
 		return r.Score, r.Keywords
 	}
-	svc := profile.New(dbPath, cfg, makeLifeDB(), newUUID, sentimentFn, sentimentLabel)
+	svc := profile.New(dbPath, cfg, makeLifeDB(), newUUID, sentimentFn, nlp.Label)
 
 	// Set up a user with data.
 	svc.RecordMessage("tg:ctx-001", "ContextUser", "I love sushi!")

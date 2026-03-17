@@ -1,31 +1,39 @@
-package main
+package httpapi
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
+
+	"tetora/internal/audit"
+	"tetora/internal/httputil"
+	"tetora/internal/life/family"
+	"tetora/internal/trace"
 )
 
-// registerFamilyRoutes registers HTTP routes for the family/multi-user API.
-func (s *Server) registerFamilyRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/family/users", s.handleFamilyUsers)
-	mux.HandleFunc("/api/family/lists", s.handleFamilyLists)
-	mux.HandleFunc("/api/family/lists/items", s.handleFamilyListItems)
-}
-
-// handleFamilyUsers handles CRUD operations for family users.
-func (s *Server) handleFamilyUsers(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	if s.app == nil || s.app.Family == nil {
-		http.Error(w, `{"error":"family mode not enabled"}`, http.StatusServiceUnavailable)
+// RegisterFamilyRoutes registers HTTP routes for the family/multi-user API.
+func RegisterFamilyRoutes(mux *http.ServeMux, svc *family.Service, dbPath func() string) {
+	if svc == nil {
 		return
 	}
+	h := &familyHandler{svc: svc, dbPath: dbPath}
+	mux.HandleFunc("/api/family/users", h.handleFamilyUsers)
+	mux.HandleFunc("/api/family/lists", h.handleFamilyLists)
+	mux.HandleFunc("/api/family/lists/items", h.handleFamilyListItems)
+}
+
+type familyHandler struct {
+	svc    *family.Service
+	dbPath func() string
+}
+
+func (h *familyHandler) handleFamilyUsers(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 
 	switch r.Method {
 	case http.MethodGet:
-		users, err := s.app.Family.ListUsers()
+		users, err := h.svc.ListUsers()
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 			return
@@ -49,15 +57,12 @@ func (s *Server) handleFamilyUsers(w http.ResponseWriter, r *http.Request) {
 		if body.Role == "" {
 			body.Role = "member"
 		}
-		if err := s.app.Family.AddUser(body.UserID, body.DisplayName, body.Role); err != nil {
+		if err := h.svc.AddUser(body.UserID, body.DisplayName, body.Role); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusBadRequest)
 			return
 		}
-		user, _ := s.app.Family.GetUser(body.UserID)
-		s.cfgMu.RLock()
-		cfg := s.cfg
-		s.cfgMu.RUnlock()
-		auditLog(cfg.HistoryDB, "family.user.add", "http", body.UserID, clientIP(r))
+		user, _ := h.svc.GetUser(body.UserID)
+		audit.Log(h.dbPath(), "family.user.add", "http", body.UserID, httputil.ClientIP(r))
 		json.NewEncoder(w).Encode(map[string]any{"status": "added", "user": user})
 
 	case http.MethodDelete:
@@ -66,14 +71,11 @@ func (s *Server) handleFamilyUsers(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"userId query parameter required"}`, http.StatusBadRequest)
 			return
 		}
-		if err := s.app.Family.RemoveUser(userID); err != nil {
+		if err := h.svc.RemoveUser(userID); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusBadRequest)
 			return
 		}
-		s.cfgMu.RLock()
-		cfg := s.cfg
-		s.cfgMu.RUnlock()
-		auditLog(cfg.HistoryDB, "family.user.remove", "http", userID, clientIP(r))
+		audit.Log(h.dbPath(), "family.user.remove", "http", userID, httputil.ClientIP(r))
 		json.NewEncoder(w).Encode(map[string]any{"status": "removed", "userId": userID})
 
 	default:
@@ -81,18 +83,12 @@ func (s *Server) handleFamilyUsers(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleFamilyLists handles CRUD operations for shared lists.
-func (s *Server) handleFamilyLists(w http.ResponseWriter, r *http.Request) {
+func (h *familyHandler) handleFamilyLists(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-
-	if s.app == nil || s.app.Family == nil {
-		http.Error(w, `{"error":"family mode not enabled"}`, http.StatusServiceUnavailable)
-		return
-	}
 
 	switch r.Method {
 	case http.MethodGet:
-		lists, err := s.app.Family.ListLists()
+		lists, err := h.svc.ListLists()
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 			return
@@ -113,15 +109,12 @@ func (s *Server) handleFamilyLists(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"name is required"}`, http.StatusBadRequest)
 			return
 		}
-		list, err := s.app.Family.CreateList(body.Name, body.ListType, body.CreatedBy, newUUID)
+		list, err := h.svc.CreateList(body.Name, body.ListType, body.CreatedBy, trace.NewUUID)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 			return
 		}
-		s.cfgMu.RLock()
-		cfg := s.cfg
-		s.cfgMu.RUnlock()
-		auditLog(cfg.HistoryDB, "family.list.create", "http", body.Name, clientIP(r))
+		audit.Log(h.dbPath(), "family.list.create", "http", body.Name, httputil.ClientIP(r))
 		json.NewEncoder(w).Encode(map[string]any{"status": "created", "list": list})
 
 	case http.MethodDelete:
@@ -130,14 +123,11 @@ func (s *Server) handleFamilyLists(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"listId query parameter required"}`, http.StatusBadRequest)
 			return
 		}
-		if err := s.app.Family.DeleteList(listID); err != nil {
+		if err := h.svc.DeleteList(listID); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusBadRequest)
 			return
 		}
-		s.cfgMu.RLock()
-		cfg := s.cfg
-		s.cfgMu.RUnlock()
-		auditLog(cfg.HistoryDB, "family.list.delete", "http", listID, clientIP(r))
+		audit.Log(h.dbPath(), "family.list.delete", "http", listID, httputil.ClientIP(r))
 		json.NewEncoder(w).Encode(map[string]any{"status": "deleted", "listId": listID})
 
 	default:
@@ -145,14 +135,8 @@ func (s *Server) handleFamilyLists(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleFamilyListItems handles CRUD operations for shared list items.
-func (s *Server) handleFamilyListItems(w http.ResponseWriter, r *http.Request) {
+func (h *familyHandler) handleFamilyListItems(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-
-	if s.app == nil || s.app.Family == nil {
-		http.Error(w, `{"error":"family mode not enabled"}`, http.StatusServiceUnavailable)
-		return
-	}
 
 	switch r.Method {
 	case http.MethodGet:
@@ -161,7 +145,7 @@ func (s *Server) handleFamilyListItems(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"listId query parameter required"}`, http.StatusBadRequest)
 			return
 		}
-		items, err := s.app.Family.GetListItems(listID)
+		items, err := h.svc.GetListItems(listID)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 			return
@@ -183,7 +167,7 @@ func (s *Server) handleFamilyListItems(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"listId and text are required"}`, http.StatusBadRequest)
 			return
 		}
-		item, err := s.app.Family.AddListItem(body.ListID, body.Text, body.Quantity, body.AddedBy)
+		item, err := h.svc.AddListItem(body.ListID, body.Text, body.Quantity, body.AddedBy)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 			return
@@ -203,7 +187,7 @@ func (s *Server) handleFamilyListItems(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		checked := checkedStr == "true" || checkedStr == "1"
-		if err := s.app.Family.CheckItem(itemID, checked); err != nil {
+		if err := h.svc.CheckItem(itemID, checked); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 			return
 		}
@@ -220,7 +204,7 @@ func (s *Server) handleFamilyListItems(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"invalid itemId"}`, http.StatusBadRequest)
 			return
 		}
-		if err := s.app.Family.RemoveListItem(itemID); err != nil {
+		if err := h.svc.RemoveListItem(itemID); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 			return
 		}

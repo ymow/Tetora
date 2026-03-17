@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"tetora/internal/quickaction"
 )
 
 func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
@@ -478,7 +480,7 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 	})
 
 	// --- Quick Actions ---
-	quickActionEngine := newQuickActionEngine(cfg)
+	quickActionEngine := quickaction.NewEngine(cfg.QuickActions, cfg.SmartDispatch.DefaultAgent)
 
 	mux.HandleFunc("/api/quick/list", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

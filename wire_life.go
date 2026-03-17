@@ -9,6 +9,7 @@ import (
 	"io"
 	"path/filepath"
 
+	"tetora/internal/nlp"
 	"tetora/internal/tool"
 
 	"tetora/internal/life/calendar"
@@ -254,13 +255,13 @@ func calculateMilestoneProgress(milestones []Milestone) int {
 
 func newUserProfileService(cfg *Config) *UserProfileService {
 	sentimentFn := func(text string) (float64, []string) {
-		r := analyzeSentiment(text)
+		r := nlp.Analyze(text)
 		return r.Score, r.Keywords
 	}
 	return profile.New(cfg.HistoryDB, profile.Config{
 		Enabled:          cfg.UserProfile.Enabled,
 		SentimentEnabled: cfg.UserProfile.SentimentEnabled,
-	}, makeLifeDB(), newUUID, sentimentFn, sentimentLabel)
+	}, makeLifeDB(), newUUID, sentimentFn, nlp.Label)
 }
 
 func initUserProfileDB(dbPath string) error {

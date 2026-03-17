@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"tetora/internal/nlp"
 )
 
 // --- Global Singleton ---
@@ -166,7 +168,7 @@ func toolMoodCheck(ctx context.Context, cfg *Config, input json.RawMessage) (str
 		"days":         args.Days,
 		"entries":      len(mood),
 		"averageScore": avg,
-		"label":        sentimentLabel(avg),
+		"label":        nlp.Label(avg),
 		"trend":        mood,
 	}
 

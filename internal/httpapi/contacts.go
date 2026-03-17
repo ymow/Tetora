@@ -1,4 +1,4 @@
-package main
+package httpapi
 
 import (
 	"encoding/json"
@@ -6,25 +6,33 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"tetora/internal/audit"
+	"tetora/internal/httputil"
+	"tetora/internal/life/contacts"
+	"tetora/internal/trace"
 )
 
-// registerContactsRoutes registers HTTP routes for the contacts API.
-func (s *Server) registerContactsRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/contacts", s.handleContactsList)
-	mux.HandleFunc("POST /api/contacts", s.handleContactsAdd)
-	mux.HandleFunc("GET /api/contacts/search", s.handleContactsSearch)
-	mux.HandleFunc("GET /api/contacts/upcoming", s.handleContactsUpcoming)
-	mux.HandleFunc("POST /api/contacts/interaction", s.handleContactsLogInteraction)
-}
-
-// handleContactsList returns all contacts, optionally filtered by relationship.
-func (s *Server) handleContactsList(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	if s.app == nil || s.app.Contacts == nil {
-		http.Error(w, `{"error":"contacts service not initialized"}`, http.StatusServiceUnavailable)
+// RegisterContactsRoutes registers HTTP routes for the contacts API.
+func RegisterContactsRoutes(mux *http.ServeMux, svc *contacts.Service, dbPath func() string) {
+	if svc == nil {
 		return
 	}
+	h := &contactsHandler{svc: svc, dbPath: dbPath}
+	mux.HandleFunc("GET /api/contacts", h.handleContactsList)
+	mux.HandleFunc("POST /api/contacts", h.handleContactsAdd)
+	mux.HandleFunc("GET /api/contacts/search", h.handleContactsSearch)
+	mux.HandleFunc("GET /api/contacts/upcoming", h.handleContactsUpcoming)
+	mux.HandleFunc("POST /api/contacts/interaction", h.handleContactsLogInteraction)
+}
+
+type contactsHandler struct {
+	svc    *contacts.Service
+	dbPath func() string
+}
+
+func (h *contactsHandler) handleContactsList(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 
 	relationship := r.URL.Query().Get("relationship")
 	limitStr := r.URL.Query().Get("limit")
@@ -35,22 +43,16 @@ func (s *Server) handleContactsList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	contacts, err := s.app.Contacts.ListContacts(relationship, limit)
+	result, err := h.svc.ListContacts(relationship, limit)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]any{"contacts": contacts, "count": len(contacts)})
+	json.NewEncoder(w).Encode(map[string]any{"contacts": result, "count": len(result)})
 }
 
-// handleContactsAdd creates a new contact.
-func (s *Server) handleContactsAdd(w http.ResponseWriter, r *http.Request) {
+func (h *contactsHandler) handleContactsAdd(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-
-	if s.app == nil || s.app.Contacts == nil {
-		http.Error(w, `{"error":"contacts service not initialized"}`, http.StatusServiceUnavailable)
-		return
-	}
 
 	var body struct {
 		Name         string            `json:"name"`
@@ -74,8 +76,8 @@ func (s *Server) handleContactsAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	contact := &Contact{
-		ID:           newUUID(),
+	contact := &contacts.Contact{
+		ID:           trace.NewUUID(),
 		Name:         body.Name,
 		Nickname:     body.Nickname,
 		Email:        body.Email,
@@ -89,27 +91,18 @@ func (s *Server) handleContactsAdd(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	if err := s.app.Contacts.AddContact(contact); err != nil {
+	if err := h.svc.AddContact(contact); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 		return
 	}
 
-	s.cfgMu.RLock()
-	cfg := s.cfg
-	s.cfgMu.RUnlock()
-	auditLog(cfg.HistoryDB, "contacts.add", "http", body.Name, clientIP(r))
+	audit.Log(h.dbPath(), "contacts.add", "http", body.Name, httputil.ClientIP(r))
 
 	json.NewEncoder(w).Encode(map[string]any{"status": "added", "contact": contact})
 }
 
-// handleContactsSearch searches contacts by query.
-func (s *Server) handleContactsSearch(w http.ResponseWriter, r *http.Request) {
+func (h *contactsHandler) handleContactsSearch(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-
-	if s.app == nil || s.app.Contacts == nil {
-		http.Error(w, `{"error":"contacts service not initialized"}`, http.StatusServiceUnavailable)
-		return
-	}
 
 	query := r.URL.Query().Get("q")
 	if query == "" {
@@ -125,22 +118,16 @@ func (s *Server) handleContactsSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	contacts, err := s.app.Contacts.SearchContacts(query, limit)
+	result, err := h.svc.SearchContacts(query, limit)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]any{"contacts": contacts, "count": len(contacts)})
+	json.NewEncoder(w).Encode(map[string]any{"contacts": result, "count": len(result)})
 }
 
-// handleContactsUpcoming returns upcoming birthdays and anniversaries.
-func (s *Server) handleContactsUpcoming(w http.ResponseWriter, r *http.Request) {
+func (h *contactsHandler) handleContactsUpcoming(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-
-	if s.app == nil || s.app.Contacts == nil {
-		http.Error(w, `{"error":"contacts service not initialized"}`, http.StatusServiceUnavailable)
-		return
-	}
 
 	daysStr := r.URL.Query().Get("days")
 	days := 30
@@ -150,7 +137,7 @@ func (s *Server) handleContactsUpcoming(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	events, err := s.app.Contacts.GetUpcomingEvents(days)
+	events, err := h.svc.GetUpcomingEvents(days)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 		return
@@ -158,14 +145,8 @@ func (s *Server) handleContactsUpcoming(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(map[string]any{"events": events, "count": len(events)})
 }
 
-// handleContactsLogInteraction logs an interaction with a contact.
-func (s *Server) handleContactsLogInteraction(w http.ResponseWriter, r *http.Request) {
+func (h *contactsHandler) handleContactsLogInteraction(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-
-	if s.app == nil || s.app.Contacts == nil {
-		http.Error(w, `{"error":"contacts service not initialized"}`, http.StatusServiceUnavailable)
-		return
-	}
 
 	var body struct {
 		ContactID string `json:"contact_id"`
@@ -186,15 +167,12 @@ func (s *Server) handleContactsLogInteraction(w http.ResponseWriter, r *http.Req
 		body.Type = "message"
 	}
 
-	if err := s.app.Contacts.LogInteraction(newUUID(), body.ContactID, body.Channel, body.Type, body.Summary, body.Sentiment); err != nil {
+	if err := h.svc.LogInteraction(trace.NewUUID(), body.ContactID, body.Channel, body.Type, body.Summary, body.Sentiment); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 		return
 	}
 
-	s.cfgMu.RLock()
-	cfg := s.cfg
-	s.cfgMu.RUnlock()
-	auditLog(cfg.HistoryDB, "contacts.interaction", "http", body.ContactID, clientIP(r))
+	audit.Log(h.dbPath(), "contacts.interaction", "http", body.ContactID, httputil.ClientIP(r))
 
 	json.NewEncoder(w).Encode(map[string]any{"status": "logged", "contact_id": body.ContactID, "type": body.Type})
 }

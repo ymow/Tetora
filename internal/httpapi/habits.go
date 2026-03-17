@@ -1,33 +1,39 @@
-package main
+package httpapi
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"tetora/internal/life/habits"
+	"tetora/internal/log"
+	"tetora/internal/trace"
 )
 
-// registerHabitsRoutes registers HTTP routes for the habits & wellness API.
-func (s *Server) registerHabitsRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/habits", s.handleHabits)
-	mux.HandleFunc("/api/habits/log", s.handleHabitsLog)
-	mux.HandleFunc("/api/habits/report", s.handleHabitsReport)
-	mux.HandleFunc("/api/wellness", s.handleHealth)
-	mux.HandleFunc("/api/wellness/summary", s.handleHealthSummary)
-}
-
-// handleHabits handles listing and creating habits.
-func (s *Server) handleHabits(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	if s.app == nil || s.app.Habits == nil {
-		http.Error(w, `{"error":"habits service not initialized"}`, http.StatusServiceUnavailable)
+// RegisterHabitsRoutes registers HTTP routes for the habits & wellness API.
+func RegisterHabitsRoutes(mux *http.ServeMux, svc *habits.Service) {
+	if svc == nil {
 		return
 	}
+	h := &habitsHandler{svc: svc}
+	mux.HandleFunc("/api/habits", h.handleHabits)
+	mux.HandleFunc("/api/habits/log", h.handleHabitsLog)
+	mux.HandleFunc("/api/habits/report", h.handleHabitsReport)
+	mux.HandleFunc("/api/wellness", h.handleHealth)
+	mux.HandleFunc("/api/wellness/summary", h.handleHealthSummary)
+}
+
+type habitsHandler struct {
+	svc *habits.Service
+}
+
+func (h *habitsHandler) handleHabits(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 
 	switch r.Method {
 	case http.MethodGet:
 		scope := r.URL.Query().Get("scope")
-		habits, err := s.app.Habits.HabitStatus(scope, logWarn)
+		habits, err := h.svc.HabitStatus(scope, log.Warn)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 			return
@@ -51,8 +57,8 @@ func (s *Server) handleHabits(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"name is required"}`, http.StatusBadRequest)
 			return
 		}
-		id := newUUID()
-		if err := s.app.Habits.CreateHabit(
+		id := trace.NewUUID()
+		if err := h.svc.CreateHabit(
 			id, body.Name, body.Description, body.Frequency, body.Category, body.Scope, body.TargetCount); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 			return
@@ -64,14 +70,8 @@ func (s *Server) handleHabits(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleHabitsLog handles logging a habit completion.
-func (s *Server) handleHabitsLog(w http.ResponseWriter, r *http.Request) {
+func (h *habitsHandler) handleHabitsLog(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-
-	if s.app == nil || s.app.Habits == nil {
-		http.Error(w, `{"error":"habits service not initialized"}`, http.StatusServiceUnavailable)
-		return
-	}
 
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -93,12 +93,12 @@ func (s *Server) handleHabitsLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.app.Habits.LogHabit(newUUID(), body.HabitID, body.Note, body.Scope, body.Value); err != nil {
+	if err := h.svc.LogHabit(trace.NewUUID(), body.HabitID, body.Note, body.Scope, body.Value); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusBadRequest)
 		return
 	}
 
-	current, longest, _ := s.app.Habits.GetStreak(body.HabitID, body.Scope)
+	current, longest, _ := h.svc.GetStreak(body.HabitID, body.Scope)
 	json.NewEncoder(w).Encode(map[string]any{
 		"status":         "logged",
 		"habit_id":       body.HabitID,
@@ -107,14 +107,8 @@ func (s *Server) handleHabitsLog(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleHabitsReport returns a detailed habit report.
-func (s *Server) handleHabitsReport(w http.ResponseWriter, r *http.Request) {
+func (h *habitsHandler) handleHabitsReport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-
-	if s.app == nil || s.app.Habits == nil {
-		http.Error(w, `{"error":"habits service not initialized"}`, http.StatusServiceUnavailable)
-		return
-	}
 
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -125,7 +119,7 @@ func (s *Server) handleHabitsReport(w http.ResponseWriter, r *http.Request) {
 	period := r.URL.Query().Get("period")
 	scope := r.URL.Query().Get("scope")
 
-	report, err := s.app.Habits.HabitReport(habitID, period, scope)
+	report, err := h.svc.HabitReport(habitID, period, scope)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 		return
@@ -133,14 +127,8 @@ func (s *Server) handleHabitsReport(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(report)
 }
 
-// handleHealth handles logging health data.
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+func (h *habitsHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-
-	if s.app == nil || s.app.Habits == nil {
-		http.Error(w, `{"error":"habits service not initialized"}`, http.StatusServiceUnavailable)
-		return
-	}
 
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -163,7 +151,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.app.Habits.LogHealth(newUUID(), body.Metric, body.Value, body.Unit, body.Source, body.Scope); err != nil {
+	if err := h.svc.LogHealth(trace.NewUUID(), body.Metric, body.Value, body.Unit, body.Source, body.Scope); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 		return
 	}
@@ -175,14 +163,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleHealthSummary returns health metric summary.
-func (s *Server) handleHealthSummary(w http.ResponseWriter, r *http.Request) {
+func (h *habitsHandler) handleHealthSummary(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-
-	if s.app == nil || s.app.Habits == nil {
-		http.Error(w, `{"error":"habits service not initialized"}`, http.StatusServiceUnavailable)
-		return
-	}
 
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -198,7 +180,7 @@ func (s *Server) handleHealthSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	summary, err := s.app.Habits.GetHealthSummary(metric, period, scope)
+	summary, err := h.svc.GetHealthSummary(metric, period, scope)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 		return

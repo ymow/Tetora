@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"tetora/internal/i18n"
 )
 
 // randomListenAddr picks a random available port on 127.0.0.1 and returns the
@@ -226,10 +228,10 @@ func cmdInit() {
 		langIdx = 0
 	}
 	selectedLang := langCodes[langIdx]
-	L := initTranslations[selectedLang]
+	L := i18n.Translations[selectedLang]
 	// fallback to English if missing
 	if L.Title == "" {
-		L = initTranslations["en"]
+		L = i18n.Translations["en"]
 	}
 	fmt.Println()
 

@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	"tetora/internal/quickaction"
 )
 
 func TestQuickAction_List(t *testing.T) {
@@ -11,7 +13,7 @@ func TestQuickAction_List(t *testing.T) {
 			{Name: "review", Label: "Code review"},
 		},
 	}
-	engine := newQuickActionEngine(cfg)
+	engine := quickaction.NewEngine(cfg.QuickActions, cfg.SmartDispatch.DefaultAgent)
 	actions := engine.List()
 	if len(actions) != 2 {
 		t.Errorf("expected 2 actions, got %d", len(actions))
@@ -25,7 +27,7 @@ func TestQuickAction_Get(t *testing.T) {
 			{Name: "review", Label: "Code review"},
 		},
 	}
-	engine := newQuickActionEngine(cfg)
+	engine := quickaction.NewEngine(cfg.QuickActions, cfg.SmartDispatch.DefaultAgent)
 
 	action, err := engine.Get("deploy")
 	if err != nil {
@@ -42,7 +44,7 @@ func TestQuickAction_Get_NotFound(t *testing.T) {
 			{Name: "deploy", Label: "Deploy to production"},
 		},
 	}
-	engine := newQuickActionEngine(cfg)
+	engine := quickaction.NewEngine(cfg.QuickActions, cfg.SmartDispatch.DefaultAgent)
 
 	_, err := engine.Get("unknown")
 	if err == nil {
@@ -57,7 +59,7 @@ func TestQuickAction_BuildPrompt_Static(t *testing.T) {
 		},
 		SmartDispatch: SmartDispatchConfig{DefaultAgent: "琉璃"},
 	}
-	engine := newQuickActionEngine(cfg)
+	engine := quickaction.NewEngine(cfg.QuickActions, cfg.SmartDispatch.DefaultAgent)
 
 	prompt, role, err := engine.BuildPrompt("hello", nil)
 	if err != nil {
@@ -82,7 +84,7 @@ func TestQuickAction_BuildPrompt_Template(t *testing.T) {
 		},
 		SmartDispatch: SmartDispatchConfig{DefaultAgent: "琉璃"},
 	}
-	engine := newQuickActionEngine(cfg)
+	engine := quickaction.NewEngine(cfg.QuickActions, cfg.SmartDispatch.DefaultAgent)
 
 	params := map[string]any{"name": "Alice"}
 	prompt, role, err := engine.BuildPrompt("greet", params)
@@ -112,7 +114,7 @@ func TestQuickAction_BuildPrompt_Defaults(t *testing.T) {
 		},
 		SmartDispatch: SmartDispatchConfig{DefaultAgent: "琉璃"},
 	}
-	engine := newQuickActionEngine(cfg)
+	engine := quickaction.NewEngine(cfg.QuickActions, cfg.SmartDispatch.DefaultAgent)
 
 	// Only override name, age should use default.
 	params := map[string]any{"name": "Bob"}
@@ -142,7 +144,7 @@ func TestQuickAction_Search(t *testing.T) {
 			{Name: "test", Label: "Run tests", Shortcut: "t"},
 		},
 	}
-	engine := newQuickActionEngine(cfg)
+	engine := quickaction.NewEngine(cfg.QuickActions, cfg.SmartDispatch.DefaultAgent)
 
 	// Search by name.
 	results := engine.Search("deploy")
@@ -169,7 +171,7 @@ func TestQuickAction_Search_NoMatch(t *testing.T) {
 			{Name: "deploy", Label: "Deploy to production"},
 		},
 	}
-	engine := newQuickActionEngine(cfg)
+	engine := quickaction.NewEngine(cfg.QuickActions, cfg.SmartDispatch.DefaultAgent)
 
 	results := engine.Search("unknown")
 	if len(results) != 0 {
@@ -184,7 +186,7 @@ func TestQuickAction_Search_Shortcut(t *testing.T) {
 			{Name: "test", Label: "Run tests", Shortcut: "t"},
 		},
 	}
-	engine := newQuickActionEngine(cfg)
+	engine := quickaction.NewEngine(cfg.QuickActions, cfg.SmartDispatch.DefaultAgent)
 
 	results := engine.Search("b")
 	if len(results) != 1 || results[0].Name != "build" {
@@ -196,7 +198,7 @@ func TestQuickAction_EmptyConfig(t *testing.T) {
 	cfg := &Config{
 		QuickActions: []QuickAction{},
 	}
-	engine := newQuickActionEngine(cfg)
+	engine := quickaction.NewEngine(cfg.QuickActions, cfg.SmartDispatch.DefaultAgent)
 
 	actions := engine.List()
 	if len(actions) != 0 {

@@ -13,6 +13,18 @@ import (
 	"tetora/internal/quiet"
 )
 
+var quietGlobal = quiet.NewState(logInfo)
+
+func toQuietCfg(cfg *Config) quiet.Config {
+	return quiet.Config{
+		Enabled: cfg.QuietHours.Enabled,
+		Start:   cfg.QuietHours.Start,
+		End:     cfg.QuietHours.End,
+		TZ:      cfg.QuietHours.TZ,
+		Digest:  cfg.QuietHours.Digest,
+	}
+}
+
 // --- Cron Job Types ---
 
 type JobsFile struct {

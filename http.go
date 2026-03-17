@@ -15,6 +15,9 @@ import (
 	"sync"
 	"time"
 
+	"tetora/internal/httpapi"
+	"tetora/internal/pwa"
+	"tetora/internal/httputil"
 	"tetora/internal/trace"
 )
 
@@ -241,17 +244,7 @@ func (ll *loginLimiter) cleanup() {
 	}
 }
 
-func clientIP(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		return strings.TrimSpace(strings.SplitN(fwd, ",", 2)[0])
-	}
-	// Strip port from RemoteAddr.
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
+func clientIP(r *http.Request) string { return httputil.ClientIP(r) }
 
 // --- IP Allowlist ---
 
@@ -497,7 +490,7 @@ func startHTTPServer(s *Server) *http.Server {
 	s.registerHealthRoutes(mux)
 	s.registerDispatchRoutes(mux)
 	s.registerCronRoutes(mux)
-	s.registerHistoryRoutes(mux)
+	httpapi.RegisterHistoryRoutes(mux, func() string { return s.Cfg().HistoryDB })
 	s.registerStatsRoutes(mux)
 	s.registerAgentRoutes(mux)
 	s.registerMemoryRoutes(mux)
@@ -507,26 +500,63 @@ func startHTTPServer(s *Server) *http.Server {
 	s.registerCanvasRoutes(mux)
 	s.registerWorkflowRoutes(mux)
 	s.registerAgentCfgRoutes(mux)
-	s.registerKnowledgeRoutes(mux)
+	httpapi.RegisterKnowledgeRoutes(mux, httpapi.KnowledgeDeps{
+		KnowledgeDir: func() string { return knowledgeDir(s.Cfg()) },
+		HistoryDB:    func() string { return s.Cfg().HistoryDB },
+		SearchKnowledge: func(dir, query string, limit int) ([]httpapi.KnowledgeSearchResult, error) {
+			idx, err := buildKnowledgeIndex(dir)
+			if err != nil {
+				return nil, err
+			}
+			results := idx.search(query, limit)
+			out := make([]httpapi.KnowledgeSearchResult, len(results))
+			for i, r := range results {
+				out[i] = httpapi.KnowledgeSearchResult{
+					Filename: r.Filename, Snippet: r.Snippet,
+					Score: r.Score, LineStart: r.LineStart,
+				}
+			}
+			return out, nil
+		},
+		QueryReflections: func(dbPath, role string, limit int) ([]httpapi.ReflectionResult, error) {
+			refs, err := queryReflections(dbPath, role, limit)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]httpapi.ReflectionResult, len(refs))
+			for i, r := range refs {
+				out[i] = httpapi.ReflectionResult{
+					TaskID: r.TaskID, Agent: r.Agent, Score: r.Score,
+					Feedback: r.Feedback, Improvement: r.Improvement,
+					CostUSD: r.CostUSD, CreatedAt: r.CreatedAt,
+				}
+			}
+			return out, nil
+		},
+	})
 	s.registerPushRoutes(mux)
-	s.registerReminderRoutes(mux)
+	httpapi.RegisterReminderRoutes(mux, httpapi.ReminderDeps{
+		Engine:        s.app.Reminder,
+		ParseTime:     parseNaturalTime,
+		ParseCronExpr: func(expr string) (any, error) { return parseCronExpr(expr) },
+	})
 	s.registerAdminRoutes(mux)
-	s.registerFamilyRoutes(mux)
-	s.registerContactsRoutes(mux)
-	s.registerHabitsRoutes(mux)
+	httpapi.RegisterFamilyRoutes(mux, s.app.Family, func() string { return s.Cfg().HistoryDB })
+	httpapi.RegisterContactsRoutes(mux, s.app.Contacts, func() string { return s.Cfg().HistoryDB })
+	httpapi.RegisterHabitsRoutes(mux, s.app.Habits)
 	s.registerProjectRoutes(mux)
 	s.registerWSEventsRoutes(mux)
 	s.registerDiscordRoutes(mux)
 	s.registerWorkersRoutes(mux)
 	s.registerHookRoutes(mux)
 	s.registerPlanReviewRoutes(mux)
-	s.registerDocsRoutes(mux)
+	registerDocsRoutesVia(mux)
 	s.registerClaudeMCPRoutes(mux)
 
 	// PWA assets.
-	mux.HandleFunc("/dashboard/manifest.json", handlePWAManifest)
-	mux.HandleFunc("/dashboard/sw.js", handlePWAServiceWorker)
-	mux.HandleFunc("/dashboard/icon.svg", handlePWAIcon)
+	mux.HandleFunc("/dashboard/manifest.json", pwa.HandleManifest)
+	mux.HandleFunc("/dashboard/sw.js", pwa.HandleServiceWorker(tetoraVersion))
+	mux.HandleFunc("/dashboard/icon.svg", pwa.HandleIcon)
 
 	// Dashboard.
 	mux.HandleFunc("/dashboard/office-bg.webp", handleOfficeBg)
