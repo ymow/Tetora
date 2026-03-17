@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"tetora/internal/log"
 	"tetora/internal/nlp"
@@ -1411,5 +1415,248 @@ func toolMoodCheck(ctx context.Context, cfg *Config, input json.RawMessage) (str
 	}
 
 	b, _ := json.Marshal(result)
+	return string(b), nil
+}
+
+// --- Task Sync: Todoist ---
+
+func toolTodoistSync(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if !cfg.TaskManager.Todoist.Enabled {
+		return "", fmt.Errorf("todoist sync not enabled")
+	}
+	var args struct {
+		Action string `json:"action"`
+		UserID string `json:"userId"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	if args.UserID == "" {
+		args.UserID = "default"
+	}
+
+	ts := newTodoistSync(cfg)
+
+	switch args.Action {
+	case "pull":
+		n, err := ts.PullTasks(args.UserID)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Pulled %d tasks from Todoist.", n), nil
+	case "push":
+		if app == nil || app.TaskManager == nil {
+			return "", fmt.Errorf("task manager not initialized")
+		}
+		localTasks, _ := app.TaskManager.ListTasks(args.UserID, TaskFilter{})
+		pushed := 0
+		for _, task := range localTasks {
+			if task.ExternalSource == "todoist" || task.ExternalID != "" {
+				continue
+			}
+			if err := ts.PushTask(task); err != nil {
+				continue
+			}
+			pushed++
+		}
+		return fmt.Sprintf("Pushed %d tasks to Todoist.", pushed), nil
+	case "sync", "":
+		pulled, pushed, err := ts.SyncAll(args.UserID)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Todoist sync complete: pulled %d, pushed %d.", pulled, pushed), nil
+	default:
+		return "", fmt.Errorf("unknown action %q (use pull, push, or sync)", args.Action)
+	}
+}
+
+// --- Task Sync: Notion ---
+
+func toolNotionSync(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if !cfg.TaskManager.Notion.Enabled {
+		return "", fmt.Errorf("notion sync not enabled")
+	}
+	var args struct {
+		Action string `json:"action"`
+		UserID string `json:"userId"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	if args.UserID == "" {
+		args.UserID = "default"
+	}
+
+	ns := newNotionSync(cfg)
+
+	switch args.Action {
+	case "pull":
+		n, err := ns.PullTasks(args.UserID)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Pulled %d tasks from Notion.", n), nil
+	case "push":
+		if app == nil || app.TaskManager == nil {
+			return "", fmt.Errorf("task manager not initialized")
+		}
+		localTasks, _ := app.TaskManager.ListTasks(args.UserID, TaskFilter{})
+		pushed := 0
+		for _, task := range localTasks {
+			if task.ExternalSource == "notion" || task.ExternalID != "" {
+				continue
+			}
+			if err := ns.PushTask(task); err != nil {
+				continue
+			}
+			pushed++
+		}
+		return fmt.Sprintf("Pushed %d tasks to Notion.", pushed), nil
+	case "sync", "":
+		pulled, pushed, err := ns.SyncAll(args.UserID)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Notion sync complete: pulled %d, pushed %d.", pulled, pushed), nil
+	default:
+		return "", fmt.Errorf("unknown action %q (use pull, push, or sync)", args.Action)
+	}
+}
+
+// --- Quick Capture Tool Handler ---
+
+func classifyCapture(input string) string {
+	lower := strings.ToLower(input)
+	if strings.Contains(lower, "$") || strings.Contains(lower, "spent") ||
+		strings.Contains(lower, "paid") || strings.Contains(lower, "bought") ||
+		strings.Contains(lower, "cost") || strings.Contains(lower, "元") ||
+		strings.Contains(lower, "円") {
+		return "expense"
+	}
+	if strings.Contains(lower, "remind") || strings.Contains(lower, "deadline") ||
+		strings.Contains(lower, "don't forget") || strings.Contains(lower, "dont forget") {
+		return "reminder"
+	}
+	if strings.Contains(lower, "phone") || strings.Contains(lower, "email") ||
+		strings.Contains(lower, "birthday") || strings.Contains(input, "@") {
+		return "contact"
+	}
+	if strings.Contains(lower, "todo") || strings.Contains(lower, "need to") ||
+		strings.Contains(lower, "must") || strings.Contains(lower, "should") ||
+		strings.Contains(lower, "fix") {
+		return "task"
+	}
+	if strings.HasPrefix(lower, "idea:") || strings.Contains(lower, "what if") {
+		return "idea"
+	}
+	return "note"
+}
+
+func executeCapture(ctx context.Context, cfg *Config, category, text string) (string, error) {
+	app := appFromCtx(ctx)
+	switch category {
+	case "task":
+		tm := globalTaskManager
+		if app != nil && app.TaskManager != nil {
+			tm = app.TaskManager
+		}
+		if tm == nil {
+			return "", fmt.Errorf("task manager not initialized")
+		}
+		task, err := tm.CreateTask(UserTask{
+			Title:  text,
+			Status: "todo",
+		})
+		if err != nil {
+			return "", fmt.Errorf("create task: %w", err)
+		}
+		return fmt.Sprintf("Task created: %s (id=%s)", task.Title, task.ID), nil
+
+	case "expense":
+		input, _ := json.Marshal(map[string]string{"text": text})
+		return toolExpenseAdd(ctx, cfg, input)
+
+	case "reminder":
+		re := globalReminderEngine
+		if app != nil && app.Reminder != nil {
+			re = app.Reminder
+		}
+		if re == nil {
+			return "", fmt.Errorf("reminder engine not initialized")
+		}
+		due := time.Now().Add(24 * time.Hour)
+		r, err := re.Add(text, due, "", "", "default")
+		if err != nil {
+			return "", fmt.Errorf("add reminder: %w", err)
+		}
+		return fmt.Sprintf("Reminder set: %s (due=%s)", r.Text, r.DueAt), nil
+
+	case "contact":
+		cs := globalContactsService
+		if app != nil && app.Contacts != nil {
+			cs = app.Contacts
+		}
+		if cs == nil {
+			return "", fmt.Errorf("contacts service not initialized")
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		c := &Contact{ID: newUUID(), Name: text, CreatedAt: now, UpdatedAt: now}
+		if err := cs.AddContact(c); err != nil {
+			return "", fmt.Errorf("add contact: %w", err)
+		}
+		return fmt.Sprintf("Contact added: %s (id=%s)", c.Name, c.ID), nil
+
+	case "note", "idea":
+		if !cfg.Notes.Enabled {
+			return "", fmt.Errorf("notes not enabled in config")
+		}
+		vaultPath := cfg.Notes.VaultPathResolved(cfg.BaseDir)
+		prefix := "note"
+		if category == "idea" {
+			prefix = "idea"
+		}
+		filename := fmt.Sprintf("%s-%s.md", prefix, time.Now().Format("20060102-150405"))
+		notePath := filepath.Join(vaultPath, filename)
+		os.MkdirAll(vaultPath, 0o755)
+		if err := os.WriteFile(notePath, []byte(text+"\n"), 0o644); err != nil {
+			return "", fmt.Errorf("write note: %w", err)
+		}
+		return fmt.Sprintf("Note saved: %s", notePath), nil
+
+	default:
+		return "", fmt.Errorf("unknown capture category: %s", category)
+	}
+}
+
+func toolQuickCapture(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	var args struct {
+		Text     string `json:"text"`
+		Category string `json:"category"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	if args.Text == "" {
+		return "", fmt.Errorf("text is required")
+	}
+
+	category := args.Category
+	if category == "" {
+		category = classifyCapture(args.Text)
+	}
+
+	result, err := executeCapture(ctx, cfg, category, args.Text)
+	if err != nil {
+		return "", err
+	}
+
+	out := map[string]string{
+		"category": category,
+		"result":   result,
+	}
+	b, _ := json.Marshal(out)
 	return string(b), nil
 }
