@@ -1,4 +1,4 @@
-package main
+package httpapi
 
 import (
 	"encoding/json"
@@ -8,28 +8,40 @@ import (
 	"tetora/internal/log"
 )
 
-func (s *Server) registerPushRoutes(mux *http.ServeMux) {
-	cfg := s.cfg
+// PushDeps holds dependencies for push notification HTTP handlers.
+type PushDeps struct {
+	Enabled       bool
+	VAPIDKey      string
+	Subscribe     func(endpoint, p256dh, auth, userAgent string) error
+	Unsubscribe   func(endpoint string) error
+	SendTest      func(title, body, icon string) error
+	ListSubs      func() any
+}
 
+// PairingDeps holds dependencies for pairing HTTP handlers.
+type PairingDeps struct {
+	ListPending  func() any
+	Approve      func(code string) (any, error)
+	Reject       func(code string) error
+	ListApproved func() (any, error)
+	Revoke       func(channel, userID string) error
+}
+
+// RegisterPushRoutes registers push notification and pairing API routes.
+func RegisterPushRoutes(mux *http.ServeMux, push PushDeps, pairing PairingDeps) {
 	// --- Web Push ---
-	var pushManager *PushManager
-	if cfg.Push.Enabled {
-		pushManager = newPushManager(cfg)
-		log.Info("push: web push notifications enabled")
-	}
-
 	mux.HandleFunc("/api/push/vapid-key", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		if pushManager == nil {
+		if !push.Enabled {
 			http.Error(w, `{"error":"push notifications not enabled"}`, http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
-			"publicKey": cfg.Push.VAPIDPublicKey,
+			"publicKey": push.VAPIDKey,
 		})
 	})
 
@@ -38,21 +50,24 @@ func (s *Server) registerPushRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		if pushManager == nil {
+		if !push.Enabled {
 			http.Error(w, `{"error":"push notifications not enabled"}`, http.StatusServiceUnavailable)
 			return
 		}
 
-		var sub PushSubscription
+		var sub struct {
+			Endpoint string `json:"endpoint"`
+			Keys     struct {
+				P256dh string `json:"p256dh"`
+				Auth   string `json:"auth"`
+			} `json:"keys"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&sub); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"invalid json: %v"}`, err), http.StatusBadRequest)
 			return
 		}
 
-		// Set user agent from request.
-		sub.UserAgent = r.Header.Get("User-Agent")
-
-		if err := pushManager.Subscribe(sub); err != nil {
+		if err := push.Subscribe(sub.Endpoint, sub.Keys.P256dh, sub.Keys.Auth, r.Header.Get("User-Agent")); err != nil {
 			log.ErrorCtx(r.Context(), "push subscribe failed", "error", err)
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
@@ -67,7 +82,7 @@ func (s *Server) registerPushRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		if pushManager == nil {
+		if !push.Enabled {
 			http.Error(w, `{"error":"push notifications not enabled"}`, http.StatusServiceUnavailable)
 			return
 		}
@@ -84,7 +99,7 @@ func (s *Server) registerPushRoutes(mux *http.ServeMux) {
 			return
 		}
 
-		if err := pushManager.Unsubscribe(req.Endpoint); err != nil {
+		if err := push.Unsubscribe(req.Endpoint); err != nil {
 			log.ErrorCtx(r.Context(), "push unsubscribe failed", "error", err)
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
@@ -99,22 +114,23 @@ func (s *Server) registerPushRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		if pushManager == nil {
+		if !push.Enabled {
 			http.Error(w, `{"error":"push notifications not enabled"}`, http.StatusServiceUnavailable)
 			return
 		}
 
-		var notif PushNotification
-		if err := json.NewDecoder(r.Body).Decode(&notif); err != nil {
-			// Use default test notification if no body provided.
-			notif = PushNotification{
-				Title: "Tetora Test Notification",
-				Body:  "This is a test push notification from Tetora",
-				Icon:  "/dashboard/icon-192.png",
-			}
+		var notif struct {
+			Title string `json:"title"`
+			Body  string `json:"body"`
+			Icon  string `json:"icon"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&notif); err != nil || notif.Title == "" {
+			notif.Title = "Tetora Test Notification"
+			notif.Body = "This is a test push notification from Tetora"
+			notif.Icon = "/dashboard/icon-192.png"
 		}
 
-		if err := pushManager.SendNotification(notif); err != nil {
+		if err := push.SendTest(notif.Title, notif.Body, notif.Icon); err != nil {
 			log.ErrorCtx(r.Context(), "push test failed", "error", err)
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
@@ -129,34 +145,25 @@ func (s *Server) registerPushRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		if pushManager == nil {
+		if !push.Enabled {
 			http.Error(w, `{"error":"push notifications not enabled"}`, http.StatusServiceUnavailable)
 			return
 		}
 
-		subs := pushManager.ListSubscriptions()
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"subscriptions": subs,
-			"count":         len(subs),
-		})
+		json.NewEncoder(w).Encode(push.ListSubs())
 	})
 
 	// --- Pairing ---
-	pairingManager := newPairingManager(cfg)
-
 	mux.HandleFunc("/api/pairing/pending", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
 			return
 		}
 
-		pending := pairingManager.ListPending()
+		pending := pairing.ListPending()
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"pending": pending,
-			"count":   len(pending),
-		})
+		json.NewEncoder(w).Encode(pending)
 	})
 
 	mux.HandleFunc("/api/pairing/approve", func(w http.ResponseWriter, r *http.Request) {
@@ -177,7 +184,7 @@ func (s *Server) registerPushRoutes(mux *http.ServeMux) {
 			return
 		}
 
-		approved, err := pairingManager.Approve(req.Code)
+		approved, err := pairing.Approve(req.Code)
 		if err != nil {
 			log.ErrorCtx(r.Context(), "pairing approve failed", "code", req.Code, "error", err)
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
@@ -185,11 +192,7 @@ func (s *Server) registerPushRoutes(mux *http.ServeMux) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"status":  "approved",
-			"channel": approved.Channel,
-			"userId":  approved.UserID,
-		})
+		json.NewEncoder(w).Encode(approved)
 	})
 
 	mux.HandleFunc("/api/pairing/reject", func(w http.ResponseWriter, r *http.Request) {
@@ -210,7 +213,7 @@ func (s *Server) registerPushRoutes(mux *http.ServeMux) {
 			return
 		}
 
-		if err := pairingManager.Reject(req.Code); err != nil {
+		if err := pairing.Reject(req.Code); err != nil {
 			log.ErrorCtx(r.Context(), "pairing reject failed", "code", req.Code, "error", err)
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
 			return
@@ -226,7 +229,7 @@ func (s *Server) registerPushRoutes(mux *http.ServeMux) {
 			return
 		}
 
-		approved, err := pairingManager.ListApproved()
+		approved, err := pairing.ListApproved()
 		if err != nil {
 			log.ErrorCtx(r.Context(), "list approved failed", "error", err)
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
@@ -234,10 +237,7 @@ func (s *Server) registerPushRoutes(mux *http.ServeMux) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"approved": approved,
-			"count":    len(approved),
-		})
+		json.NewEncoder(w).Encode(approved)
 	})
 
 	mux.HandleFunc("/api/pairing/revoke", func(w http.ResponseWriter, r *http.Request) {
@@ -259,7 +259,7 @@ func (s *Server) registerPushRoutes(mux *http.ServeMux) {
 			return
 		}
 
-		if err := pairingManager.Revoke(req.Channel, req.UserID); err != nil {
+		if err := pairing.Revoke(req.Channel, req.UserID); err != nil {
 			log.ErrorCtx(r.Context(), "pairing revoke failed", "channel", req.Channel, "userId", req.UserID, "error", err)
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return

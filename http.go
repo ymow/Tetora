@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -490,15 +493,67 @@ func startHTTPServer(s *Server) *http.Server {
 	s.registerWebhookRoutes(mux)
 	s.registerHealthRoutes(mux)
 	s.registerDispatchRoutes(mux)
-	s.registerCronRoutes(mux)
+	httpapi.RegisterCronRoutes(mux, httpapi.CronDeps{
+		Available:    s.cron != nil,
+		ListJobs:     func() any { return s.cron.ListJobs() },
+		AddJob: func(raw json.RawMessage) error {
+			var jc CronJobConfig
+			if err := json.Unmarshal(raw, &jc); err != nil {
+				return err
+			}
+			if jc.ID == "" || jc.Schedule == "" {
+				return fmt.Errorf("id and schedule are required")
+			}
+			return s.cron.AddJob(jc)
+		},
+		GetJobConfig: func(id string) any { return s.cron.GetJobConfig(id) },
+		UpdateJob: func(id string, raw json.RawMessage) error {
+			var jc CronJobConfig
+			if err := json.Unmarshal(raw, &jc); err != nil {
+				return err
+			}
+			if jc.Schedule == "" {
+				return fmt.Errorf("schedule is required")
+			}
+			return s.cron.UpdateJob(id, jc)
+		},
+		RemoveJob:  func(id string) error { return s.cron.RemoveJob(id) },
+		ToggleJob:  func(id string, enabled bool) error { return s.cron.ToggleJob(id, enabled) },
+		ApproveJob: func(id string) error { return s.cron.ApproveJob(id) },
+		RejectJob:  func(id string) error { return s.cron.RejectJob(id) },
+		RunJob:     func(ctx context.Context, id string) error { return s.cron.RunJobByID(ctx, id) },
+		HistoryDB:  func() string { return s.Cfg().HistoryDB },
+	})
 	httpapi.RegisterHistoryRoutes(mux, func() string { return s.Cfg().HistoryDB })
 	s.registerStatsRoutes(mux)
 	s.registerAgentRoutes(mux)
 	s.registerMemoryRoutes(mux)
 	s.registerSessionRoutes(mux)
 	s.registerToolRoutes(mux)
-	s.registerVoiceRoutes(mux)
-	s.registerCanvasRoutes(mux)
+	httpapi.RegisterVoiceRoutes(mux, httpapi.VoiceDeps{
+		STTEnabled:       s.voiceEngine != nil && s.voiceEngine.stt != nil,
+		TTSEnabled:       s.voiceEngine != nil && s.voiceEngine.tts != nil,
+		WakeEnabled:      cfg.Voice.Wake.Enabled,
+		RealtimeEnabled:  cfg.Voice.Realtime.Enabled,
+		DefaultTTSFormat: cfg.Voice.TTS.Format,
+		Transcribe: func(ctx context.Context, audio io.Reader, opts httpapi.VoiceTranscribeOpts) (any, error) {
+			return s.voiceEngine.Transcribe(ctx, audio, STTOptions{Language: opts.Language, Format: opts.Format})
+		},
+		Synthesize: func(ctx context.Context, text string, opts httpapi.VoiceSynthesizeOpts) (io.ReadCloser, error) {
+			return s.voiceEngine.Synthesize(ctx, text, TTSOptions{Voice: opts.Voice, Speed: opts.Speed, Format: opts.Format})
+		},
+		HandleWakeWS:     func(w http.ResponseWriter, r *http.Request) { s.voiceRealtimeEngine.handleWakeWebSocket(w, r) },
+		HandleRealtimeWS: func(w http.ResponseWriter, r *http.Request) { s.voiceRealtimeEngine.handleRealtimeWebSocket(w, r) },
+	})
+	httpapi.RegisterCanvasRoutes(mux, httpapi.CanvasDeps{
+		ListSessions: func() (any, int) {
+			sessions := s.canvasEngine.listCanvasSessions()
+			return sessions, len(sessions)
+		},
+		GetSession:   func(id string) (any, error) { return s.canvasEngine.getCanvas(id) },
+		SendMessage:  s.canvasEngine.handleCanvasMessage,
+		CloseSession: s.canvasEngine.closeCanvas,
+	})
 	s.registerWorkflowRoutes(mux)
 	s.registerAgentCfgRoutes(mux)
 	httpapi.RegisterKnowledgeRoutes(mux, httpapi.KnowledgeDeps{
@@ -535,7 +590,51 @@ func startHTTPServer(s *Server) *http.Server {
 			return out, nil
 		},
 	})
-	s.registerPushRoutes(mux)
+	var pushManager *PushManager
+	if cfg.Push.Enabled {
+		pushManager = newPushManager(cfg)
+	}
+	pairingManager := newPairingManager(cfg)
+	httpapi.RegisterPushRoutes(mux, httpapi.PushDeps{
+		Enabled:  cfg.Push.Enabled && pushManager != nil,
+		VAPIDKey: cfg.Push.VAPIDPublicKey,
+		Subscribe: func(endpoint, p256dh, auth, userAgent string) error {
+			return pushManager.Subscribe(PushSubscription{
+				Endpoint:  endpoint,
+				Keys:      PushKeys{P256dh: p256dh, Auth: auth},
+				UserAgent: userAgent,
+			})
+		},
+		Unsubscribe: func(endpoint string) error { return pushManager.Unsubscribe(endpoint) },
+		SendTest: func(title, body, icon string) error {
+			return pushManager.SendNotification(PushNotification{Title: title, Body: body, Icon: icon})
+		},
+		ListSubs: func() any {
+			subs := pushManager.ListSubscriptions()
+			return map[string]any{"subscriptions": subs, "count": len(subs)}
+		},
+	}, httpapi.PairingDeps{
+		ListPending: func() any {
+			pending := pairingManager.ListPending()
+			return map[string]any{"pending": pending, "count": len(pending)}
+		},
+		Approve: func(code string) (any, error) {
+			approved, err := pairingManager.Approve(code)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"status": "approved", "channel": approved.Channel, "userId": approved.UserID}, nil
+		},
+		Reject:       func(code string) error { return pairingManager.Reject(code) },
+		ListApproved: func() (any, error) {
+			approved, err := pairingManager.ListApproved()
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"approved": approved, "count": len(approved)}, nil
+		},
+		Revoke: func(channel, userID string) error { return pairingManager.Revoke(channel, userID) },
+	})
 	httpapi.RegisterReminderRoutes(mux, httpapi.ReminderDeps{
 		Engine:        s.app.Reminder,
 		ParseTime:     parseNaturalTime,
@@ -547,7 +646,24 @@ func startHTTPServer(s *Server) *http.Server {
 	httpapi.RegisterHabitsRoutes(mux, s.app.Habits)
 	s.registerProjectRoutes(mux)
 	s.registerWSEventsRoutes(mux)
-	s.registerDiscordRoutes(mux)
+	httpapi.RegisterDiscordRoutes(mux, httpapi.DiscordDeps{
+		GetNotifications: func() []httpapi.NotifChannel {
+			channels := s.Cfg().Notifications
+			out := make([]httpapi.NotifChannel, 0, len(channels))
+			for _, ch := range channels {
+				if ch.Type == "discord" {
+					out = append(out, httpapi.NotifChannel{
+						Name: ch.Name, Type: ch.Type, WebhookURL: ch.WebhookURL, Events: ch.Events,
+					})
+				}
+			}
+			return out
+		},
+		FindConfigPath:    findConfigPath,
+		ChannelSessionKey: channelSessionKey,
+		FindSession:       func(dbPath, chKey string) (any, error) { return findChannelSession(dbPath, chKey) },
+		HistoryDB:         func() string { return s.Cfg().HistoryDB },
+	})
 	s.registerWorkersRoutes(mux)
 	s.registerHookRoutes(mux)
 	s.registerPlanReviewRoutes(mux)

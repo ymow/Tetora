@@ -1,4 +1,4 @@
-package main
+package httpapi
 
 import (
 	"encoding/json"
@@ -8,24 +8,35 @@ import (
 	"strings"
 )
 
-// registerDiscordRoutes registers Discord webhook channel management API endpoints.
-//
-//	GET  /api/discord/channels           - list all Discord notification channels
-//	POST /api/discord/channels           - add a new Discord notification channel
-//	DELETE /api/discord/channels/:name   - remove a Discord notification channel
-//	POST /api/discord/channels/:name/test - send a test message to a channel
-func (s *Server) registerDiscordRoutes(mux *http.ServeMux) {
-	// Collection endpoint: list + create.
+// NotifChannel matches config.NotificationChannel for discord operations.
+type NotifChannel struct {
+	Name       string   `json:"name,omitempty"`
+	Type       string   `json:"type"`
+	WebhookURL string   `json:"webhookUrl"`
+	Events     []string `json:"events,omitempty"`
+}
+
+// DiscordDeps holds dependencies for Discord HTTP handlers.
+type DiscordDeps struct {
+	GetConfig         func() any // returns *Config or similar
+	GetNotifications  func() []NotifChannel
+	FindConfigPath    func() string
+	ChannelSessionKey func(source string, parts ...string) string
+	FindSession       func(dbPath, chKey string) (any, error)
+	HistoryDB         func() string
+}
+
+// RegisterDiscordRoutes registers Discord webhook channel management API endpoints.
+func RegisterDiscordRoutes(mux *http.ServeMux, d DiscordDeps) {
 	mux.HandleFunc("/api/discord/channels", func(w http.ResponseWriter, r *http.Request) {
-		cfg := s.Cfg()
 		w.Header().Set("Content-Type", "application/json")
 
 		switch r.Method {
 		case http.MethodGet:
-			channels := discordGetWebhookChannels(cfg)
+			channels := d.GetNotifications()
 			type channelInfo struct {
 				Name       string   `json:"name"`
-				WebhookURL string   `json:"webhookUrl"` // preview only (first 60 chars + "…")
+				WebhookURL string   `json:"webhookUrl"`
 				Events     []string `json:"events"`
 			}
 			result := make([]channelInfo, 0, len(channels))
@@ -57,8 +68,7 @@ func (s *Server) registerDiscordRoutes(mux *http.ServeMux) {
 				return
 			}
 
-			// Validate.
-			if !discordValidChannelName(body.Name) {
+			if !ValidChannelName(body.Name) {
 				http.Error(w, `{"error":"invalid channel name"}`, http.StatusBadRequest)
 				return
 			}
@@ -68,8 +78,7 @@ func (s *Server) registerDiscordRoutes(mux *http.ServeMux) {
 				return
 			}
 
-			// Duplicate check.
-			existing := discordGetWebhookChannels(cfg)
+			existing := d.GetNotifications()
 			for _, ch := range existing {
 				if ch.Name == body.Name {
 					http.Error(w, `{"error":"channel already exists"}`, http.StatusConflict)
@@ -81,15 +90,15 @@ func (s *Server) registerDiscordRoutes(mux *http.ServeMux) {
 				body.Events = []string{"all"}
 			}
 
-			newCh := NotificationChannel{
+			newCh := NotifChannel{
 				Name:       body.Name,
 				Type:       "discord",
 				WebhookURL: body.WebhookURL,
 				Events:     body.Events,
 			}
 
-			configPath := findConfigPath()
-			if err := discordUpdateNotificationsConfig(configPath, body.Name, &newCh); err != nil {
+			configPath := d.FindConfigPath()
+			if err := UpdateNotificationsConfig(configPath, body.Name, &newCh); err != nil {
 				http.Error(w, `{"error":"failed to save config"}`, http.StatusInternalServerError)
 				return
 			}
@@ -101,13 +110,11 @@ func (s *Server) registerDiscordRoutes(mux *http.ServeMux) {
 		}
 	})
 
-	// GET /api/discord/session?channel=<channel_id> — resolve Discord channel to session.
 	mux.HandleFunc("/api/discord/session", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		cfg := s.Cfg()
 		w.Header().Set("Content-Type", "application/json")
 
 		channelID := r.URL.Query().Get("channel")
@@ -115,13 +122,14 @@ func (s *Server) registerDiscordRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"channel query parameter required"}`, http.StatusBadRequest)
 			return
 		}
-		if cfg.HistoryDB == "" {
+		dbPath := d.HistoryDB()
+		if dbPath == "" {
 			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
 
-		chKey := channelSessionKey("discord", channelID)
-		sess, err := findChannelSession(cfg.HistoryDB, chKey)
+		chKey := d.ChannelSessionKey("discord", channelID)
+		sess, err := d.FindSession(dbPath, chKey)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
@@ -133,16 +141,12 @@ func (s *Server) registerDiscordRoutes(mux *http.ServeMux) {
 		json.NewEncoder(w).Encode(sess)
 	})
 
-	// Item endpoint: delete + test — match /api/discord/channels/{name} and /api/discord/channels/{name}/test
 	mux.HandleFunc("/api/discord/channels/", func(w http.ResponseWriter, r *http.Request) {
-		cfg := s.Cfg()
 		w.Header().Set("Content-Type", "application/json")
 
-		// Parse the path after /api/discord/channels/
 		rest := strings.TrimPrefix(r.URL.Path, "/api/discord/channels/")
 		rest = strings.Trim(rest, "/")
 
-		// Distinguish /{name}/test from /{name}
 		isTest := strings.HasSuffix(rest, "/test")
 		name := rest
 		if isTest {
@@ -154,9 +158,8 @@ func (s *Server) registerDiscordRoutes(mux *http.ServeMux) {
 			return
 		}
 
-		// Verify channel exists.
-		channels := discordGetWebhookChannels(cfg)
-		var found *NotificationChannel
+		channels := d.GetNotifications()
+		var found *NotifChannel
 		for i := range channels {
 			if channels[i].Name == name {
 				found = &channels[i]
@@ -169,12 +172,11 @@ func (s *Server) registerDiscordRoutes(mux *http.ServeMux) {
 		}
 
 		if isTest {
-			// POST /api/discord/channels/:name/test
 			if r.Method != http.MethodPost {
 				http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
 				return
 			}
-			if err := discordSendTestWebhook(found.WebhookURL, name); err != nil {
+			if err := SendTestWebhook(found.WebhookURL, name); err != nil {
 				http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
 				return
 			}
@@ -182,13 +184,12 @@ func (s *Server) registerDiscordRoutes(mux *http.ServeMux) {
 			return
 		}
 
-		// DELETE /api/discord/channels/:name
 		if r.Method != http.MethodDelete {
 			http.Error(w, `{"error":"DELETE only"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		configPath := findConfigPath()
-		if err := discordUpdateNotificationsConfig(configPath, name, nil); err != nil {
+		configPath := d.FindConfigPath()
+		if err := UpdateNotificationsConfig(configPath, name, nil); err != nil {
 			http.Error(w, `{"error":"failed to update config"}`, http.StatusInternalServerError)
 			return
 		}
@@ -196,19 +197,8 @@ func (s *Server) registerDiscordRoutes(mux *http.ServeMux) {
 	})
 }
 
-// discordGetWebhookChannels returns Discord notification channels from config.
-func discordGetWebhookChannels(cfg *Config) []NotificationChannel {
-	var out []NotificationChannel
-	for _, ch := range cfg.Notifications {
-		if ch.Type == "discord" {
-			out = append(out, ch)
-		}
-	}
-	return out
-}
-
-// discordValidChannelName validates a Discord notification channel name.
-func discordValidChannelName(name string) bool {
+// ValidChannelName validates a Discord notification channel name.
+func ValidChannelName(name string) bool {
 	if name == "" || len(name) > 64 {
 		return false
 	}
@@ -220,8 +210,9 @@ func discordValidChannelName(name string) bool {
 	return true
 }
 
-// discordUpdateNotificationsConfig adds or updates a Discord notification channel in config.
-func discordUpdateNotificationsConfig(configPath, name string, ch *NotificationChannel) error {
+// UpdateNotificationsConfig adds, updates, or removes a notification channel in config.
+// Pass ch=nil to remove.
+func UpdateNotificationsConfig(configPath, name string, ch *NotifChannel) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
@@ -231,7 +222,7 @@ func discordUpdateNotificationsConfig(configPath, name string, ch *NotificationC
 		return err
 	}
 
-	var channels []NotificationChannel
+	var channels []NotifChannel
 	if notifRaw, ok := raw["notifications"]; ok {
 		_ = json.Unmarshal(notifRaw, &channels)
 	}
@@ -267,8 +258,8 @@ func discordUpdateNotificationsConfig(configPath, name string, ch *NotificationC
 	return os.WriteFile(configPath, append(out, '\n'), 0o644)
 }
 
-// discordSendTestWebhook sends a test message to a Discord webhook URL.
-func discordSendTestWebhook(webhookURL, channelName string) error {
+// SendTestWebhook sends a test message to a Discord webhook URL.
+func SendTestWebhook(webhookURL, channelName string) error {
 	payload := fmt.Sprintf(`{"content":"🔔 Test notification from Tetora — channel: %s"}`, channelName)
 	resp, err := http.Post(webhookURL, "application/json", strings.NewReader(payload))
 	if err != nil {

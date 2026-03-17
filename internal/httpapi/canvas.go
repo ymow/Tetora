@@ -1,4 +1,4 @@
-package main
+package httpapi
 
 import (
 	"encoding/json"
@@ -6,18 +6,26 @@ import (
 	"net/http"
 )
 
-func (s *Server) registerCanvasRoutes(mux *http.ServeMux) {
-	// --- Canvas Engine ---
+// CanvasDeps holds dependencies for canvas HTTP handlers.
+type CanvasDeps struct {
+	ListSessions func() (sessions any, count int)
+	GetSession   func(id string) (any, error)
+	SendMessage  func(sessionID string, msg json.RawMessage) error
+	CloseSession func(id string) error
+}
+
+// RegisterCanvasRoutes registers canvas API routes.
+func RegisterCanvasRoutes(mux *http.ServeMux, d CanvasDeps) {
 	mux.HandleFunc("/api/canvas/list", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		sessions := s.canvasEngine.listCanvasSessions()
+		sessions, count := d.ListSessions()
 		json.NewEncoder(w).Encode(map[string]any{
 			"sessions": sessions,
-			"count":    len(sessions),
+			"count":    count,
 		})
 	})
 
@@ -31,7 +39,7 @@ func (s *Server) registerCanvasRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"id parameter required"}`, http.StatusBadRequest)
 			return
 		}
-		session, err := s.canvasEngine.getCanvas(id)
+		session, err := d.GetSession(id)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusNotFound)
 			return
@@ -45,7 +53,10 @@ func (s *Server) registerCanvasRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		var msg CanvasMessage
+		var msg struct {
+			SessionID string          `json:"sessionId"`
+			Message   json.RawMessage `json:"message"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"invalid json: %v"}`, err), http.StatusBadRequest)
 			return
@@ -54,7 +65,7 @@ func (s *Server) registerCanvasRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"sessionId required"}`, http.StatusBadRequest)
 			return
 		}
-		if err := s.canvasEngine.handleCanvasMessage(msg.SessionID, msg.Message); err != nil {
+		if err := d.SendMessage(msg.SessionID, msg.Message); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
 			return
 		}
@@ -74,7 +85,7 @@ func (s *Server) registerCanvasRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"id parameter required"}`, http.StatusBadRequest)
 			return
 		}
-		if err := s.canvasEngine.closeCanvas(id); err != nil {
+		if err := d.CloseSession(id); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusNotFound)
 			return
 		}
