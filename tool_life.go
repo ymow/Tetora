@@ -1,13 +1,28 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+
+	"tetora/internal/log"
+	"tetora/internal/nlp"
+	"tetora/internal/tool"
+)
+
+// Global singletons for life services.
+var (
+	globalContactsService *ContactsService
+	globalFinanceService  *FinanceService
+	globalGoalsService    *GoalsService
+	globalHabitsService   *HabitsService
+	globalTimeTracking    *TimeTrackingService
+	globalFamilyService      *FamilyService
+	globalUserProfileService *UserProfileService
 )
 
 // registerLifeTools registers life management tools (tasks, expenses, contacts,
 // habits, goals, briefing, insights, scheduling, lifecycle, quick capture, time tracking).
-// Note: the tool handler functions are defined in their own files
-// (goals.go, contacts.go, habits.go, etc.), not here.
 func registerLifeTools(r *ToolRegistry, cfg *Config, enabled func(string) bool) {
 	// --- P23.2: Task Management Tools ---
 	if enabled("task_create") && cfg.TaskManager.Enabled {
@@ -800,4 +815,601 @@ func registerLifeTools(r *ToolRegistry, cfg *Config, enabled func(string) bool) 
 			Builtin: true,
 		})
 	}
+}
+
+// --- Contacts Tool Handlers ---
+
+func toolContactAdd(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Contacts == nil {
+		return "", fmt.Errorf("contacts service not initialized")
+	}
+	return tool.ContactAdd(app.Contacts, newUUID, input)
+}
+
+func toolContactSearch(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Contacts == nil {
+		return "", fmt.Errorf("contacts service not initialized")
+	}
+	return tool.ContactSearch(app.Contacts, input)
+}
+
+func toolContactList(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Contacts == nil {
+		return "", fmt.Errorf("contacts service not initialized")
+	}
+	return tool.ContactList(app.Contacts, input)
+}
+
+func toolContactUpcoming(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Contacts == nil {
+		return "", fmt.Errorf("contacts service not initialized")
+	}
+	return tool.ContactUpcoming(app.Contacts, input)
+}
+
+func toolContactLog(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Contacts == nil {
+		return "", fmt.Errorf("contacts service not initialized")
+	}
+	return tool.ContactLog(app.Contacts, newUUID, input)
+}
+
+// --- Finance Tool Handlers ---
+
+func toolExpenseAdd(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Finance == nil {
+		return "", fmt.Errorf("finance service not initialized (enable finance in config)")
+	}
+	return tool.ExpenseAdd(app.Finance, parseExpenseNL, cfg.Finance.DefaultCurrencyOrTWD(), input)
+}
+
+func toolExpenseReport(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Finance == nil {
+		return "", fmt.Errorf("finance service not initialized (enable finance in config)")
+	}
+	return tool.ExpenseReport(app.Finance, input)
+}
+
+func toolExpenseBudget(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Finance == nil {
+		return "", fmt.Errorf("finance service not initialized (enable finance in config)")
+	}
+	return tool.ExpenseBudget(app.Finance, cfg.Finance.DefaultCurrencyOrTWD(), input)
+}
+
+// --- Goals Tool Handlers ---
+
+func toolGoalCreate(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Goals == nil {
+		return "", fmt.Errorf("goals service not initialized")
+	}
+	return tool.GoalCreate(app.Goals, newUUID, app.Lifecycle, cfg.Lifecycle.AutoHabitSuggest, input)
+}
+
+func toolGoalList(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Goals == nil {
+		return "", fmt.Errorf("goals service not initialized")
+	}
+	return tool.GoalList(app.Goals, input)
+}
+
+func toolGoalUpdate(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Goals == nil {
+		return "", fmt.Errorf("goals service not initialized")
+	}
+	return tool.GoalUpdate(app.Goals, newUUID, app.Lifecycle, log.Warn, input)
+}
+
+func toolGoalReview(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Goals == nil {
+		return "", fmt.Errorf("goals service not initialized")
+	}
+	return tool.GoalReview(app.Goals, input)
+}
+
+// --- Habits Tool Handlers ---
+
+func toolHabitCreate(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Habits == nil {
+		return "", fmt.Errorf("habits service not initialized")
+	}
+	return tool.HabitCreate(app.Habits, newUUID, input)
+}
+
+func toolHabitLog(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Habits == nil {
+		return "", fmt.Errorf("habits service not initialized")
+	}
+	return tool.HabitLog(app.Habits, newUUID, input)
+}
+
+func toolHabitStatus(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Habits == nil {
+		return "", fmt.Errorf("habits service not initialized")
+	}
+	return tool.HabitStatus(app.Habits, log.Warn, input)
+}
+
+func toolHabitReport(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Habits == nil {
+		return "", fmt.Errorf("habits service not initialized")
+	}
+	return tool.HabitReport(app.Habits, input)
+}
+
+func toolHealthLog(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Habits == nil {
+		return "", fmt.Errorf("habits service not initialized")
+	}
+	return tool.HealthLog(app.Habits, newUUID, input)
+}
+
+func toolHealthSummary(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Habits == nil {
+		return "", fmt.Errorf("habits service not initialized")
+	}
+	return tool.HealthSummary(app.Habits, input)
+}
+
+// --- Time Tracking Tool Handlers ---
+
+func toolTimeStart(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.TimeTracking == nil {
+		return "", fmt.Errorf("time tracking not initialized")
+	}
+	return tool.TimeStart(app.TimeTracking, newUUID, input)
+}
+
+func toolTimeStop(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.TimeTracking == nil {
+		return "", fmt.Errorf("time tracking not initialized")
+	}
+	return tool.TimeStop(app.TimeTracking, input)
+}
+
+func toolTimeLog(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.TimeTracking == nil {
+		return "", fmt.Errorf("time tracking not initialized")
+	}
+	return tool.TimeLog(app.TimeTracking, newUUID, input)
+}
+
+func toolTimeReport(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.TimeTracking == nil {
+		return "", fmt.Errorf("time tracking not initialized")
+	}
+	return tool.TimeReport(app.TimeTracking, input)
+}
+
+// --- Family Tool Handlers ---
+
+func toolFamilyListAdd(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Family == nil {
+		return "", fmt.Errorf("family mode not enabled")
+	}
+
+	var args struct {
+		ListID   string `json:"listId"`
+		Text     string `json:"text"`
+		Quantity string `json:"quantity"`
+		AddedBy  string `json:"addedBy"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	if args.Text == "" {
+		return "", fmt.Errorf("text is required")
+	}
+	if args.AddedBy == "" {
+		args.AddedBy = "default"
+	}
+
+	// If listId not provided, use the first shopping list or create one.
+	if args.ListID == "" {
+		lists, err := app.Family.ListLists()
+		if err != nil {
+			return "", err
+		}
+		for _, l := range lists {
+			if l.ListType == "shopping" {
+				args.ListID = l.ID
+				break
+			}
+		}
+		if args.ListID == "" {
+			list, err := app.Family.CreateList("Shopping", "shopping", args.AddedBy, newUUID)
+			if err != nil {
+				return "", fmt.Errorf("create default shopping list: %w", err)
+			}
+			args.ListID = list.ID
+		}
+	}
+
+	item, err := app.Family.AddListItem(args.ListID, args.Text, args.Quantity, args.AddedBy)
+	if err != nil {
+		return "", err
+	}
+
+	b, _ := json.Marshal(map[string]any{
+		"status": "added",
+		"item":   item,
+	})
+	return string(b), nil
+}
+
+func toolFamilyListView(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Family == nil {
+		return "", fmt.Errorf("family mode not enabled")
+	}
+
+	var args struct {
+		ListID   string `json:"listId"`
+		ListType string `json:"listType"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+
+	if args.ListID != "" {
+		items, err := app.Family.GetListItems(args.ListID)
+		if err != nil {
+			return "", err
+		}
+		list, _ := app.Family.GetList(args.ListID)
+		result := map[string]any{
+			"items": items,
+		}
+		if list != nil {
+			result["list"] = list
+		}
+		b, _ := json.Marshal(result)
+		return string(b), nil
+	}
+
+	lists, err := app.Family.ListLists()
+	if err != nil {
+		return "", err
+	}
+	if args.ListType != "" {
+		var filtered []SharedList
+		for _, l := range lists {
+			if l.ListType == args.ListType {
+				filtered = append(filtered, l)
+			}
+		}
+		lists = filtered
+	}
+
+	b, _ := json.Marshal(map[string]any{"lists": lists})
+	return string(b), nil
+}
+
+func toolUserSwitch(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Family == nil {
+		return "", fmt.Errorf("family mode not enabled")
+	}
+
+	var args struct {
+		UserID string `json:"userId"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	if args.UserID == "" {
+		return "", fmt.Errorf("userId is required")
+	}
+
+	user, err := app.Family.GetUser(args.UserID)
+	if err != nil {
+		return "", fmt.Errorf("user not found or inactive: %w", err)
+	}
+
+	allowed, remaining, _ := app.Family.CheckRateLimit(args.UserID)
+	perms, _ := app.Family.GetPermissions(args.UserID)
+
+	b, _ := json.Marshal(map[string]any{
+		"status":      "switched",
+		"user":        user,
+		"permissions": perms,
+		"rateLimit": map[string]any{
+			"allowed":   allowed,
+			"remaining": remaining,
+		},
+	})
+	return string(b), nil
+}
+
+func toolFamilyManage(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	if app == nil || app.Family == nil {
+		return "", fmt.Errorf("family mode not enabled")
+	}
+
+	var args struct {
+		Action      string  `json:"action"`
+		UserID      string  `json:"userId"`
+		DisplayName string  `json:"displayName"`
+		Role        string  `json:"role"`
+		Permission  string  `json:"permission"`
+		Grant       bool    `json:"grant"`
+		RateLimit   int     `json:"rateLimit"`
+		Budget      float64 `json:"budget"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+
+	switch args.Action {
+	case "add":
+		if args.Role == "" {
+			args.Role = "member"
+		}
+		if err := app.Family.AddUser(args.UserID, args.DisplayName, args.Role); err != nil {
+			return "", err
+		}
+		user, _ := app.Family.GetUser(args.UserID)
+		b, _ := json.Marshal(map[string]any{"status": "added", "user": user})
+		return string(b), nil
+
+	case "remove":
+		if err := app.Family.RemoveUser(args.UserID); err != nil {
+			return "", err
+		}
+		b, _ := json.Marshal(map[string]any{"status": "removed", "userId": args.UserID})
+		return string(b), nil
+
+	case "list":
+		users, err := app.Family.ListUsers()
+		if err != nil {
+			return "", err
+		}
+		b, _ := json.Marshal(map[string]any{"users": users})
+		return string(b), nil
+
+	case "update":
+		updates := make(map[string]any)
+		if args.DisplayName != "" {
+			updates["displayName"] = args.DisplayName
+		}
+		if args.Role != "" {
+			updates["role"] = args.Role
+		}
+		if args.RateLimit > 0 {
+			updates["rateLimitDaily"] = float64(args.RateLimit)
+		}
+		if args.Budget > 0 {
+			updates["budgetMonthly"] = args.Budget
+		}
+		if err := app.Family.UpdateUser(args.UserID, updates); err != nil {
+			return "", err
+		}
+		user, _ := app.Family.GetUser(args.UserID)
+		b, _ := json.Marshal(map[string]any{"status": "updated", "user": user})
+		return string(b), nil
+
+	case "permissions":
+		if args.Permission != "" {
+			if args.Grant {
+				if err := app.Family.GrantPermission(args.UserID, args.Permission); err != nil {
+					return "", err
+				}
+			} else {
+				if err := app.Family.RevokePermission(args.UserID, args.Permission); err != nil {
+					return "", err
+				}
+			}
+		}
+		perms, err := app.Family.GetPermissions(args.UserID)
+		if err != nil {
+			return "", err
+		}
+		b, _ := json.Marshal(map[string]any{"userId": args.UserID, "permissions": perms})
+		return string(b), nil
+
+	default:
+		return "", fmt.Errorf("unknown action: %s (use add, remove, list, update, or permissions)", args.Action)
+	}
+}
+
+// --- Price Watch Tool Handler ---
+
+func toolPriceWatch(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	app := appFromCtx(ctx)
+	fs := globalFinanceService
+	if app != nil && app.Finance != nil {
+		fs = app.Finance
+	}
+	if fs == nil {
+		return "", fmt.Errorf("finance service not initialized (enable finance in config)")
+	}
+
+	engineCfg := cfg
+	if engineCfg.HistoryDB == "" {
+		engineCfg = &Config{HistoryDB: fs.DBPath()}
+	}
+	engine := newPriceWatchEngine(engineCfg)
+
+	return tool.PriceWatch(engine, input)
+}
+
+// --- User Profile Tool Handlers ---
+
+func toolUserProfileGet(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	var args struct {
+		UserID     string `json:"userId"`
+		ChannelKey string `json:"channelKey"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+
+	app := appFromCtx(ctx)
+	if app == nil || app.UserProfile == nil {
+		return "", fmt.Errorf("user profile service not initialized")
+	}
+
+	if args.UserID == "" && args.ChannelKey != "" {
+		uid, err := app.UserProfile.ResolveUser(args.ChannelKey)
+		if err != nil {
+			return "", fmt.Errorf("resolve user: %w", err)
+		}
+		args.UserID = uid
+	}
+	if args.UserID == "" {
+		return "", fmt.Errorf("userId or channelKey is required")
+	}
+
+	userCtx, err := app.UserProfile.GetUserContext(args.ChannelKey)
+	if err != nil {
+		profile, err2 := app.UserProfile.GetProfile(args.UserID)
+		if err2 != nil {
+			return "", fmt.Errorf("get profile: %w", err2)
+		}
+		if profile == nil {
+			return "", fmt.Errorf("user not found")
+		}
+		b, _ := json.Marshal(profile)
+		return string(b), nil
+	}
+
+	b, _ := json.Marshal(userCtx)
+	return string(b), nil
+}
+
+func toolUserProfileSet(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	var args struct {
+		UserID      string `json:"userId"`
+		DisplayName string `json:"displayName"`
+		Language    string `json:"language"`
+		Timezone    string `json:"timezone"`
+		ChannelKey  string `json:"channelKey"`
+		ChannelName string `json:"channelName"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	if args.UserID == "" {
+		return "", fmt.Errorf("userId is required")
+	}
+
+	app := appFromCtx(ctx)
+	if app == nil || app.UserProfile == nil {
+		return "", fmt.Errorf("user profile service not initialized")
+	}
+
+	p, _ := app.UserProfile.GetProfile(args.UserID)
+	if p == nil {
+		err := app.UserProfile.CreateProfile(UserProfile{ID: args.UserID})
+		if err != nil {
+			return "", fmt.Errorf("create profile: %w", err)
+		}
+	}
+
+	updates := make(map[string]string)
+	if args.DisplayName != "" {
+		updates["displayName"] = args.DisplayName
+	}
+	if args.Language != "" {
+		updates["preferredLanguage"] = args.Language
+	}
+	if args.Timezone != "" {
+		updates["timezone"] = args.Timezone
+	}
+	if len(updates) > 0 {
+		if err := app.UserProfile.UpdateProfile(args.UserID, updates); err != nil {
+			return "", fmt.Errorf("update profile: %w", err)
+		}
+	}
+
+	if args.ChannelKey != "" {
+		if err := app.UserProfile.LinkChannel(args.UserID, args.ChannelKey, args.ChannelName); err != nil {
+			return "", fmt.Errorf("link channel: %w", err)
+		}
+	}
+
+	return fmt.Sprintf(`{"status":"ok","userId":"%s"}`, args.UserID), nil
+}
+
+func toolMoodCheck(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	var args struct {
+		UserID     string `json:"userId"`
+		ChannelKey string `json:"channelKey"`
+		Days       int    `json:"days"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+
+	app := appFromCtx(ctx)
+	if app == nil || app.UserProfile == nil {
+		return "", fmt.Errorf("user profile service not initialized")
+	}
+
+	if args.UserID == "" && args.ChannelKey != "" {
+		uid, err := app.UserProfile.ResolveUser(args.ChannelKey)
+		if err != nil {
+			return "", fmt.Errorf("resolve user: %w", err)
+		}
+		args.UserID = uid
+	}
+	if args.UserID == "" {
+		return "", fmt.Errorf("userId or channelKey is required")
+	}
+
+	if args.Days <= 0 {
+		args.Days = 7
+	}
+
+	mood, err := app.UserProfile.GetMoodTrend(args.UserID, args.Days)
+	if err != nil {
+		return "", fmt.Errorf("get mood: %w", err)
+	}
+
+	var totalScore float64
+	for _, m := range mood {
+		if s, ok := m["sentimentScore"].(float64); ok {
+			totalScore += s
+		}
+	}
+	avg := 0.0
+	if len(mood) > 0 {
+		avg = totalScore / float64(len(mood))
+	}
+
+	result := map[string]any{
+		"userId":       args.UserID,
+		"days":         args.Days,
+		"entries":      len(mood),
+		"averageScore": avg,
+		"label":        nlp.Label(avg),
+		"trend":        mood,
+	}
+
+	b, _ := json.Marshal(result)
+	return string(b), nil
 }
