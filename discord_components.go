@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"tetora/internal/audit"
 	"tetora/internal/log"
 	"tetora/internal/trace"
 )
@@ -636,7 +637,7 @@ func handleBuiltinComponent(ctx context.Context, db *DiscordBot, data discordInt
 	if strings.HasPrefix(customID, "approve:") {
 		taskID := strings.TrimPrefix(customID, "approve:")
 		log.InfoCtx(ctx, "discord component: task approved", "taskID", taskID, "userID", userID)
-		auditLog(db.cfg.HistoryDB, "discord.component.approve", "discord",
+		audit.Log(db.cfg.HistoryDB, "discord.component.approve", "discord",
 			fmt.Sprintf("task=%s user=%s", taskID, userID), "")
 		return discordInteractionResponse{
 			Type: interactionResponseUpdateMessage,
@@ -649,7 +650,7 @@ func handleBuiltinComponent(ctx context.Context, db *DiscordBot, data discordInt
 	if strings.HasPrefix(customID, "reject:") {
 		taskID := strings.TrimPrefix(customID, "reject:")
 		log.InfoCtx(ctx, "discord component: task rejected", "taskID", taskID, "userID", userID)
-		auditLog(db.cfg.HistoryDB, "discord.component.reject", "discord",
+		audit.Log(db.cfg.HistoryDB, "discord.component.reject", "discord",
 			fmt.Sprintf("task=%s user=%s", taskID, userID), "")
 		return discordInteractionResponse{
 			Type: interactionResponseUpdateMessage,

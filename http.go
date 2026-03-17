@@ -19,10 +19,14 @@ import (
 	"sync"
 	"time"
 
-	"tetora/internal/log"
+	"tetora/internal/audit"
+	"tetora/internal/cli"
+	"tetora/internal/cost"
 	"tetora/internal/httpapi"
-	"tetora/internal/pwa"
 	"tetora/internal/httputil"
+	"tetora/internal/log"
+	"tetora/internal/pwa"
+	"tetora/internal/sla"
 	"tetora/internal/trace"
 )
 
@@ -82,7 +86,7 @@ func authMiddleware(cfg *Config, secMon *securityMonitor, next http.Handler) htt
 		auth := r.Header.Get("Authorization")
 		if auth == "" || auth != "Bearer "+cfg.APIToken {
 			ip := clientIP(r)
-			auditLog(cfg.HistoryDB, "api.auth.fail", "http", p, ip)
+			audit.Log(cfg.HistoryDB, "api.auth.fail", "http", p, ip)
 			if secMon != nil {
 				secMon.recordEvent(ip, "auth.fail")
 			}
@@ -315,7 +319,7 @@ func ipAllowlistMiddleware(al *ipAllowlist, dbPath string, next http.Handler) ht
 
 		ip := clientIP(r)
 		if !al.contains(ip) {
-			auditLog(dbPath, "api.ip.blocked", "http", r.URL.Path, ip)
+			audit.Log(dbPath, "api.ip.blocked", "http", r.URL.Path, ip)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			w.Write([]byte(`{"error":"forbidden"}`))
@@ -405,7 +409,7 @@ func rateLimitMiddleware(cfg *Config, rl *apiRateLimiter, next http.Handler) htt
 
 		ip := clientIP(r)
 		if !rl.allow(ip) {
-			auditLog(cfg.HistoryDB, "api.ratelimit", "http", p, ip)
+			audit.Log(cfg.HistoryDB, "api.ratelimit", "http", p, ip)
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", "60")
 			w.WriteHeader(http.StatusTooManyRequests)
@@ -491,8 +495,135 @@ func startHTTPServer(s *Server) *http.Server {
 	s.voiceRealtimeEngine = newVoiceRealtimeEngine(cfg, s.voiceEngine)
 
 	// Register all route groups.
-	s.registerWebhookRoutes(mux)
-	s.registerHealthRoutes(mux)
+	{
+		var handlers []httpapi.WebhookHandler
+		if s.slackBot != nil {
+			handlers = append(handlers, httpapi.WebhookHandler{Path: "/slack/events", Handler: s.slackBot.EventHandler})
+		}
+		if s.whatsappBot != nil {
+			handlers = append(handlers, httpapi.WebhookHandler{Path: "/api/whatsapp/webhook", Handler: s.whatsappBot.WebhookHandler})
+		}
+		if s.state.discordBot != nil && cfg.Discord.PublicKey != "" {
+			discordBot := s.state.discordBot
+			handlers = append(handlers, httpapi.WebhookHandler{Path: "/api/discord/interactions", Handler: func(w http.ResponseWriter, r *http.Request) {
+				handleDiscordInteraction(discordBot, w, r)
+			}})
+		}
+		if s.lineBot != nil {
+			handlers = append(handlers, httpapi.WebhookHandler{Path: cfg.LINE.WebhookPathOrDefault(), Handler: s.lineBot.HandleWebhook})
+		}
+		if s.teamsBot != nil {
+			handlers = append(handlers, httpapi.WebhookHandler{Path: "/api/teams/webhook", Handler: s.teamsBot.HandleWebhook})
+		}
+		if s.signalBot != nil {
+			handlers = append(handlers, httpapi.WebhookHandler{Path: cfg.Signal.WebhookPathOrDefault(), Handler: s.signalBot.HandleWebhook})
+		}
+		if s.gchatBot != nil {
+			handlers = append(handlers, httpapi.WebhookHandler{Path: cfg.GoogleChat.WebhookPathOrDefault(), Handler: s.gchatBot.HandleWebhook})
+		}
+		if s.imessageBot != nil {
+			handlers = append(handlers, httpapi.WebhookHandler{Path: cfg.IMessage.WebhookPathOrDefault(), Handler: s.imessageBot.WebhookHandler})
+		}
+		httpapi.RegisterWebhookRoutes(mux, httpapi.WebhookDeps{Handlers: handlers})
+	}
+	httpapi.RegisterHealthRoutes(mux, httpapi.HealthDeps{
+		StartTime: s.startTime,
+		HistoryDB: cfg.HistoryDB,
+		DefaultProvider: func() string {
+			provider := cfg.DefaultProvider
+			if provider == "" && len(cfg.Agents) > 0 {
+				for _, a := range cfg.Agents {
+					if a.Model != "" {
+						provider = a.Model
+						break
+					}
+				}
+			}
+			return provider
+		},
+		GetRunningAgents: func() ([]map[string]any, bool) {
+			s.state.mu.Lock()
+			defer s.state.mu.Unlock()
+			draining := s.state.draining
+			agents := make([]map[string]any, 0, len(s.state.running))
+			for _, ts := range s.state.running {
+				info := map[string]any{
+					"id":      ts.task.ID,
+					"name":    ts.task.Name,
+					"agent":   ts.task.Agent,
+					"source":  ts.task.Source,
+					"elapsed": time.Since(ts.startAt).Round(time.Second).String(),
+					"stalled": ts.stalled,
+				}
+				if !ts.lastActivity.IsZero() {
+					info["silent"] = time.Since(ts.lastActivity).Round(time.Second).String()
+				}
+				agents = append(agents, info)
+			}
+			return agents, draining
+		},
+		SSEClientCount: func() int {
+			if s.state != nil && s.state.broker != nil {
+				return s.state.broker.ClientCount()
+			}
+			return -1
+		},
+		LastCronRun: func() time.Time {
+			if s.cron != nil {
+				return s.cron.LastRunTime()
+			}
+			return time.Time{}
+		},
+		DeepCheck: func() map[string]any {
+			checks := deepHealthCheck(cfg, s.state, s.cron, s.startTime)
+			if len(s.DegradedServices) > 0 {
+				checks["degradedServices"] = s.DegradedServices
+				if st, ok := checks["status"].(string); ok {
+					checks["status"] = degradeStatus(st, "degraded")
+				}
+			}
+			if s.heartbeatMonitor != nil {
+				stats := s.heartbeatMonitor.Stats()
+				hbInfo := map[string]any{
+					"enabled":         true,
+					"checkCount":      stats.CheckCount,
+					"stallsDetected":  stats.StallsDetected,
+					"stallsRecovered": stats.StallsRecovered,
+					"autoCancelled":   stats.AutoCancelled,
+					"timeoutWarnings": stats.TimeoutWarnings,
+				}
+				if !stats.LastCheck.IsZero() {
+					hbInfo["lastCheck"] = stats.LastCheck.Format(time.RFC3339)
+				}
+				stalledCount := 0
+				s.state.mu.Lock()
+				for _, ts := range s.state.running {
+					if ts.stalled {
+						stalledCount++
+					}
+				}
+				s.state.mu.Unlock()
+				hbInfo["stalledNow"] = stalledCount
+				if stalledCount > 0 {
+					if st, ok := checks["status"].(string); ok {
+						checks["status"] = degradeStatus(st, "degraded")
+					}
+				}
+				checks["heartbeat"] = hbInfo
+			} else {
+				checks["heartbeat"] = map[string]any{"enabled": false}
+			}
+			return checks
+		},
+		WriteMetrics: func(w http.ResponseWriter) bool {
+			if metricsGlobal == nil {
+				return false
+			}
+			metricsGlobal.WriteMetrics(w)
+			return true
+		},
+		CircuitRegistry: cfg.Runtime.CircuitRegistry,
+	})
 	s.registerDispatchRoutes(mux)
 	httpapi.RegisterCronRoutes(mux, httpapi.CronDeps{
 		Available:    s.cron != nil,
@@ -526,7 +657,65 @@ func startHTTPServer(s *Server) *http.Server {
 		HistoryDB:  func() string { return s.Cfg().HistoryDB },
 	})
 	httpapi.RegisterHistoryRoutes(mux, func() string { return s.Cfg().HistoryDB })
-	s.registerStatsRoutes(mux)
+	httpapi.RegisterStatsRoutes(mux, httpapi.StatsDeps{
+		HistoryDB: cfg.HistoryDB,
+		QueryCostStats: func(dbPath string) (today, week, month float64, err error) {
+			stats, e := queryCostStats(dbPath)
+			return stats.Today, stats.Week, stats.Month, e
+		},
+		QueryDailyStats: func(dbPath string, days int) (any, error) {
+			return queryDailyStats(dbPath, days)
+		},
+		QueryMetricsSummary: func(dbPath string, days int) (any, error) {
+			return queryMetrics(dbPath, days)
+		},
+		QueryDailyMetrics: func(dbPath string, days int) (any, error) {
+			return queryDailyMetrics(dbPath, days)
+		},
+		QueryProviderMetrics: func(dbPath string, days int) (any, error) {
+			return queryProviderMetrics(dbPath, days)
+		},
+		CostAlertDailyLimit:  func() float64 { return s.Cfg().CostAlert.DailyLimit },
+		CostAlertWeeklyLimit: func() float64 { return s.Cfg().CostAlert.WeeklyLimit },
+		CostAlertAction:      func() string { return s.Cfg().CostAlert.Action },
+		Budgets:              func() cost.BudgetConfig { return s.Cfg().Budgets },
+		SetBudgetPaused:      setBudgetPaused,
+		ConfigPath:           func() string { return s.Cfg().BaseDir },
+		SLAConfig:            func() sla.SLAConfig { return s.Cfg().SLA },
+		AgentNames: func() []string {
+			c := s.Cfg()
+			names := make([]string, 0, len(c.Agents))
+			for name := range c.Agents {
+				names = append(names, name)
+			}
+			return names
+		},
+		QueryUsageSummary: func(dbPath, period string) (*httpapi.UsageSummary, error) {
+			s, err := queryUsageSummary(dbPath, period)
+			if err != nil {
+				return nil, err
+			}
+			return &httpapi.UsageSummary{
+				Period:     s.Period,
+				TotalCost:  s.TotalCost,
+				TotalTasks: s.TotalTasks,
+				TokensIn:   s.TokensIn,
+				TokensOut:  s.TokensOut,
+			}, nil
+		},
+		QueryUsageByModel: func(dbPath string, days int) (any, error) {
+			return queryUsageByModel(dbPath, days)
+		},
+		QueryUsageByAgent: func(dbPath string, days int) (any, error) {
+			return queryUsageByAgent(dbPath, days)
+		},
+		QueryExpensiveSessions: func(dbPath string, limit, days int) (any, error) {
+			return queryExpensiveSessions(dbPath, limit, days)
+		},
+		QueryCostTrend: func(dbPath string, days int) (any, error) {
+			return queryCostTrend(dbPath, days)
+		},
+	})
 	s.registerAgentRoutes(mux)
 	httpapi.RegisterMemoryRoutes(mux, httpapi.MemoryDeps{
 		ListMCPConfigs:  func() any { return listMCPConfigs(cfg) },
@@ -541,7 +730,302 @@ func startHTTPServer(s *Server) *http.Server {
 		FindConfigPath:  findConfigPath,
 		HistoryDB:       func() string { return s.Cfg().HistoryDB },
 	})
-	s.registerSessionRoutes(mux)
+	httpapi.RegisterSessionRoutes(mux, httpapi.SessionDeps{
+		HistoryDB: cfg.HistoryDB,
+		QuerySessions: func(role, status, source string, limit, offset int) (any, int, error) {
+			q := SessionQuery{Agent: role, Status: status, Source: source, Limit: limit, Offset: offset}
+			sessions, total, err := querySessions(cfg.HistoryDB, q)
+			return sessions, total, err
+		},
+		CreateSession: func(agent, title, ip string) (any, error) {
+			now := time.Now().Format(time.RFC3339)
+			sess := Session{
+				ID:        newUUID(),
+				Agent:     agent,
+				Source:    "chat",
+				Status:    "active",
+				Title:     title,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}
+			if sess.Title == "" {
+				sess.Title = "New chat with " + agent
+			}
+			if err := createSession(cfg.HistoryDB, sess); err != nil {
+				return nil, err
+			}
+			audit.Log(cfg.HistoryDB, "session.create", "http",
+				fmt.Sprintf("session=%s role=%s", sess.ID, sess.Agent), ip)
+			return sess, nil
+		},
+		GetSessionDetail: func(id string) (any, error) {
+			detail, err := querySessionDetail(cfg.HistoryDB, id)
+			if err != nil {
+				return nil, err
+			}
+			if detail == nil {
+				return nil, nil
+			}
+			return detail, nil
+		},
+		ArchiveSession: func(id string) error {
+			return updateSessionStatus(cfg.HistoryDB, id, "archived")
+		},
+		SendMessage: func(r *http.Request, sessionID, prompt string, async bool) (any, int, error) {
+			sess, err := querySessionByID(cfg.HistoryDB, sessionID)
+			if err != nil || sess == nil {
+				return nil, http.StatusNotFound, fmt.Errorf("session not found")
+			}
+
+			// Pre-record user message immediately.
+			now := time.Now().Format(time.RFC3339)
+			if err := addSessionMessage(cfg.HistoryDB, SessionMessage{
+				SessionID: sessionID,
+				Role:      "user",
+				Content:   truncateStr(prompt, 5000),
+				CreatedAt: now,
+			}); err != nil {
+				log.Warn("add user message failed", "session", sessionID, "error", err)
+			}
+			if err := updateSessionStats(cfg.HistoryDB, sessionID, 0, 0, 0, 1); err != nil {
+				log.Warn("update session stats failed", "session", sessionID, "error", err)
+			}
+
+			// Update session title on first message.
+			title := prompt
+			if len(title) > 100 {
+				title = title[:100]
+			}
+			if err := updateSessionTitle(cfg.HistoryDB, sessionID, title); err != nil {
+				log.Warn("update session title failed", "session", sessionID, "error", err)
+			}
+
+			// Re-activate session if it was completed.
+			if sess.Status == "completed" {
+				if err := updateSessionStatus(cfg.HistoryDB, sessionID, "active"); err != nil {
+					log.Warn("reactivate session failed", "session", sessionID, "error", err)
+				}
+			}
+
+			task := Task{
+				Prompt:    prompt,
+				Agent:     sess.Agent,
+				SessionID: sessionID,
+				Source:    "chat",
+			}
+			fillDefaults(cfg, &task)
+			task.SessionID = sessionID // Override fillDefaults' new UUID.
+
+			if async {
+				taskID := task.ID
+				traceID := trace.IDFromContext(r.Context())
+
+				go func() {
+					asyncCtx := trace.WithID(context.Background(), traceID)
+					result := runTask(asyncCtx, cfg, task, s.state)
+
+					nowDone := time.Now().Format(time.RFC3339)
+					msgRole := "assistant"
+					content := truncateStr(result.Output, 5000)
+					if result.Status != "success" {
+						msgRole = "system"
+						errMsg := result.Error
+						if errMsg == "" {
+							errMsg = result.Status
+						}
+						content = fmt.Sprintf("[%s] %s", result.Status, truncateStr(errMsg, 2000))
+					}
+					addSessionMessage(cfg.HistoryDB, SessionMessage{
+						SessionID: sessionID,
+						Role:      msgRole,
+						Content:   content,
+						CostUSD:   result.CostUSD,
+						TokensIn:  result.TokensIn,
+						TokensOut: result.TokensOut,
+						Model:     result.Model,
+						TaskID:    task.ID,
+						CreatedAt: nowDone,
+					})
+					updateSessionStats(cfg.HistoryDB, sessionID, result.CostUSD, result.TokensIn, result.TokensOut, 1)
+				}()
+
+				audit.Log(cfg.HistoryDB, "session.message.async", "http",
+					fmt.Sprintf("session=%s role=%s task=%s", sessionID, sess.Agent, taskID), clientIP(r))
+				return map[string]any{
+					"taskId":    taskID,
+					"sessionId": sessionID,
+					"status":    "running",
+				}, http.StatusAccepted, nil
+			}
+
+			// Sync mode.
+			result := runSingleTask(r.Context(), cfg, task, s.sem, s.childSem, sess.Agent)
+			taskStart := time.Now().Add(-time.Duration(result.DurationMs) * time.Millisecond)
+			recordHistory(cfg.HistoryDB, task.ID, task.Name, task.Source, sess.Agent, task, result,
+				taskStart.Format(time.RFC3339), time.Now().Format(time.RFC3339), result.OutputFile)
+
+			nowDone := time.Now().Format(time.RFC3339)
+			msgRole := "assistant"
+			content := truncateStr(result.Output, 5000)
+			if result.Status != "success" {
+				msgRole = "system"
+				errMsg := result.Error
+				if errMsg == "" {
+					errMsg = result.Status
+				}
+				content = fmt.Sprintf("[%s] %s", result.Status, truncateStr(errMsg, 2000))
+			}
+			addSessionMessage(cfg.HistoryDB, SessionMessage{
+				SessionID: sessionID,
+				Role:      msgRole,
+				Content:   content,
+				CostUSD:   result.CostUSD,
+				TokensIn:  result.TokensIn,
+				TokensOut: result.TokensOut,
+				Model:     result.Model,
+				TaskID:    task.ID,
+				CreatedAt: nowDone,
+			})
+			updateSessionStats(cfg.HistoryDB, sessionID, result.CostUSD, result.TokensIn, result.TokensOut, 1)
+
+			audit.Log(cfg.HistoryDB, "session.message", "http",
+				fmt.Sprintf("session=%s role=%s", sessionID, sess.Agent), clientIP(r))
+			return result, http.StatusOK, nil
+		},
+		MirrorMessage: func(r *http.Request, sessionID string, body json.RawMessage) (any, int, error) {
+			var req struct {
+				Role           string  `json:"role"`
+				Content        string  `json:"content"`
+				Model          string  `json:"model"`
+				Cost           float64 `json:"cost"`
+				TokensIn       int     `json:"tokensIn"`
+				TokensOut      int     `json:"tokensOut"`
+				DiscordChannel string  `json:"discordChannel"`
+			}
+			if err := json.Unmarshal(body, &req); err != nil {
+				return nil, http.StatusBadRequest, fmt.Errorf("invalid JSON")
+			}
+			if req.Role == "" || req.Content == "" {
+				return nil, http.StatusBadRequest, fmt.Errorf("role and content required")
+			}
+			if req.Role != "user" && req.Role != "assistant" && req.Role != "system" {
+				return nil, http.StatusBadRequest, fmt.Errorf("role must be user, assistant, or system")
+			}
+
+			existingSess, err := querySessionByID(cfg.HistoryDB, sessionID)
+			if err != nil {
+				return nil, http.StatusInternalServerError, err
+			}
+			now := time.Now().Format(time.RFC3339)
+			if existingSess == nil {
+				newSess := Session{
+					ID:        sessionID,
+					Agent:     "mirror",
+					Source:    "mirror",
+					Status:    "active",
+					Title:     "Mirror session",
+					CreatedAt: now,
+					UpdatedAt: now,
+				}
+				if err := createSession(cfg.HistoryDB, newSess); err != nil {
+					return nil, http.StatusInternalServerError, err
+				}
+			}
+
+			if err := addSessionMessage(cfg.HistoryDB, SessionMessage{
+				SessionID: sessionID,
+				Role:      req.Role,
+				Content:   truncateStr(req.Content, 10000),
+				CostUSD:   req.Cost,
+				TokensIn:  req.TokensIn,
+				TokensOut: req.TokensOut,
+				Model:     req.Model,
+				CreatedAt: now,
+			}); err != nil {
+				return nil, http.StatusInternalServerError, err
+			}
+			updateSessionStats(cfg.HistoryDB, sessionID, req.Cost, req.TokensIn, req.TokensOut, 1)
+
+			if s.state.broker != nil {
+				event := SSEEvent{
+					Type:      SSEOutputChunk,
+					SessionID: sessionID,
+					Data: map[string]any{
+						"role":    req.Role,
+						"content": req.Content,
+					},
+					Timestamp: now,
+				}
+				publishToSSEBroker(s.state.broker, event)
+			}
+
+			if req.DiscordChannel != "" && cfg.Discord.Enabled && cfg.Discord.BotToken != "" {
+				go func() {
+					content := req.Content
+					if len(content) > 1900 {
+						content = content[:1900] + "\n..."
+					}
+					prefix := "💬"
+					if req.Role == "assistant" {
+						prefix = "🤖"
+					}
+					msg := fmt.Sprintf("%s **[mirror:%s]**\n%s", prefix, req.Role, content)
+					if err := cronDiscordSendBotChannel(cfg.Discord.BotToken, req.DiscordChannel, msg); err != nil {
+						log.Warn("mirror discord forward failed", "session", sessionID, "error", err)
+					}
+				}()
+			}
+
+			audit.Log(cfg.HistoryDB, "session.mirror", "http",
+				fmt.Sprintf("session=%s role=%s len=%d", sessionID, req.Role, len(req.Content)), clientIP(r))
+			return map[string]any{
+				"status":    "ok",
+				"sessionId": sessionID,
+			}, http.StatusOK, nil
+		},
+		CompactSession: func(sessionID string) {
+			go func() {
+				compactCtx, compactCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer compactCancel()
+				if err := compactSession(compactCtx, cfg, cfg.HistoryDB, sessionID, false, s.sem, s.childSem); err != nil {
+					log.Error("compact session error", "session", sessionID, "error", err)
+				}
+			}()
+		},
+		ServeSSE: func(w http.ResponseWriter, r *http.Request, sessionID string) {
+			serveSSE(w, r, s.state.broker, sessionID)
+		},
+		ServeSSEPersistent: func(w http.ResponseWriter, r *http.Request, sessionID string) {
+			serveSSEPersistent(w, r, s.state.broker, sessionID)
+		},
+		SSEAvailable: func() bool {
+			return s.state.broker != nil
+		},
+		ListSkills: func() any {
+			return listSkills(cfg)
+		},
+		RunSkill: func(r *http.Request, name string, vars map[string]string) (any, error) {
+			skill := getSkill(cfg, name)
+			if skill == nil {
+				return nil, fmt.Errorf("skill %q not found", name)
+			}
+			return executeSkill(r.Context(), *skill, vars)
+		},
+		TestSkill: func(r *http.Request, name string) (any, error) {
+			skill := getSkill(cfg, name)
+			if skill == nil {
+				return nil, fmt.Errorf("skill %q not found", name)
+			}
+			return testSkill(r.Context(), *skill)
+		},
+		SkillExists: func(name string) bool {
+			return getSkill(cfg, name) != nil
+		},
+		AgentExists: func(name string) bool {
+			_, ok := cfg.Agents[name]
+			return ok
+		},
+	})
 	httpapi.RegisterToolRoutes(mux, httpapi.ToolsDeps{
 		ListTools: func() any {
 			if cfg.Runtime.ToolRegistry == nil {
@@ -627,7 +1111,141 @@ func startHTTPServer(s *Server) *http.Server {
 		CloseSession: s.canvasEngine.closeCanvas,
 	})
 	s.registerWorkflowRoutes(mux)
-	s.registerAgentCfgRoutes(mux)
+	httpapi.RegisterAgentRoleRoutes(mux, httpapi.AgentRoleDeps{
+		ListArchetypes: func() []httpapi.ArchetypeInfo {
+			out := make([]httpapi.ArchetypeInfo, len(builtinArchetypes))
+			for i, a := range builtinArchetypes {
+				out[i] = httpapi.ArchetypeInfo{
+					Name:           a.Name,
+					Description:    a.Description,
+					Model:          a.Model,
+					PermissionMode: a.PermissionMode,
+					SoulTemplate:   a.SoulTemplate,
+				}
+			}
+			return out
+		},
+		ListAgents: func() []httpapi.AgentInfo {
+			cfg := s.cfg
+			var roles []httpapi.AgentInfo
+			for name, rc := range cfg.Agents {
+				ri := httpapi.AgentInfo{
+					Name:           name,
+					Model:          rc.Model,
+					PermissionMode: rc.PermissionMode,
+					SoulFile:       rc.SoulFile,
+					Description:    rc.Description,
+				}
+				if content, err := loadAgentPrompt(cfg, name); err == nil && content != "" {
+					if len(content) > 500 {
+						ri.SoulPreview = content[:500] + "..."
+					} else {
+						ri.SoulPreview = content
+					}
+				}
+				roles = append(roles, ri)
+			}
+			return roles
+		},
+		AgentExists: func(name string) bool {
+			_, ok := s.cfg.Agents[name]
+			return ok
+		},
+		GetAgent: func(name string) (map[string]any, bool) {
+			cfg := s.cfg
+			rc, ok := cfg.Agents[name]
+			if !ok {
+				return nil, false
+			}
+			result := map[string]any{
+				"name":           name,
+				"model":          rc.Model,
+				"permissionMode": rc.PermissionMode,
+				"soulFile":       rc.SoulFile,
+				"description":    rc.Description,
+			}
+			if content, err := loadAgentPrompt(cfg, name); err == nil {
+				result["soulContent"] = content
+			}
+			return result, true
+		},
+		CreateAgent: func(name, model, permMode, desc, soulFile, soulContent string) error {
+			cfg := s.cfg
+			if soulContent != "" {
+				if err := writeSoulFile(cfg, name, soulContent); err != nil {
+					return fmt.Errorf("write soul file: %w", err)
+				}
+			}
+			rc := AgentConfig{
+				SoulFile:       soulFile,
+				Model:          model,
+				Description:    desc,
+				PermissionMode: permMode,
+			}
+			configPath := findConfigPath()
+			rcJSON, err := json.Marshal(&rc)
+			if err != nil {
+				return fmt.Errorf("marshal config: %w", err)
+			}
+			if err := cli.UpdateConfigAgents(configPath, name, rcJSON); err != nil {
+				return fmt.Errorf("save config: %w", err)
+			}
+			if cfg.Agents == nil {
+				cfg.Agents = make(map[string]AgentConfig)
+			}
+			cfg.Agents[name] = rc
+			return nil
+		},
+		UpdateAgent: func(name, model, permMode, desc, soulFile, soulContent string) error {
+			cfg := s.cfg
+			rc := cfg.Agents[name]
+			if model != "" {
+				rc.Model = model
+			}
+			if permMode != "" {
+				rc.PermissionMode = permMode
+			}
+			if desc != "" {
+				rc.Description = desc
+			}
+			if soulFile != "" {
+				rc.SoulFile = soulFile
+			}
+			if soulContent != "" {
+				if err := writeSoulFile(cfg, name, soulContent); err != nil {
+					return fmt.Errorf("write soul: %w", err)
+				}
+			}
+			configPath := findConfigPath()
+			rcJSON, err := json.Marshal(&rc)
+			if err != nil {
+				return fmt.Errorf("marshal config: %w", err)
+			}
+			if err := cli.UpdateConfigAgents(configPath, name, rcJSON); err != nil {
+				return fmt.Errorf("save: %w", err)
+			}
+			cfg.Agents[name] = rc
+			return nil
+		},
+		DeleteAgent: func(name string) (error, bool) {
+			cfg := s.cfg
+			cron := s.cron
+			if cron != nil {
+				for _, j := range cron.ListJobs() {
+					if j.Agent == name {
+						return fmt.Errorf("agent in use by job %q", j.ID), true
+					}
+				}
+			}
+			configPath := findConfigPath()
+			if err := cli.UpdateConfigAgents(configPath, name, nil); err != nil {
+				return fmt.Errorf("save: %w", err), false
+			}
+			delete(cfg.Agents, name)
+			return nil, false
+		},
+		HistoryDB: func() string { return s.cfg.HistoryDB },
+	})
 	httpapi.RegisterKnowledgeRoutes(mux, httpapi.KnowledgeDeps{
 		KnowledgeDir: func() string { return knowledgeDir(s.Cfg()) },
 		HistoryDB:    func() string { return s.Cfg().HistoryDB },

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"tetora/internal/audit"
 	"tetora/internal/log"
 	"tetora/internal/db"
 	"tetora/internal/upload"
@@ -333,7 +334,7 @@ func runRetention(cfg *Config) []RetentionResult {
 
 		// audit_log
 		days = retentionDays(cfg.Retention.AuditLog, 365)
-		if err := cleanupAuditLog(dbPath, days); err != nil {
+		if err := audit.Cleanup(dbPath, days); err != nil {
 			results = append(results, RetentionResult{Table: "audit_log", Error: err.Error()})
 		} else {
 			results = append(results, RetentionResult{Table: "audit_log", Deleted: -1})
@@ -489,7 +490,7 @@ type DataExport struct {
 	History    []JobRun         `json:"history"`
 	Sessions   []Session        `json:"sessions"`
 	Memory     []MemoryEntry    `json:"memory"`
-	AuditLog   []AuditEntry     `json:"auditLog"`
+	AuditLog   []audit.Entry    `json:"auditLog"`
 	Reflections []ReflectionRow `json:"reflections,omitempty"`
 }
 
@@ -531,7 +532,7 @@ func exportData(cfg *Config) ([]byte, error) {
 	}
 
 	// Audit log
-	if entries, _, err := queryAuditLog(dbPath, 10000, 0); err == nil {
+	if entries, _, err := audit.Query(dbPath, 10000, 0); err == nil {
 		export.AuditLog = entries
 	}
 

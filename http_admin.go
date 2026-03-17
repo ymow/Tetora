@@ -11,6 +11,7 @@ import (
 	"time"
 
 
+	"tetora/internal/audit"
 	"tetora/internal/backup"
 	"tetora/internal/log"
 	"tetora/internal/db"
@@ -100,13 +101,13 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			}
 		}
 
-		entries, total, err := queryAuditLog(cfg.HistoryDB, limit, offset)
+		entries, total, err := audit.Query(cfg.HistoryDB, limit, offset)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
 		}
 		if entries == nil {
-			entries = []AuditEntry{}
+			entries = []audit.Entry{}
 		}
 
 		page := (offset / limit) + 1
@@ -157,7 +158,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		auditLog(cfg.HistoryDB, "retention.cleanup", "http", "", clientIP(r))
+		audit.Log(cfg.HistoryDB, "retention.cleanup", "http", "", clientIP(r))
 		results := runRetention(cfg)
 		json.NewEncoder(w).Encode(map[string]any{"results": results})
 	})
@@ -168,7 +169,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		auditLog(cfg.HistoryDB, "data.export", "http", "", clientIP(r))
+		audit.Log(cfg.HistoryDB, "data.export", "http", "", clientIP(r))
 		data, err := exportData(cfg)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
@@ -193,7 +194,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		auditLog(cfg.HistoryDB, "data.purge", "http", "before="+before, clientIP(r))
+		audit.Log(cfg.HistoryDB, "data.purge", "http", "before="+before, clientIP(r))
 		results, err := purgeDataBefore(cfg, before)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
@@ -209,7 +210,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			return
 		}
 
-		auditLog(cfg.HistoryDB, "backup.download", "http", "", clientIP(r))
+		audit.Log(cfg.HistoryDB, "backup.download", "http", "", clientIP(r))
 
 		// Create temp backup.
 		tmpFile, err := os.CreateTemp("", "tetora-backup-*.tar.gz")
@@ -256,7 +257,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 
 			// Rate limit check.
 			if s.limiter.isLocked(ip) {
-				auditLog(cfg.HistoryDB, "dashboard.login.ratelimit", "http", "", ip)
+				audit.Log(cfg.HistoryDB, "dashboard.login.ratelimit", "http", "", ip)
 				if s.secMon != nil {
 					s.secMon.recordEvent(ip, "login.ratelimit")
 				}
@@ -276,7 +277,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 
 			if password != expected {
 				s.limiter.recordFailure(ip)
-				auditLog(cfg.HistoryDB, "dashboard.login.fail", "http", "", ip)
+				audit.Log(cfg.HistoryDB, "dashboard.login.fail", "http", "", ip)
 				if s.secMon != nil {
 					s.secMon.recordEvent(ip, "login.fail")
 				}
@@ -304,7 +305,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 				cookie.Secure = true
 			}
 			http.SetCookie(w, cookie)
-			auditLog(cfg.HistoryDB, "dashboard.login", "http", "", ip)
+			audit.Log(cfg.HistoryDB, "dashboard.login", "http", "", ip)
 			http.Redirect(w, r, "/dashboard", http.StatusFound)
 			return
 		}
@@ -553,7 +554,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		case http.MethodPost:
 			switch action {
 			case "approve":
-				auditLog(cfg.HistoryDB, "skill.approve", "http",
+				audit.Log(cfg.HistoryDB, "skill.approve", "http",
 					fmt.Sprintf("name=%s", name), clientIP(r))
 				if err := approveSkill(cfg, name); err != nil {
 					http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
@@ -565,7 +566,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 				json.NewEncoder(w).Encode(map[string]string{"status": "approved", "name": name})
 
 			case "reject":
-				auditLog(cfg.HistoryDB, "skill.reject", "http",
+				audit.Log(cfg.HistoryDB, "skill.reject", "http",
 					fmt.Sprintf("name=%s", name), clientIP(r))
 				if err := rejectSkill(cfg, name); err != nil {
 					http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
@@ -585,7 +586,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 				http.Error(w, `{"error":"DELETE /api/skills/store/<name>"}`, http.StatusBadRequest)
 				return
 			}
-			auditLog(cfg.HistoryDB, "skill.delete", "http",
+			audit.Log(cfg.HistoryDB, "skill.delete", "http",
 				fmt.Sprintf("name=%s", name), clientIP(r))
 			if err := deleteFileSkill(cfg, name); err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusNotFound)
@@ -933,7 +934,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		// Reload config in-memory via SIGHUP.
 		signalSelfReload()
 
-		auditLog(cfg.HistoryDB, "config.toggle", "dashboard",
+		audit.Log(cfg.HistoryDB, "config.toggle", "dashboard",
 			fmt.Sprintf("%s=%v", req.Key, req.Value), "")
 
 		respVal, err := json.Marshal(req.Value)
@@ -962,7 +963,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		active := len(state.running)
 		state.mu.Unlock()
 
-		auditLog(cfg.HistoryDB, "admin.drain", "http", fmt.Sprintf("active=%d", active), clientIP(r))
+		audit.Log(cfg.HistoryDB, "admin.drain", "http", fmt.Sprintf("active=%d", active), clientIP(r))
 		log.Info("drain requested via API", "activeAgents", active)
 
 		// Signal the main loop to begin draining (if channel is wired up).

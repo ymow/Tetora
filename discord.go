@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"tetora/internal/audit"
 	"tetora/internal/log"
 	"tetora/internal/trace"
 	"tetora/internal/upload"
@@ -1213,7 +1214,7 @@ func (db *DiscordBot) executeRoute(msg discordMessage, prompt string, route Rout
 		setMemory(db.cfg, route.Agent, "last_route_time", time.Now().Format(time.RFC3339))
 	}
 
-	auditLog(dbPath, "route.dispatch", "discord",
+	audit.Log(dbPath, "route.dispatch", "discord",
 		fmt.Sprintf("agent=%s method=%s session=%s", route.Agent, route.Method, task.SessionID), "")
 
 	sendWebhooks(db.cfg, result.Status, webhook.Payload{

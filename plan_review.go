@@ -8,6 +8,7 @@ import (
 	"time"
 
 
+	"tetora/internal/audit"
 	"tetora/internal/db"
 )
 
@@ -210,7 +211,7 @@ func (s *Server) registerPlanReviewRoutes(mux *http.ServeMux) {
 			})
 		}
 
-		auditLog(cfg.HistoryDB, "plan_review."+action, "http",
+		audit.Log(cfg.HistoryDB, "plan_review."+action, "http",
 			fmt.Sprintf("id=%s reviewer=%s", reviewID, body.Reviewer), clientIP(r))
 
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "action": action})

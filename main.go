@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 
+	"tetora/internal/audit"
 	"tetora/internal/cli"
 	"tetora/internal/log"
 	"tetora/internal/completion"
@@ -34,6 +35,7 @@ import (
 	teamsbot "tetora/internal/messaging/teams"
 	tgbot "tetora/internal/messaging/telegram"
 	"tetora/internal/messaging/whatsapp"
+	"tetora/internal/scheduling"
 	"tetora/internal/telemetry"
 	"tetora/internal/trace"
 )
@@ -336,11 +338,11 @@ func main() {
 				}
 			}
 			// Init audit log table and start batched writer.
-			if err := initAuditLog(cfg.HistoryDB); err != nil {
+			if err := audit.Init(cfg.HistoryDB); err != nil {
 				log.Warn("init audit_log failed", "error", err)
 			}
-			startAuditWriter()
-			cleanupAuditLog(cfg.HistoryDB, retentionDays(cfg.Retention.AuditLog, 365))
+			audit.StartWriter()
+			audit.Cleanup(cfg.HistoryDB, retentionDays(cfg.Retention.AuditLog, 365))
 			// Init agent memory table.
 			if err := initMemoryDB(cfg.HistoryDB); err != nil {
 				log.Warn("init agent_memory failed", "error", err)
@@ -576,7 +578,14 @@ func main() {
 			log.Info("message queue started")
 		}
 		if cfg.Ops.BackupSchedule != "" && cfg.HistoryDB != "" {
-			bsched := newBackupScheduler(cfg)
+			bsched := scheduling.NewBackupScheduler(scheduling.BackupConfig{
+			DBPath:     cfg.HistoryDB,
+			BackupDir:  cfg.Ops.BackupDirResolved(cfg.BaseDir),
+			RetainDays: cfg.Ops.BackupRetainOrDefault(),
+			EscapeSQL:  db.Escape,
+			LogInfo:    log.Info,
+			LogWarn:    log.Warn,
+		})
 			bsched.Start(ctx)
 			log.Info("backup scheduler started", "schedule", cfg.Ops.BackupSchedule, "retain", cfg.Ops.BackupRetainOrDefault())
 		}

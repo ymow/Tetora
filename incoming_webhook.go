@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"tetora/internal/audit"
 	"tetora/internal/log"
 	"tetora/internal/messaging/webhook"
 )
@@ -89,7 +90,7 @@ func handleIncomingWebhook(ctx context.Context, cfg *Config, name string, r *htt
 	// Verify signature.
 	if !verifyWebhookSignature(r, body, whCfg.Secret) {
 		log.Warn("incoming webhook signature mismatch", "name", name)
-		auditLog(cfg.HistoryDB, "webhook.incoming.auth_fail", "http", name, clientIP(r))
+		audit.Log(cfg.HistoryDB, "webhook.incoming.auth_fail", "http", name, clientIP(r))
 		return IncomingWebhookResult{
 			Name: name, Status: "error",
 			Message: "signature verification failed",
@@ -122,7 +123,7 @@ func handleIncomingWebhook(ctx context.Context, cfg *Config, name string, r *htt
 	}
 
 	log.InfoCtx(ctx, "incoming webhook accepted", "name", name, "agent", whCfg.Agent)
-	auditLog(cfg.HistoryDB, "webhook.incoming", "http",
+	audit.Log(cfg.HistoryDB, "webhook.incoming", "http",
 		fmt.Sprintf("name=%s agent=%s", name, whCfg.Agent), clientIP(r))
 
 	// Trigger workflow or dispatch.

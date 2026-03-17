@@ -2,11 +2,8 @@ package main
 
 import "tetora/internal/metrics"
 
-// Type alias so callers continue to compile unchanged.
-type MetricsRegistry = metrics.Registry
-
-// metrics is the global metrics registry.
-var metricsGlobal *MetricsRegistry
+// metricsGlobal is the global metrics registry.
+var metricsGlobal *metrics.Registry
 
 // initMetrics creates and registers all Tetora metrics.
 func initMetrics() {
@@ -29,25 +26,3 @@ func initMetrics() {
 	metricsGlobal.RegisterCounter("tetora_cron_runs_total", "Cron job executions", []string{"status"})
 }
 
-// --- Convenience: Record Dispatch Metrics ---
-
-func recordDispatchMetrics(role, status string, durationSec float64, costUSD float64, tokensIn, tokensOut int, provider string) {
-	if metricsGlobal == nil {
-		return
-	}
-	metricsGlobal.CounterInc("tetora_dispatch_total", role, status)
-	metricsGlobal.HistogramObserve("tetora_dispatch_duration_seconds", durationSec, role)
-	if costUSD > 0 {
-		metricsGlobal.CounterAdd("tetora_dispatch_cost_usd", costUSD, role)
-	}
-	if provider != "" {
-		metricsGlobal.CounterInc("tetora_provider_requests_total", provider, status)
-		metricsGlobal.HistogramObserve("tetora_provider_latency_seconds", durationSec, provider)
-		if tokensIn > 0 {
-			metricsGlobal.CounterAdd("tetora_provider_tokens_total", float64(tokensIn), provider, "input")
-		}
-		if tokensOut > 0 {
-			metricsGlobal.CounterAdd("tetora_provider_tokens_total", float64(tokensOut), provider, "output")
-		}
-	}
-}

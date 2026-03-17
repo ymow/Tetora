@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"tetora/internal/audit"
 	dtypes "tetora/internal/dispatch"
 	"tetora/internal/log"
 	"tetora/internal/webhook"
@@ -416,7 +417,7 @@ func smartDispatch(ctx context.Context, cfg *Config, prompt string, source strin
 	}
 
 	// Step 6: Audit log.
-	auditLog(cfg.HistoryDB, "route.dispatch", source,
+	audit.Log(cfg.HistoryDB, "route.dispatch", source,
 		fmt.Sprintf("role=%s method=%s confidence=%s attempts=%d prompt=%s",
 			route.Agent, route.Method, route.Confidence, attempts, truncate(prompt, 100)), "")
 

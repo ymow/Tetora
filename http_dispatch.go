@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"tetora/internal/audit"
 	"tetora/internal/log"
 	"tetora/internal/db"
 	"tetora/internal/trace"
@@ -125,7 +126,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 			task.Source = "queue-retry:" + task.Source
 
 			updateQueueStatus(cfg.HistoryDB, id, "processing", "")
-			auditLog(cfg.HistoryDB, "queue.retry", "http", fmt.Sprintf("queueId=%d", id), clientIP(r))
+			audit.Log(cfg.HistoryDB, "queue.retry", "http", fmt.Sprintf("queueId=%d", id), clientIP(r))
 
 			go func() {
 				ctx := trace.WithID(context.Background(), trace.NewID("queue"))
@@ -170,7 +171,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 				return
 			}
-			auditLog(cfg.HistoryDB, "queue.delete", "http", fmt.Sprintf("queueId=%d", id), clientIP(r))
+			audit.Log(cfg.HistoryDB, "queue.delete", "http", fmt.Sprintf("queueId=%d", id), clientIP(r))
 			w.Write([]byte(`{"status":"deleted"}`))
 
 		default:
@@ -254,7 +255,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 			}
 		}
 
-		auditLog(cfg.HistoryDB, "dispatch", "http",
+		audit.Log(cfg.HistoryDB, "dispatch", "http",
 			fmt.Sprintf("%d tasks", len(tasks)), clientIP(r))
 
 		result := dispatch(r.Context(), cfg, tasks, state, sem, childSem)
@@ -302,7 +303,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 		if ts, ok := state.running[id]; ok && ts.cancelFn != nil {
 			ts.cancelFn()
 			state.mu.Unlock()
-			auditLog(cfg.HistoryDB, "task.cancel", "http",
+			audit.Log(cfg.HistoryDB, "task.cancel", "http",
 				fmt.Sprintf("id=%s (dispatch)", id), clientIP(r))
 			w.Write([]byte(`{"status":"cancelling"}`))
 			return
@@ -312,7 +313,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 		// Try cron engine.
 		if cron != nil {
 			if err := cron.CancelJob(id); err == nil {
-				auditLog(cfg.HistoryDB, "job.cancel", "http",
+				audit.Log(cfg.HistoryDB, "job.cancel", "http",
 					fmt.Sprintf("id=%s (cron)", id), clientIP(r))
 				w.Write([]byte(`{"status":"cancelling"}`))
 				return
@@ -509,7 +510,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 			return
 		}
 
-		auditLog(cfg.HistoryDB, "file.upload", "http", uploaded.Name, clientIP(r))
+		audit.Log(cfg.HistoryDB, "file.upload", "http", uploaded.Name, clientIP(r))
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(uploaded)
 	})
@@ -545,7 +546,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusBadRequest)
 				return
 			}
-			auditLog(cfg.HistoryDB, "prompt.create", "http", body.Name, clientIP(r))
+			audit.Log(cfg.HistoryDB, "prompt.create", "http", body.Name, clientIP(r))
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok", "name": body.Name})
 
 		default:
@@ -576,7 +577,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusNotFound)
 				return
 			}
-			auditLog(cfg.HistoryDB, "prompt.delete", "http", name, clientIP(r))
+			audit.Log(cfg.HistoryDB, "prompt.delete", "http", name, clientIP(r))
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 
 		default:
@@ -652,7 +653,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
 				return
 			}
-			auditLog(cfg.HistoryDB, "task.retry", "http",
+			audit.Log(cfg.HistoryDB, "task.retry", "http",
 				fmt.Sprintf("original=%s status=%s", taskID, result.Status), clientIP(r))
 			json.NewEncoder(w).Encode(result)
 
@@ -666,7 +667,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), status)
 				return
 			}
-			auditLog(cfg.HistoryDB, "task.reroute", "http",
+			audit.Log(cfg.HistoryDB, "task.reroute", "http",
 				fmt.Sprintf("original=%s role=%s status=%s", taskID, result.Route.Agent, result.Task.Status), clientIP(r))
 			json.NewEncoder(w).Encode(result)
 
@@ -765,7 +766,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"prompt is required"}`, http.StatusBadRequest)
 			return
 		}
-		auditLog(cfg.HistoryDB, "route.request", "http",
+		audit.Log(cfg.HistoryDB, "route.request", "http",
 			truncate(body.Prompt, 100), clientIP(r))
 
 		if body.Async {

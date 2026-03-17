@@ -1,4 +1,4 @@
-package main
+package httpapi
 
 import (
 	"encoding/json"
@@ -8,42 +8,156 @@ import (
 	"sort"
 	"strconv"
 
-	"tetora/internal/log"
+	"tetora/internal/audit"
 	"tetora/internal/cost"
 	"tetora/internal/db"
+	"tetora/internal/history"
+	"tetora/internal/httputil"
+	"tetora/internal/log"
 	"tetora/internal/sla"
 	"tetora/internal/telemetry"
 )
 
-func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
-	cfg := s.cfg
+// --- Data types (mirrors root-package types; no external dependencies) ---
+
+// UsageSummary is the aggregate cost/token summary for a time period.
+type UsageSummary struct {
+	Period      string  `json:"period"`
+	TotalCost   float64 `json:"totalCostUsd"`
+	TotalTasks  int     `json:"totalTasks"`
+	TokensIn    int     `json:"totalTokensIn"`
+	TokensOut   int     `json:"totalTokensOut"`
+	BudgetLimit float64 `json:"budgetLimit,omitempty"`
+	BudgetPct   float64 `json:"budgetPct,omitempty"`
+}
+
+// StatsDeps holds dependencies for stats, budget, and usage HTTP handlers.
+// Callbacks wrap root-package functions that cannot be imported from internal/.
+// Routes that only need internal packages (audit, sla, telemetry, db, cost, history)
+// call those directly without callbacks.
+type StatsDeps struct {
+	HistoryDB string
+
+	// QueryCostStats returns today/week/month cost totals.
+	QueryCostStats func(dbPath string) (today, week, month float64, err error)
+
+	// QueryDailyStats returns per-day cost/task stats for the last N days.
+	QueryDailyStats func(dbPath string, days int) (any, error)
+
+	// QueryMetricsSummary/QueryDailyMetrics/QueryProviderMetrics return observability data.
+	QueryMetricsSummary  func(dbPath string, days int) (any, error)
+	QueryDailyMetrics    func(dbPath string, days int) (any, error)
+	QueryProviderMetrics func(dbPath string, days int) (any, error)
+
+	// Cost alert config.
+	CostAlertDailyLimit  func() float64
+	CostAlertWeeklyLimit func() float64
+	CostAlertAction      func() string
+
+	// Budget access.
+	Budgets         func() cost.BudgetConfig
+	SetBudgetPaused func(configPath string, paused bool) error
+	// ConfigPath returns cfg.BaseDir (the directory containing config.json).
+	ConfigPath func() string
+
+	// SLA config.
+	SLAConfig  func() sla.SLAConfig
+	AgentNames func() []string
+
+	// Usage query callbacks (wrap root-package query functions).
+	QueryUsageSummary      func(dbPath, period string) (*UsageSummary, error)
+	QueryUsageByModel      func(dbPath string, days int) (any, error)
+	QueryUsageByAgent      func(dbPath string, days int) (any, error)
+	QueryExpensiveSessions func(dbPath string, limit, days int) (any, error)
+	QueryCostTrend         func(dbPath string, days int) (any, error)
+}
+
+// jsonStr converts an any value from a db row to string.
+func jsonStr(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch val := v.(type) {
+	case string:
+		return val
+	case json.Number:
+		return val.String()
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+// jsonFloat converts an any value from a db row to float64.
+func jsonFloat(v any) float64 {
+	if v == nil {
+		return 0
+	}
+	switch val := v.(type) {
+	case float64:
+		return val
+	case json.Number:
+		f, _ := val.Float64()
+		return f
+	case string:
+		f, _ := strconv.ParseFloat(val, 64)
+		return f
+	default:
+		return 0
+	}
+}
+
+// jsonInt converts an any value from a db row to int.
+func jsonInt(v any) int {
+	if v == nil {
+		return 0
+	}
+	switch val := v.(type) {
+	case float64:
+		return int(val)
+	case json.Number:
+		i, _ := val.Int64()
+		return int(i)
+	case string:
+		i, _ := strconv.Atoi(val)
+		return i
+	default:
+		return 0
+	}
+}
+
+// RegisterStatsRoutes registers all stats, budget, usage, and scorecard routes.
+func RegisterStatsRoutes(mux *http.ServeMux, d StatsDeps) {
+	historyDB := d.HistoryDB
 
 	// --- Cost Stats ---
 	mux.HandleFunc("/stats/cost", func(w http.ResponseWriter, r *http.Request) {
-		if cfg.HistoryDB == "" {
+		if historyDB == "" {
 			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		stats, err := queryCostStats(cfg.HistoryDB)
+
+		today, week, month, err := d.QueryCostStats(historyDB)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
 		}
 
 		result := map[string]any{
-			"today": stats.Today,
-			"week":  stats.Week,
-			"month": stats.Month,
+			"today": today,
+			"week":  week,
+			"month": month,
 		}
 
 		// Include cost alert config if limits are set.
-		if cfg.CostAlert.DailyLimit > 0 || cfg.CostAlert.WeeklyLimit > 0 {
-			result["dailyLimit"] = cfg.CostAlert.DailyLimit
-			result["weeklyLimit"] = cfg.CostAlert.WeeklyLimit
-			result["alertAction"] = cfg.CostAlert.Action
-			result["dailyExceeded"] = cfg.CostAlert.DailyLimit > 0 && stats.Today >= cfg.CostAlert.DailyLimit
-			result["weeklyExceeded"] = cfg.CostAlert.WeeklyLimit > 0 && stats.Week >= cfg.CostAlert.WeeklyLimit
+		dailyLimit := d.CostAlertDailyLimit()
+		weeklyLimit := d.CostAlertWeeklyLimit()
+		if dailyLimit > 0 || weeklyLimit > 0 {
+			result["dailyLimit"] = dailyLimit
+			result["weeklyLimit"] = weeklyLimit
+			result["alertAction"] = d.CostAlertAction()
+			result["dailyExceeded"] = dailyLimit > 0 && today >= dailyLimit
+			result["weeklyExceeded"] = weeklyLimit > 0 && week >= weeklyLimit
 		}
 
 		json.NewEncoder(w).Encode(result)
@@ -51,26 +165,26 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 
 	// --- Trend Stats ---
 	mux.HandleFunc("/stats/trend", func(w http.ResponseWriter, r *http.Request) {
-		if cfg.HistoryDB == "" {
+		if historyDB == "" {
 			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 
 		days := 7
-		if d := r.URL.Query().Get("days"); d != "" {
-			if n, err := strconv.Atoi(d); err == nil && n > 0 && n <= 90 {
+		if dv := r.URL.Query().Get("days"); dv != "" {
+			if n, err := strconv.Atoi(dv); err == nil && n > 0 && n <= 90 {
 				days = n
 			}
 		}
 
-		stats, err := queryDailyStats(cfg.HistoryDB, days)
+		stats, err := d.QueryDailyStats(historyDB, days)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
 		}
 		if stats == nil {
-			stats = []DayStat{}
+			stats = []history.DayStat{}
 		}
 		json.NewEncoder(w).Encode(stats)
 	})
@@ -81,41 +195,41 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		if cfg.HistoryDB == "" {
+		if historyDB == "" {
 			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 
 		days := 30
-		if d := r.URL.Query().Get("days"); d != "" {
-			if n, err := strconv.Atoi(d); err == nil && n > 0 && n <= 365 {
+		if dv := r.URL.Query().Get("days"); dv != "" {
+			if n, err := strconv.Atoi(dv); err == nil && n > 0 && n <= 365 {
 				days = n
 			}
 		}
 
-		summary, err := queryMetrics(cfg.HistoryDB, days)
+		summary, err := d.QueryMetricsSummary(historyDB, days)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
 		}
 
-		daily, err := queryDailyMetrics(cfg.HistoryDB, days)
+		daily, err := d.QueryDailyMetrics(historyDB, days)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
 		}
 		if daily == nil {
-			daily = []DailyMetrics{}
+			daily = []history.DailyMetrics{}
 		}
 
-		byModel, err := queryProviderMetrics(cfg.HistoryDB, days)
+		byModel, err := d.QueryProviderMetrics(historyDB, days)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
 		}
 		if byModel == nil {
-			byModel = []ProviderMetrics{}
+			byModel = []history.ProviderMetrics{}
 		}
 
 		json.NewEncoder(w).Encode(map[string]any{
@@ -128,7 +242,7 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 
 	// --- Routing Stats ---
 	mux.HandleFunc("/stats/routing", func(w http.ResponseWriter, r *http.Request) {
-		if cfg.HistoryDB == "" {
+		if historyDB == "" {
 			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
@@ -141,28 +255,28 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 			}
 		}
 
-		history, byRole, err := queryRoutingStats(cfg.HistoryDB, limit)
+		routeHistory, byRole, err := audit.QueryRoutingStats(historyDB, limit)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
 		}
-		if history == nil {
-			history = []RoutingHistoryEntry{}
+		if routeHistory == nil {
+			routeHistory = []audit.RoutingHistoryEntry{}
 		}
 		if byRole == nil {
-			byRole = map[string]*AgentRoutingStats{}
+			byRole = map[string]*audit.AgentRoutingStats{}
 		}
 
 		json.NewEncoder(w).Encode(map[string]any{
-			"history": history,
+			"history": routeHistory,
 			"byRole":  byRole,
-			"total":   len(history),
+			"total":   len(routeHistory),
 		})
 	})
 
 	// --- SLA Stats ---
 	mux.HandleFunc("/stats/sla", func(w http.ResponseWriter, r *http.Request) {
-		if cfg.HistoryDB == "" {
+		if historyDB == "" {
 			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
@@ -170,16 +284,14 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 
 		switch r.Method {
 		case http.MethodGet:
-			window := cfg.SLA.WindowOrDefault()
+			slaCfg := d.SLAConfig()
+			window := slaCfg.WindowOrDefault()
 			windowHours := int(window.Hours())
 			if windowHours <= 0 {
 				windowHours = 24
 			}
-			names := make([]string, 0, len(cfg.Agents))
-			for name := range cfg.Agents {
-				names = append(names, name)
-			}
-			statuses, err := sla.QuerySLAStatusAll(cfg.HistoryDB, cfg.SLA.Agents, names, windowHours)
+			names := d.AgentNames()
+			statuses, err := sla.QuerySLAStatusAll(historyDB, slaCfg.Agents, names, windowHours)
 			if err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 				return
@@ -196,15 +308,15 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 					limit = n
 				}
 			}
-			history, _ := sla.QuerySLAHistory(cfg.HistoryDB, role, limit)
-			if history == nil {
-				history = []sla.SLACheckResult{}
+			slaHistory, _ := sla.QuerySLAHistory(historyDB, role, limit)
+			if slaHistory == nil {
+				slaHistory = []sla.SLACheckResult{}
 			}
 
 			json.NewEncoder(w).Encode(map[string]any{
 				"statuses": statuses,
-				"history":  history,
-				"config":   cfg.SLA,
+				"history":  slaHistory,
+				"config":   slaCfg,
 			})
 		default:
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -214,7 +326,7 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 	// --- Budget ---
 	mux.HandleFunc("/budget", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		status := cost.QueryBudgetStatus(cfg.Budgets, cfg.HistoryDB)
+		status := cost.QueryBudgetStatus(d.Budgets(), historyDB)
 		json.NewEncoder(w).Encode(status)
 	})
 
@@ -223,14 +335,13 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		cfg.Budgets.Paused = true
-		configPath := filepath.Join(cfg.BaseDir, "config.json")
-		if err := setBudgetPaused(configPath, true); err != nil {
+		configPath := filepath.Join(d.ConfigPath(), "config.json")
+		if err := d.SetBudgetPaused(configPath, true); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
 		}
-		auditLog(cfg.HistoryDB, "budget.pause", "http", "all paid execution paused", clientIP(r))
-		log.Warn("budget PAUSED by API request", "ip", clientIP(r))
+		audit.Log(historyDB, "budget.pause", "http", "all paid execution paused", httputil.ClientIP(r))
+		log.Warn("budget PAUSED by API request", "ip", httputil.ClientIP(r))
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"paused"}`))
 	})
@@ -240,21 +351,20 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		cfg.Budgets.Paused = false
-		configPath := filepath.Join(cfg.BaseDir, "config.json")
-		if err := setBudgetPaused(configPath, false); err != nil {
+		configPath := filepath.Join(d.ConfigPath(), "config.json")
+		if err := d.SetBudgetPaused(configPath, false); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
 		}
-		auditLog(cfg.HistoryDB, "budget.resume", "http", "paid execution resumed", clientIP(r))
-		log.Info("budget RESUMED by API request", "ip", clientIP(r))
+		audit.Log(historyDB, "budget.resume", "http", "paid execution resumed", httputil.ClientIP(r))
+		log.Info("budget RESUMED by API request", "ip", httputil.ClientIP(r))
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"active"}`))
 	})
 
 	// --- P18.1: Usage / Cost Dashboard API ---
 	mux.HandleFunc("/api/usage/summary", func(w http.ResponseWriter, r *http.Request) {
-		if cfg.HistoryDB == "" {
+		if historyDB == "" {
 			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
@@ -265,27 +375,28 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 			period = "today"
 		}
 
-		summary, err := queryUsageSummary(cfg.HistoryDB, period)
+		summary, err := d.QueryUsageSummary(historyDB, period)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
 		}
 
 		// Overlay budget info.
+		budgets := d.Budgets()
 		switch period {
 		case "today":
-			if cfg.Budgets.Global.Daily > 0 {
-				summary.BudgetLimit = cfg.Budgets.Global.Daily
+			if budgets.Global.Daily > 0 {
+				summary.BudgetLimit = budgets.Global.Daily
 				summary.BudgetPct = summary.TotalCost / summary.BudgetLimit * 100
 			}
 		case "week":
-			if cfg.Budgets.Global.Weekly > 0 {
-				summary.BudgetLimit = cfg.Budgets.Global.Weekly
+			if budgets.Global.Weekly > 0 {
+				summary.BudgetLimit = budgets.Global.Weekly
 				summary.BudgetPct = summary.TotalCost / summary.BudgetLimit * 100
 			}
 		case "month":
-			if cfg.Budgets.Global.Monthly > 0 {
-				summary.BudgetLimit = cfg.Budgets.Global.Monthly
+			if budgets.Global.Monthly > 0 {
+				summary.BudgetLimit = budgets.Global.Monthly
 				summary.BudgetPct = summary.TotalCost / summary.BudgetLimit * 100
 			}
 		}
@@ -294,7 +405,7 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 	})
 
 	mux.HandleFunc("/api/usage/breakdown", func(w http.ResponseWriter, r *http.Request) {
-		if cfg.HistoryDB == "" {
+		if historyDB == "" {
 			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
@@ -302,31 +413,31 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 
 		by := r.URL.Query().Get("by")
 		days := 30
-		if d := r.URL.Query().Get("days"); d != "" {
-			if n, err := strconv.Atoi(d); err == nil && n > 0 && n <= 365 {
+		if dv := r.URL.Query().Get("days"); dv != "" {
+			if n, err := strconv.Atoi(dv); err == nil && n > 0 && n <= 365 {
 				days = n
 			}
 		}
 
 		switch by {
 		case "model":
-			models, err := queryUsageByModel(cfg.HistoryDB, days)
+			models, err := d.QueryUsageByModel(historyDB, days)
 			if err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 				return
 			}
 			if models == nil {
-				models = []ModelUsage{}
+				models = []any{}
 			}
 			json.NewEncoder(w).Encode(models)
 		case "role":
-			roles, err := queryUsageByAgent(cfg.HistoryDB, days)
+			roles, err := d.QueryUsageByAgent(historyDB, days)
 			if err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 				return
 			}
 			if roles == nil {
-				roles = []AgentUsage{}
+				roles = []any{}
 			}
 			json.NewEncoder(w).Encode(roles)
 		default:
@@ -335,7 +446,7 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 	})
 
 	mux.HandleFunc("/api/usage/sessions", func(w http.ResponseWriter, r *http.Request) {
-		if cfg.HistoryDB == "" {
+		if historyDB == "" {
 			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
@@ -348,60 +459,59 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 			}
 		}
 		days := 30
-		if d := r.URL.Query().Get("days"); d != "" {
-			if n, err := strconv.Atoi(d); err == nil && n > 0 && n <= 365 {
+		if dv := r.URL.Query().Get("days"); dv != "" {
+			if n, err := strconv.Atoi(dv); err == nil && n > 0 && n <= 365 {
 				days = n
 			}
 		}
 
-		sessions, err := queryExpensiveSessions(cfg.HistoryDB, limit, days)
+		sessions, err := d.QueryExpensiveSessions(historyDB, limit, days)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
 		}
 		if sessions == nil {
-			sessions = []ExpensiveSession{}
+			sessions = []any{}
 		}
 		json.NewEncoder(w).Encode(sessions)
 	})
 
 	mux.HandleFunc("/api/usage/trend", func(w http.ResponseWriter, r *http.Request) {
-		if cfg.HistoryDB == "" {
+		if historyDB == "" {
 			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 
 		days := 30
-		if d := r.URL.Query().Get("days"); d != "" {
-			if n, err := strconv.Atoi(d); err == nil && n > 0 && n <= 365 {
+		if dv := r.URL.Query().Get("days"); dv != "" {
+			if n, err := strconv.Atoi(dv); err == nil && n > 0 && n <= 365 {
 				days = n
 			}
 		}
 
-		trend, err := queryCostTrend(cfg.HistoryDB, days)
+		trend, err := d.QueryCostTrend(historyDB, days)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
 		}
 		if trend == nil {
-			trend = []DayUsage{}
+			trend = []any{}
 		}
 		json.NewEncoder(w).Encode(trend)
 	})
 
-	// --- Token Telemetry API ---
 	// --- Task Trend (from history.db) ---
 	mux.HandleFunc("/api/tasks/trend", func(w http.ResponseWriter, r *http.Request) {
-		if cfg.HistoryDB == "" {
+		if historyDB == "" {
 			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 
 		days := 14
-		if d := r.URL.Query().Get("days"); d != "" {
-			if n, err := strconv.Atoi(d); err == nil && n > 0 && n <= 90 {
+		if dv := r.URL.Query().Get("days"); dv != "" {
+			if n, err := strconv.Atoi(dv); err == nil && n > 0 && n <= 90 {
 				days = n
 			}
 		}
@@ -420,7 +530,7 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 			return byDate[day]
 		}
 
-		createdRows, err := db.Query(cfg.HistoryDB, fmt.Sprintf(
+		createdRows, err := db.Query(historyDB, fmt.Sprintf(
 			`SELECT date(created_at, 'localtime') as day, COUNT(*) as cnt
 			 FROM tasks
 			 WHERE date(created_at, 'localtime') >= date('now', 'localtime', '-%d days')
@@ -433,7 +543,7 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 			ensure(jsonStr(row["day"])).Created = jsonInt(row["cnt"])
 		}
 
-		doneRows, err := db.Query(cfg.HistoryDB, fmt.Sprintf(
+		doneRows, err := db.Query(historyDB, fmt.Sprintf(
 			`SELECT date(CASE WHEN completed_at != '' THEN completed_at ELSE updated_at END, 'localtime') as day, COUNT(*) as cnt
 			 FROM tasks
 			 WHERE status IN ('done', 'completed')
@@ -448,38 +558,39 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 		}
 
 		dates := make([]string, 0, len(byDate))
-		for d := range byDate {
-			dates = append(dates, d)
+		for dkey := range byDate {
+			dates = append(dates, dkey)
 		}
 		sort.Strings(dates)
 
 		result := make([]TaskDayStat, 0, len(dates))
-		for _, d := range dates {
-			result = append(result, *byDate[d])
+		for _, dkey := range dates {
+			result = append(result, *byDate[dkey])
 		}
 		json.NewEncoder(w).Encode(result)
 	})
 
+	// --- Token Telemetry ---
 	mux.HandleFunc("/api/tokens/summary", func(w http.ResponseWriter, r *http.Request) {
-		if cfg.HistoryDB == "" {
+		if historyDB == "" {
 			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 
 		days := 7
-		if d := r.URL.Query().Get("days"); d != "" {
-			if n, err := strconv.Atoi(d); err == nil && n > 0 && n <= 365 {
+		if dv := r.URL.Query().Get("days"); dv != "" {
+			if n, err := strconv.Atoi(dv); err == nil && n > 0 && n <= 365 {
 				days = n
 			}
 		}
 
-		summaryRows, err := telemetry.QueryUsageSummary(cfg.HistoryDB, days)
+		summaryRows, err := telemetry.QueryUsageSummary(historyDB, days)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
 		}
-		roleRows, err := telemetry.QueryUsageByRole(cfg.HistoryDB, days)
+		roleRows, err := telemetry.QueryUsageByRole(historyDB, days)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
@@ -503,7 +614,7 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 
 	// --- Period Comparison ---
 	mux.HandleFunc("/api/usage/compare", func(w http.ResponseWriter, r *http.Request) {
-		if cfg.HistoryDB == "" {
+		if historyDB == "" {
 			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
@@ -514,7 +625,7 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 			period = "week"
 		}
 
-		current, err := queryUsageSummary(cfg.HistoryDB, period)
+		current, err := d.QueryUsageSummary(historyDB, period)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
@@ -522,8 +633,8 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 
 		// Query previous period for comparison.
 		prevPeriod := "prev_" + period
-		previous, err := queryUsageSummary(cfg.HistoryDB, prevPeriod)
-		if err != nil {
+		previous, prevErr := d.QueryUsageSummary(historyDB, prevPeriod)
+		if prevErr != nil {
 			// If prev query fails, return current with zero deltas.
 			previous = &UsageSummary{}
 		}
@@ -549,20 +660,20 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 
 	// --- Agent Scorecard ---
 	mux.HandleFunc("/api/agents/scorecard", func(w http.ResponseWriter, r *http.Request) {
-		if cfg.HistoryDB == "" {
+		if historyDB == "" {
 			http.Error(w, `{"error":"history DB not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 
 		days := 7
-		if d := r.URL.Query().Get("days"); d != "" {
-			if n, err := strconv.Atoi(d); err == nil && n > 0 && n <= 365 {
+		if dv := r.URL.Query().Get("days"); dv != "" {
+			if n, err := strconv.Atoi(dv); err == nil && n > 0 && n <= 365 {
 				days = n
 			}
 		}
 
-		sql := fmt.Sprintf(`
+		scorecardSQL := fmt.Sprintf(`
 			SELECT assignee,
 			       COUNT(*) as total_tasks,
 			       SUM(CASE WHEN status IN ('done','completed') THEN 1 ELSE 0 END) as done_tasks,
@@ -577,7 +688,7 @@ func (s *Server) registerStatsRoutes(mux *http.ServeMux) {
 			ORDER BY done_tasks DESC
 		`, days)
 
-		rows, err := db.Query(cfg.HistoryDB, sql)
+		rows, err := db.Query(historyDB, scorecardSQL)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return

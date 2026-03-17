@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+
+	"tetora/internal/audit"
 	"strings"
 	"testing"
 	"time"
@@ -472,7 +474,7 @@ func TestClientIP_XForwardedForTrimmed(t *testing.T) {
 
 func TestParseRouteDetail_Full(t *testing.T) {
 	detail := "role=琉璃 method=keyword confidence=high prompt=review this code"
-	role, method, confidence, prompt := parseRouteDetail(detail)
+	role, method, confidence, prompt := audit.ParseRouteDetail(detail)
 	if role != "琉璃" {
 		t.Errorf("role = %q, want %q", role, "琉璃")
 	}
@@ -489,7 +491,7 @@ func TestParseRouteDetail_Full(t *testing.T) {
 
 func TestParseRouteDetail_NoPrompt(t *testing.T) {
 	detail := "role=黒曜 method=llm confidence=medium"
-	role, method, confidence, prompt := parseRouteDetail(detail)
+	role, method, confidence, prompt := audit.ParseRouteDetail(detail)
 	if role != "黒曜" {
 		t.Errorf("role = %q, want %q", role, "黒曜")
 	}
@@ -505,15 +507,15 @@ func TestParseRouteDetail_NoPrompt(t *testing.T) {
 }
 
 func TestParseRouteDetail_Empty(t *testing.T) {
-	role, method, confidence, prompt := parseRouteDetail("")
+	role, method, confidence, prompt := audit.ParseRouteDetail("")
 	if role != "" || method != "" || confidence != "" || prompt != "" {
-		t.Errorf("parseRouteDetail(\"\") = (%q,%q,%q,%q), want all empty", role, method, confidence, prompt)
+		t.Errorf("audit.ParseRouteDetail(\"\") = (%q,%q,%q,%q), want all empty", role, method, confidence, prompt)
 	}
 }
 
 func TestParseRouteDetail_PromptWithSpaces(t *testing.T) {
 	detail := "role=翡翠 method=keyword confidence=high prompt=check the deployment status for all services"
-	_, _, _, prompt := parseRouteDetail(detail)
+	_, _, _, prompt := audit.ParseRouteDetail(detail)
 	if prompt != "check the deployment status for all services" {
 		t.Errorf("prompt = %q, want %q", prompt, "check the deployment status for all services")
 	}

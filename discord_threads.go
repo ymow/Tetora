@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"tetora/internal/audit"
 	"tetora/internal/log"
 	"tetora/internal/trace"
 )
@@ -520,7 +521,7 @@ func (db *DiscordBot) handleThreadRoute(msg discordMessage, prompt string, bindi
 		setMemory(db.cfg, role, "last_thread_time", time.Now().Format(time.RFC3339))
 	}
 
-	auditLog(dbPath, "thread.dispatch", "discord",
+	audit.Log(dbPath, "thread.dispatch", "discord",
 		fmt.Sprintf("agent=%s thread=%s session=%s", role, msg.ChannelID, task.SessionID), "")
 
 	// Send response embed.

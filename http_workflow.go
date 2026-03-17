@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"tetora/internal/audit"
 	"tetora/internal/log"
 	"tetora/internal/db"
 	"tetora/internal/trace"
@@ -68,7 +69,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 				return
 			}
-			auditLog(cfg.HistoryDB, "workflow.create", "http",
+			audit.Log(cfg.HistoryDB, "workflow.create", "http",
 				fmt.Sprintf("name=%s steps=%d", wf.Name, len(wf.Steps)), clientIP(r))
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]string{"status": "created", "name": wf.Name})
@@ -121,7 +122,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 			return
 		}
 
-		auditLog(cfg.HistoryDB, "workflow.import", "http",
+		audit.Log(cfg.HistoryDB, "workflow.import", "http",
 			fmt.Sprintf("name=%s steps=%d", wf.Name, len(wf.Steps)), clientIP(r))
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]string{"status": "imported", "name": wf.Name})
@@ -187,7 +188,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusNotFound)
 				return
 			}
-			auditLog(cfg.HistoryDB, "workflow.delete", "http",
+			audit.Log(cfg.HistoryDB, "workflow.delete", "http",
 				fmt.Sprintf("name=%s", name), clientIP(r))
 			json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "name": name})
 
@@ -214,7 +215,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 				}
 			}
 
-			auditLog(cfg.HistoryDB, "workflow.run", "http",
+			audit.Log(cfg.HistoryDB, "workflow.run", "http",
 				fmt.Sprintf("name=%s", name), clientIP(r))
 
 			// Run asynchronously.
@@ -248,7 +249,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 					delete(body.Variables, k)
 				}
 			}
-			auditLog(cfg.HistoryDB, "workflow.dry-run", "http",
+			audit.Log(cfg.HistoryDB, "workflow.dry-run", "http",
 				fmt.Sprintf("name=%s", name), clientIP(r))
 			// Dry run is synchronous — no real provider calls.
 			run := executeWorkflow(r.Context(), cfg, wf, body.Variables, state, sem, childSem, WorkflowModeDryRun)
@@ -271,7 +272,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
 				return
 			}
-			auditLog(cfg.HistoryDB, "workflow.restore", "http",
+			audit.Log(cfg.HistoryDB, "workflow.restore", "http",
 				fmt.Sprintf("name=%s version=%s", name, restoreBody.VersionID), clientIP(r))
 			json.NewEncoder(w).Encode(map[string]string{"status": "restored", "workflow": name, "versionId": restoreBody.VersionID})
 
@@ -339,7 +340,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 			)); err != nil {
 				log.Warn("cancel workflow run failed", "runID", runID, "error", err)
 			}
-			auditLog(cfg.HistoryDB, "workflow.cancel", "http",
+			audit.Log(cfg.HistoryDB, "workflow.cancel", "http",
 				fmt.Sprintf("runID=%s", runID), clientIP(r))
 			json.NewEncoder(w).Encode(map[string]string{"status": "cancelled", "runId": runID})
 			return
@@ -358,7 +359,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 				return
 			}
 
-			auditLog(cfg.HistoryDB, "workflow.resume", "http",
+			audit.Log(cfg.HistoryDB, "workflow.resume", "http",
 				fmt.Sprintf("originalRunID=%s", runID), clientIP(r))
 
 			wfTraceID := trace.IDFromContext(r.Context())
@@ -483,7 +484,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 			if installedName == "" {
 				installedName = name
 			}
-			auditLog(cfg.HistoryDB, "template.install", "http",
+			audit.Log(cfg.HistoryDB, "template.install", "http",
 				fmt.Sprintf("template=%s installed_as=%s", name, installedName), clientIP(r))
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]string{"status": "installed", "name": installedName})
@@ -607,7 +608,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 				http.Error(w, fmt.Sprintf(`{"error":"save failed: %v"}`, err), http.StatusInternalServerError)
 				return
 			}
-			auditLog(cfg.HistoryDB, "trigger.create", "http",
+			audit.Log(cfg.HistoryDB, "trigger.create", "http",
 				fmt.Sprintf("name=%s type=%s workflow=%s", t.Name, t.Trigger.Type, t.WorkflowName), clientIP(r))
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]string{"status": "created", "name": t.Name})
@@ -733,7 +734,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 					// Seq allocated atomically with Deliver to prevent race (#R2-1).
 					appendStreamingCallback(cfg.HistoryDB, key, out.Seq, cbResult)
 				}
-				auditLog(cfg.HistoryDB, "callback."+status, "http",
+				audit.Log(cfg.HistoryDB, "callback."+status, "http",
 					fmt.Sprintf("key=%s", key), clientIP(r))
 				json.NewEncoder(w).Encode(map[string]string{"status": status})
 				return
@@ -760,7 +761,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 			return
 		}
 		markCallbackDelivered(cfg.HistoryDB, key, 0, cbResult)
-		auditLog(cfg.HistoryDB, "callback.stored", "http",
+		audit.Log(cfg.HistoryDB, "callback.stored", "http",
 			fmt.Sprintf("key=%s (no active channel)", key), clientIP(r))
 		json.NewEncoder(w).Encode(map[string]string{"status": "stored"})
 	})
@@ -806,7 +807,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), status)
 				return
 			}
-			auditLog(cfg.HistoryDB, "trigger.webhook", "http",
+			audit.Log(cfg.HistoryDB, "trigger.webhook", "http",
 				fmt.Sprintf("trigger=%s", webhookID), clientIP(r))
 			json.NewEncoder(w).Encode(map[string]string{
 				"status":  "accepted",
@@ -825,7 +826,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
 				return
 			}
-			auditLog(cfg.HistoryDB, "trigger.fire", "http",
+			audit.Log(cfg.HistoryDB, "trigger.fire", "http",
 				fmt.Sprintf("trigger=%s", name), clientIP(r))
 			json.NewEncoder(w).Encode(map[string]string{
 				"status":  "accepted",
@@ -852,7 +853,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 				http.Error(w, fmt.Sprintf(`{"error":"toggle failed: %v"}`, err), http.StatusInternalServerError)
 				return
 			}
-			auditLog(cfg.HistoryDB, "trigger.toggle", "http",
+			audit.Log(cfg.HistoryDB, "trigger.toggle", "http",
 				fmt.Sprintf("trigger=%s enabled=%v", name, newEnabled), clientIP(r))
 			json.NewEncoder(w).Encode(map[string]any{"status": "toggled", "name": name, "enabled": newEnabled})
 
@@ -892,7 +893,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 				http.Error(w, `{"error":"trigger not found"}`, http.StatusNotFound)
 				return
 			}
-			auditLog(cfg.HistoryDB, "trigger.update", "http",
+			audit.Log(cfg.HistoryDB, "trigger.update", "http",
 				fmt.Sprintf("trigger=%s", name), clientIP(r))
 			json.NewEncoder(w).Encode(map[string]string{"status": "updated", "name": name})
 
@@ -916,7 +917,7 @@ func (s *Server) registerWorkflowRoutes(mux *http.ServeMux) {
 				http.Error(w, `{"error":"trigger not found"}`, http.StatusNotFound)
 				return
 			}
-			auditLog(cfg.HistoryDB, "trigger.delete", "http",
+			audit.Log(cfg.HistoryDB, "trigger.delete", "http",
 				fmt.Sprintf("trigger=%s", name), clientIP(r))
 			json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "name": name})
 

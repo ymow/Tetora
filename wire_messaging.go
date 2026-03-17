@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"time"
 
+	"tetora/internal/audit"
 	"tetora/internal/log"
 	"tetora/internal/messaging"
 	"tetora/internal/trace"
@@ -216,7 +217,7 @@ func (r *messagingRuntime) ClientIP(req *http.Request) string {
 }
 
 func (r *messagingRuntime) AuditLog(action, source, target, ip string) {
-	auditLog(r.cfg.HistoryDB, action, source, target, ip)
+	audit.Log(r.cfg.HistoryDB, action, source, target, ip)
 }
 
 func (r *messagingRuntime) QueryCostStats() (today, week, month float64) {

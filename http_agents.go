@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"tetora/internal/audit"
 	"tetora/internal/log"
 	"tetora/internal/quickaction"
 )
@@ -59,7 +60,7 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 				return
 			}
-			auditLog(cfg.HistoryDB, "agent.message", "http",
+			audit.Log(cfg.HistoryDB, "agent.message", "http",
 				fmt.Sprintf("%s→%s type=%s", msg.FromAgent, msg.ToAgent, msg.Type), clientIP(r))
 			json.NewEncoder(w).Encode(map[string]string{"status": "sent", "id": msg.ID})
 
@@ -728,7 +729,7 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 			recordTrustEvent(cfg.HistoryDB, agentName, "set", oldLevel, body.Level, 0,
 				"set via API")
 
-			auditLog(cfg.HistoryDB, "trust.set", "http",
+			audit.Log(cfg.HistoryDB, "trust.set", "http",
 				fmt.Sprintf("agent=%s from=%s to=%s", agentName, oldLevel, body.Level), clientIP(r))
 
 			json.NewEncoder(w).Encode(getTrustStatus(cfg, agentName))

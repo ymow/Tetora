@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"tetora/internal/audit"
 	"tetora/internal/history"
 	"tetora/internal/log"
 	"tetora/internal/quiet"
@@ -1136,7 +1137,7 @@ func (ce *CronEngine) runJob(ctx context.Context, j *cronJob) {
 		} else {
 			for _, targetID := range chainTargets {
 				log.InfoCtx(ctx, "cron job chain trigger", "jobId", j.ID, "target", targetID, "depth", j.chainDepth+1)
-				auditLog(ce.cfg.HistoryDB, "job.chain", "cron",
+				audit.Log(ce.cfg.HistoryDB, "job.chain", "cron",
 					fmt.Sprintf("%s → %s (depth=%d, trigger=%s)", j.ID, targetID, j.chainDepth+1, result.Status), "")
 				if err := ce.runChainJob(ce.ctx, targetID, j.chainDepth+1); err != nil {
 					log.ErrorCtx(ctx, "cron chain trigger failed", "target", targetID, "error", err)

@@ -10,6 +10,7 @@ import (
 	"tetora/internal/log"
 	"tetora/internal/db"
 	"tetora/internal/export"
+	"tetora/internal/scheduling"
 	"time"
 )
 
@@ -414,7 +415,14 @@ func boolToHealthy(ok bool) string {
 
 // toolBackupNow triggers an immediate backup.
 func toolBackupNow(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
-	bs := newBackupScheduler(cfg)
+	bs := scheduling.NewBackupScheduler(scheduling.BackupConfig{
+		DBPath:     cfg.HistoryDB,
+		BackupDir:  cfg.Ops.BackupDirResolved(cfg.BaseDir),
+		RetainDays: cfg.Ops.BackupRetainOrDefault(),
+		EscapeSQL:  db.Escape,
+		LogInfo:    log.Info,
+		LogWarn:    log.Warn,
+	})
 	result, err := bs.RunBackup()
 	if err != nil {
 		return "", fmt.Errorf("backup failed: %w", err)

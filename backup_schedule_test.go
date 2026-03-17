@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-
 	"tetora/internal/db"
+	"tetora/internal/log"
+	"tetora/internal/scheduling"
 )
 
 func TestBackupScheduler_RunBackup(t *testing.T) {
@@ -32,7 +33,14 @@ func TestBackupScheduler_RunBackup(t *testing.T) {
 		},
 	}
 
-	bs := newBackupScheduler(cfg)
+	bs := scheduling.NewBackupScheduler(scheduling.BackupConfig{
+		DBPath:     cfg.HistoryDB,
+		BackupDir:  cfg.Ops.BackupDirResolved(cfg.BaseDir),
+		RetainDays: cfg.Ops.BackupRetainOrDefault(),
+		EscapeSQL:  db.Escape,
+		LogInfo:    log.Info,
+		LogWarn:    log.Warn,
+	})
 
 	result, err := bs.RunBackup()
 	if err != nil {
@@ -79,7 +87,14 @@ func TestBackupScheduler_RunBackup(t *testing.T) {
 
 func TestBackupScheduler_RunBackupNoHistoryDB(t *testing.T) {
 	cfg := &Config{HistoryDB: ""}
-	bs := newBackupScheduler(cfg)
+	bs := scheduling.NewBackupScheduler(scheduling.BackupConfig{
+		DBPath:     cfg.HistoryDB,
+		BackupDir:  cfg.Ops.BackupDirResolved(cfg.BaseDir),
+		RetainDays: cfg.Ops.BackupRetainOrDefault(),
+		EscapeSQL:  db.Escape,
+		LogInfo:    log.Info,
+		LogWarn:    log.Warn,
+	})
 
 	_, err := bs.RunBackup()
 	if err == nil {
@@ -119,7 +134,14 @@ func TestBackupScheduler_CleanOldBackups(t *testing.T) {
 		},
 	}
 
-	bs := newBackupScheduler(cfg)
+	bs := scheduling.NewBackupScheduler(scheduling.BackupConfig{
+		DBPath:     cfg.HistoryDB,
+		BackupDir:  cfg.Ops.BackupDirResolved(cfg.BaseDir),
+		RetainDays: cfg.Ops.BackupRetainOrDefault(),
+		EscapeSQL:  db.Escape,
+		LogInfo:    log.Info,
+		LogWarn:    log.Warn,
+	})
 	removed := bs.CleanOldBackups()
 
 	if removed != 1 {
@@ -160,7 +182,14 @@ func TestBackupScheduler_ListBackups(t *testing.T) {
 		},
 	}
 
-	bs := newBackupScheduler(cfg)
+	bs := scheduling.NewBackupScheduler(scheduling.BackupConfig{
+		DBPath:     cfg.HistoryDB,
+		BackupDir:  cfg.Ops.BackupDirResolved(cfg.BaseDir),
+		RetainDays: cfg.Ops.BackupRetainOrDefault(),
+		EscapeSQL:  db.Escape,
+		LogInfo:    log.Info,
+		LogWarn:    log.Warn,
+	})
 	backups, err := bs.ListBackups()
 	if err != nil {
 		t.Fatalf("ListBackups failed: %v", err)
@@ -186,7 +215,14 @@ func TestBackupScheduler_ListBackupsEmptyDir(t *testing.T) {
 		},
 	}
 
-	bs := newBackupScheduler(cfg)
+	bs := scheduling.NewBackupScheduler(scheduling.BackupConfig{
+		DBPath:     cfg.HistoryDB,
+		BackupDir:  cfg.Ops.BackupDirResolved(cfg.BaseDir),
+		RetainDays: cfg.Ops.BackupRetainOrDefault(),
+		EscapeSQL:  db.Escape,
+		LogInfo:    log.Info,
+		LogWarn:    log.Warn,
+	})
 	backups, err := bs.ListBackups()
 	if err != nil {
 		t.Fatalf("ListBackups failed: %v", err)
@@ -211,7 +247,14 @@ func TestBackupScheduler_DefaultBackupDir(t *testing.T) {
 		Ops:       OpsConfig{}, // No backupDir set — should use default.
 	}
 
-	bs := newBackupScheduler(cfg)
+	bs := scheduling.NewBackupScheduler(scheduling.BackupConfig{
+		DBPath:     cfg.HistoryDB,
+		BackupDir:  cfg.Ops.BackupDirResolved(cfg.BaseDir),
+		RetainDays: cfg.Ops.BackupRetainOrDefault(),
+		EscapeSQL:  db.Escape,
+		LogInfo:    log.Info,
+		LogWarn:    log.Warn,
+	})
 	result, err := bs.RunBackup()
 	if err != nil {
 		t.Fatalf("RunBackup with default dir failed: %v", err)
@@ -232,7 +275,7 @@ func TestCopyFile(t *testing.T) {
 	content := "hello world"
 	os.WriteFile(src, []byte(content), 0o644)
 
-	err := copyFile(src, dst)
+	err := scheduling.CopyFile(src, dst)
 	if err != nil {
 		t.Fatalf("copyFile failed: %v", err)
 	}
@@ -248,7 +291,7 @@ func TestCopyFile(t *testing.T) {
 
 func TestCopyFile_SourceNotExists(t *testing.T) {
 	dir := t.TempDir()
-	err := copyFile(filepath.Join(dir, "nonexistent"), filepath.Join(dir, "dst"))
+	err := scheduling.CopyFile(filepath.Join(dir, "nonexistent"), filepath.Join(dir, "dst"))
 	if err == nil {
 		t.Error("expected error for missing source")
 	}

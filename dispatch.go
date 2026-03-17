@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"tetora/internal/audit"
 	"tetora/internal/classify"
 	"tetora/internal/cost"
 	dtypes "tetora/internal/dispatch"
@@ -1144,7 +1145,7 @@ func retryTask(ctx context.Context, cfg *Config, taskID string, state *dispatchS
 		state.mu.Unlock()
 	}
 
-	auditLog(cfg.HistoryDB, "task.retry", task.Source,
+	audit.Log(cfg.HistoryDB, "task.retry", task.Source,
 		fmt.Sprintf("original=%s new=%s status=%s", taskID, task.ID, result.Status), "")
 
 	return &result, nil
@@ -1173,7 +1174,7 @@ func rerouteTask(ctx context.Context, cfg *Config, taskID string, state *dispatc
 		state.mu.Unlock()
 	}
 
-	auditLog(cfg.HistoryDB, "task.reroute", "reroute",
+	audit.Log(cfg.HistoryDB, "task.reroute", "reroute",
 		fmt.Sprintf("original=%s role=%s status=%s", taskID, result.Route.Agent, result.Task.Status), "")
 
 	return result, nil
