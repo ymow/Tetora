@@ -33,7 +33,6 @@ type DiscordBot struct {
 	seqMu     sync.Mutex
 
 	api          *discord.Client
-	client       *http.Client
 	stopCh       chan struct{}
 	interactions *discordInteractionState // P14.1: tracks pending component interactions
 	threads       *threadBindingStore      // P14.2: per-thread agent bindings
@@ -62,7 +61,6 @@ func newDiscordBot(cfg *Config, state *dispatchState, sem, childSem chan struct{
 		childSem:     childSem,
 		cron:         cron,
 		api:          apiClient,
-		client:       apiClient.HTTPClient,
 		stopCh:       make(chan struct{}),
 		interactions:  newDiscordInteractionState(), // P14.1
 		threads:       newThreadBindingStore(),      // P14.2
@@ -794,7 +792,7 @@ func (db *DiscordBot) executeRoute(msg discordMessage, prompt string, route Rout
 
 	// P14.3: Add queued reaction.
 	if db.reactions != nil {
-		db.reactions.reactQueued(msg.ChannelID, msg.ID)
+		db.reactions.ReactQueued(msg.ChannelID, msg.ID)
 	}
 
 	baseCtx, baseCancel := context.WithCancel(context.Background())
@@ -913,7 +911,7 @@ func (db *DiscordBot) executeRoute(msg discordMessage, prompt string, route Rout
 
 	// P14.3: Transition to thinking phase before task execution.
 	if db.reactions != nil {
-		db.reactions.reactThinking(msg.ChannelID, msg.ID)
+		db.reactions.ReactThinking(msg.ChannelID, msg.ID)
 	}
 
 	// Update Discord activity: routing → processing.
@@ -1050,9 +1048,9 @@ func (db *DiscordBot) executeRoute(msg discordMessage, prompt string, route Rout
 	// P14.3: Set done/error reaction based on result.
 	if db.reactions != nil {
 		if result.Status == "success" {
-			db.reactions.reactDone(msg.ChannelID, msg.ID)
+			db.reactions.ReactDone(msg.ChannelID, msg.ID)
 		} else {
-			db.reactions.reactError(msg.ChannelID, msg.ID)
+			db.reactions.ReactError(msg.ChannelID, msg.ID)
 		}
 	}
 

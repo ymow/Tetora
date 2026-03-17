@@ -197,7 +197,7 @@ func (db *DiscordBot) SetTyping(ctx context.Context, channelRef string) error {
 		return err
 	}
 	req.Header.Set("Authorization", "Bot "+db.cfg.Discord.BotToken)
-	resp, err := db.client.Do(req)
+	resp, err := db.api.HTTPClient.Do(req)
 	if err != nil {
 		return err
 	}

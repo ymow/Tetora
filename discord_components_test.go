@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"tetora/internal/discord"
 )
 
 // --- Ed25519 Signature Verification ---
@@ -72,7 +74,7 @@ func TestDiscordComponentPingPong(t *testing.T) {
 
 	cfg := &Config{}
 	cfg.Discord.PublicKey = pubHex
-	db := &DiscordBot{cfg: cfg, client: &http.Client{}}
+	db := &DiscordBot{cfg: cfg, api: discord.NewClient("")}
 
 	body := []byte(`{"type":1}`)
 	timestamp := "1234567890"
@@ -105,7 +107,7 @@ func TestDiscordComponentInvalidSignature401(t *testing.T) {
 
 	cfg := &Config{}
 	cfg.Discord.PublicKey = pubHex
-	db := &DiscordBot{cfg: cfg, client: &http.Client{}}
+	db := &DiscordBot{cfg: cfg, api: discord.NewClient("")}
 
 	body := []byte(`{"type":1}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/discord/interactions", strings.NewReader(string(body)))
@@ -136,7 +138,7 @@ func TestDiscordComponentButtonRouting(t *testing.T) {
 		Callback:  func(data discordInteractionData) {},
 	})
 
-	db := &DiscordBot{cfg: cfg, client: &http.Client{}, interactions: interactions}
+	db := &DiscordBot{cfg: cfg, api: discord.NewClient(""), interactions: interactions}
 
 	payload := map[string]any{
 		"type":    interactionTypeMessageComponent,
@@ -176,7 +178,7 @@ func TestDiscordComponentSelectMenuValues(t *testing.T) {
 
 	cfg := &Config{}
 	cfg.Discord.PublicKey = pubHex
-	db := &DiscordBot{cfg: cfg, client: &http.Client{}, interactions: newDiscordInteractionState()}
+	db := &DiscordBot{cfg: cfg, api: discord.NewClient(""), interactions: newDiscordInteractionState()}
 
 	payload := map[string]any{
 		"type":    interactionTypeMessageComponent,
@@ -219,7 +221,7 @@ func TestDiscordComponentModalSubmitParsing(t *testing.T) {
 
 	cfg := &Config{}
 	cfg.Discord.PublicKey = pubHex
-	db := &DiscordBot{cfg: cfg, client: &http.Client{}, interactions: newDiscordInteractionState()}
+	db := &DiscordBot{cfg: cfg, api: discord.NewClient(""), interactions: newDiscordInteractionState()}
 
 	payload := map[string]any{
 		"type":    interactionTypeModalSubmit,
@@ -283,7 +285,7 @@ func TestDiscordComponentAllowedUsersEnforcement(t *testing.T) {
 		Callback:   func(data discordInteractionData) {},
 	})
 
-	db := &DiscordBot{cfg: cfg, client: &http.Client{}, interactions: interactions}
+	db := &DiscordBot{cfg: cfg, api: discord.NewClient(""), interactions: interactions}
 
 	// Interaction from a disallowed user (no member/user = empty userID).
 	payload := map[string]any{
@@ -469,7 +471,7 @@ func TestDiscordComponentExtractModalValues(t *testing.T) {
 func TestDiscordComponentMissingSignatureHeaders(t *testing.T) {
 	cfg := &Config{}
 	cfg.Discord.PublicKey = "aabbccdd" // doesn't matter, headers missing
-	db := &DiscordBot{cfg: cfg, client: &http.Client{}}
+	db := &DiscordBot{cfg: cfg, api: discord.NewClient("")}
 
 	body := `{"type":1}`
 	req := httptest.NewRequest(http.MethodPost, "/api/discord/interactions", strings.NewReader(body))
@@ -526,7 +528,7 @@ func TestDiscordComponentAgentSelectMenu(t *testing.T) {
 func TestDiscordComponentNoPublicKey(t *testing.T) {
 	cfg := &Config{}
 	// No public key set.
-	db := &DiscordBot{cfg: cfg, client: &http.Client{}}
+	db := &DiscordBot{cfg: cfg, api: discord.NewClient("")}
 
 	body := `{"type":1}`
 	req := httptest.NewRequest(http.MethodPost, "/api/discord/interactions", strings.NewReader(body))
