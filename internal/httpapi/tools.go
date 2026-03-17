@@ -1,56 +1,55 @@
-package main
+package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 )
 
-func (s *Server) registerToolRoutes(mux *http.ServeMux) {
-	cfg := s.cfg
+// ToolsDeps holds dependencies for tools, MCP, embedding, proactive, and groupchat HTTP handlers.
+type ToolsDeps struct {
+	ListTools      func() any
+	MCPStatus      func() any
+	MCPRestart     func(name string) error
+	HybridSearch   func(ctx context.Context, query, source string, topK int) (any, error)
+	ReindexAll     func(ctx context.Context) error
+	EmbeddingStatus func() (any, error)
+	ProactiveEnabled bool
+	ListProactiveRules func() any
+	TriggerProactiveRule func(name string) error
+	GroupChatEnabled bool
+	GroupChatStatus  func() any
+	HandleAPIDocs    http.HandlerFunc
+	HandleAPISpec    http.HandlerFunc
+}
 
-	// --- Tool Engine ---
+// RegisterToolRoutes registers tool, MCP, embedding, proactive, and groupchat API routes.
+func RegisterToolRoutes(mux *http.ServeMux, d ToolsDeps) {
 	mux.HandleFunc("/api/tools", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if cfg.Runtime.ToolRegistry == nil {
-			json.NewEncoder(w).Encode([]any{})
-			return
+		tools := d.ListTools()
+		if tools == nil {
+			tools = []any{}
 		}
-		tools := cfg.Runtime.ToolRegistry.(*ToolRegistry).List()
-		result := make([]map[string]any, 0, len(tools))
-		for _, t := range tools {
-			var schema map[string]any
-			if len(t.InputSchema) > 0 {
-				json.Unmarshal(t.InputSchema, &schema)
-			}
-			result = append(result, map[string]any{
-				"name":        t.Name,
-				"description": t.Description,
-				"inputSchema": schema,
-				"builtin":     t.Builtin,
-				"requireAuth": t.RequireAuth,
-			})
-		}
-		json.NewEncoder(w).Encode(result)
+		json.NewEncoder(w).Encode(tools)
 	})
 
-	// --- MCP Host ---
 	mux.HandleFunc("/api/mcp/servers", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if s.mcpHost == nil {
-			json.NewEncoder(w).Encode([]any{})
-			return
+		statuses := d.MCPStatus()
+		if statuses == nil {
+			statuses = []any{}
 		}
-		statuses := s.mcpHost.ServerStatus()
 		json.NewEncoder(w).Encode(statuses)
 	})
 
@@ -59,11 +58,6 @@ func (s *Server) registerToolRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		if s.mcpHost == nil {
-			http.Error(w, `{"error":"MCP host not enabled"}`, http.StatusBadRequest)
-			return
-		}
-		// Extract server name from path
 		path := strings.TrimPrefix(r.URL.Path, "/api/mcp/servers/")
 		parts := strings.Split(path, "/")
 		if len(parts) != 2 || parts[1] != "restart" {
@@ -71,7 +65,7 @@ func (s *Server) registerToolRoutes(mux *http.ServeMux) {
 			return
 		}
 		serverName := parts[0]
-		if err := s.mcpHost.RestartServer(serverName); err != nil {
+		if err := d.MCPRestart(serverName); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
 			return
 		}
@@ -82,7 +76,6 @@ func (s *Server) registerToolRoutes(mux *http.ServeMux) {
 		})
 	})
 
-	// --- Embedding / Semantic Search ---
 	mux.HandleFunc("/api/embedding/search", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
@@ -100,7 +93,7 @@ func (s *Server) registerToolRoutes(mux *http.ServeMux) {
 		if req.TopK <= 0 {
 			req.TopK = 10
 		}
-		results, err := hybridSearch(r.Context(), cfg, req.Query, req.Source, req.TopK)
+		results, err := d.HybridSearch(r.Context(), req.Query, req.Source, req.TopK)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
@@ -114,7 +107,7 @@ func (s *Server) registerToolRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		if err := reindexAll(r.Context(), cfg); err != nil {
+		if err := d.ReindexAll(r.Context()); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
 		}
@@ -127,7 +120,7 @@ func (s *Server) registerToolRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		stats, err := embeddingStatus(cfg.HistoryDB)
+		stats, err := d.EmbeddingStatus()
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 			return
@@ -136,19 +129,17 @@ func (s *Server) registerToolRoutes(mux *http.ServeMux) {
 		json.NewEncoder(w).Encode(stats)
 	})
 
-	// --- Proactive Agent API ---
 	mux.HandleFunc("/api/proactive/rules", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		if s.proactiveEngine == nil {
+		if !d.ProactiveEnabled {
 			http.Error(w, `{"error":"proactive engine not enabled"}`, http.StatusServiceUnavailable)
 			return
 		}
-		rules := s.proactiveEngine.ListRules()
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(rules)
+		json.NewEncoder(w).Encode(d.ListProactiveRules())
 	})
 
 	mux.HandleFunc("/api/proactive/rules/", func(w http.ResponseWriter, r *http.Request) {
@@ -156,12 +147,11 @@ func (s *Server) registerToolRoutes(mux *http.ServeMux) {
 			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		if s.proactiveEngine == nil {
+		if !d.ProactiveEnabled {
 			http.Error(w, `{"error":"proactive engine not enabled"}`, http.StatusServiceUnavailable)
 			return
 		}
 
-		// Extract rule name from path: /api/proactive/rules/{name}/trigger
 		path := strings.TrimPrefix(r.URL.Path, "/api/proactive/rules/")
 		parts := strings.Split(path, "/")
 		if len(parts) != 2 || parts[1] != "trigger" {
@@ -170,7 +160,7 @@ func (s *Server) registerToolRoutes(mux *http.ServeMux) {
 		}
 
 		ruleName := parts[0]
-		if err := s.proactiveEngine.TriggerRule(ruleName); err != nil {
+		if err := d.TriggerProactiveRule(ruleName); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
 			return
 		}
@@ -179,23 +169,19 @@ func (s *Server) registerToolRoutes(mux *http.ServeMux) {
 		w.Write([]byte(fmt.Sprintf(`{"status":"triggered","rule":"%s"}`, ruleName)))
 	})
 
-	// --- Group Chat ---
 	mux.HandleFunc("/api/groupchat/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		if s.groupChatEngine == nil {
+		if !d.GroupChatEnabled {
 			http.Error(w, `{"error":"group chat engine not enabled"}`, http.StatusServiceUnavailable)
 			return
 		}
-		status := s.groupChatEngine.Status()
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(status)
+		json.NewEncoder(w).Encode(d.GroupChatStatus())
 	})
 
-	// --- API Documentation ---
-	// NOTE: /api/docs is registered in http_docs.go (registerDocsRoutes)
-	mux.HandleFunc("/api/openapi", handleAPIDocs)
-	mux.HandleFunc("/api/spec", handleAPISpec(cfg))
+	mux.HandleFunc("/api/openapi", d.HandleAPIDocs)
+	mux.HandleFunc("/api/spec", d.HandleAPISpec)
 }

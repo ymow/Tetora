@@ -542,7 +542,66 @@ func startHTTPServer(s *Server) *http.Server {
 		HistoryDB:       func() string { return s.Cfg().HistoryDB },
 	})
 	s.registerSessionRoutes(mux)
-	s.registerToolRoutes(mux)
+	httpapi.RegisterToolRoutes(mux, httpapi.ToolsDeps{
+		ListTools: func() any {
+			if cfg.Runtime.ToolRegistry == nil {
+				return []any{}
+			}
+			tools := cfg.Runtime.ToolRegistry.(*ToolRegistry).List()
+			result := make([]map[string]any, 0, len(tools))
+			for _, t := range tools {
+				var schema map[string]any
+				if len(t.InputSchema) > 0 {
+					json.Unmarshal(t.InputSchema, &schema)
+				}
+				result = append(result, map[string]any{
+					"name":        t.Name,
+					"description": t.Description,
+					"inputSchema": schema,
+					"builtin":     t.Builtin,
+					"requireAuth": t.RequireAuth,
+				})
+			}
+			return result
+		},
+		MCPStatus: func() any {
+			if s.mcpHost == nil {
+				return []any{}
+			}
+			return s.mcpHost.ServerStatus()
+		},
+		MCPRestart: func(name string) error {
+			if s.mcpHost == nil {
+				return fmt.Errorf("MCP host not enabled")
+			}
+			return s.mcpHost.RestartServer(name)
+		},
+		HybridSearch:    func(ctx context.Context, query, source string, topK int) (any, error) { return hybridSearch(ctx, cfg, query, source, topK) },
+		ReindexAll:      func(ctx context.Context) error { return reindexAll(ctx, cfg) },
+		EmbeddingStatus: func() (any, error) { return embeddingStatus(cfg.HistoryDB) },
+		ProactiveEnabled: s.proactiveEngine != nil,
+		ListProactiveRules: func() any {
+			if s.proactiveEngine == nil {
+				return []any{}
+			}
+			return s.proactiveEngine.ListRules()
+		},
+		TriggerProactiveRule: func(name string) error {
+			if s.proactiveEngine == nil {
+				return fmt.Errorf("proactive engine not enabled")
+			}
+			return s.proactiveEngine.TriggerRule(name)
+		},
+		GroupChatEnabled: s.groupChatEngine != nil,
+		GroupChatStatus: func() any {
+			if s.groupChatEngine == nil {
+				return nil
+			}
+			return s.groupChatEngine.Status()
+		},
+		HandleAPIDocs: handleAPIDocs,
+		HandleAPISpec: handleAPISpec(cfg),
+	})
 	httpapi.RegisterVoiceRoutes(mux, httpapi.VoiceDeps{
 		STTEnabled:       s.voiceEngine != nil && s.voiceEngine.stt != nil,
 		TTSEnabled:       s.voiceEngine != nil && s.voiceEngine.tts != nil,
@@ -860,7 +919,7 @@ func startHTTPServer(s *Server) *http.Server {
 	s.registerHookRoutes(mux)
 	s.registerPlanReviewRoutes(mux)
 	registerDocsRoutesVia(mux)
-	s.registerClaudeMCPRoutes(mux)
+	httpapi.RegisterClaudeMCPRoutes(mux)
 
 	// PWA assets.
 	mux.HandleFunc("/dashboard/manifest.json", pwa.HandleManifest)

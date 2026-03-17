@@ -1,4 +1,4 @@
-package main
+package httpapi
 
 import (
 	"encoding/json"
@@ -54,9 +54,8 @@ func writeClaudeSettings(settings map[string]json.RawMessage) error {
 	return os.WriteFile(claudeSettingsPath(), data, 0644)
 }
 
-func (s *Server) registerClaudeMCPRoutes(mux *http.ServeMux) {
-
-	// GET /api/claude-mcp/status
+// RegisterClaudeMCPRoutes registers Claude MCP integration API routes.
+func RegisterClaudeMCPRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/claude-mcp/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
@@ -93,7 +92,6 @@ func (s *Server) registerClaudeMCPRoutes(mux *http.ServeMux) {
 		})
 	})
 
-	// POST /api/claude-mcp/toggle
 	mux.HandleFunc("/api/claude-mcp/toggle", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
@@ -119,7 +117,6 @@ func (s *Server) registerClaudeMCPRoutes(mux *http.ServeMux) {
 			return
 		}
 
-		// Parse existing mcpServers or create new.
 		var mcpServers map[string]json.RawMessage
 		if mcpRaw, ok := settings["mcpServers"]; ok {
 			if err := json.Unmarshal(mcpRaw, &mcpServers); err != nil {
@@ -132,10 +129,8 @@ func (s *Server) registerClaudeMCPRoutes(mux *http.ServeMux) {
 		}
 
 		if body.Enable {
-			// Detect binary path.
 			binPath := detectTetoraPath()
 			if binPath == "" {
-				// Fallback to default path even if binary doesn't exist yet.
 				home, _ := os.UserHomeDir()
 				binPath = filepath.Join(home, ".tetora", "bin", "tetora")
 			}
