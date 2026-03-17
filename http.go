@@ -26,6 +26,7 @@ import (
 	"tetora/internal/httputil"
 	"tetora/internal/log"
 	"tetora/internal/pwa"
+	"tetora/internal/quickaction"
 	"tetora/internal/sla"
 	"tetora/internal/trace"
 )
@@ -716,7 +717,262 @@ func startHTTPServer(s *Server) *http.Server {
 			return queryCostTrend(dbPath, days)
 		},
 	})
-	s.registerAgentRoutes(mux)
+	// --- Agent Routes ---
+	// TaskBoard init: must happen here before RegisterAgentRoutes.
+	var taskBoardEngine *TaskBoardEngine
+	if cfg.TaskBoard.Enabled {
+		taskBoardEngine = newTaskBoardEngine(cfg.HistoryDB, cfg.TaskBoard, cfg.Webhooks)
+		if err := taskBoardEngine.initTaskBoardSchema(); err != nil {
+			log.Error("init task board schema failed", "error", err)
+		}
+		if cfg.TaskBoard.AutoDispatch.Enabled {
+			disp := newTaskBoardDispatcher(taskBoardEngine, cfg, s.sem, s.childSem, s.state)
+			disp.Start()
+			s.taskBoardDispatcher = disp
+		}
+	}
+	// QuickAction engine init.
+	quickActionEngine := quickaction.NewEngine(cfg.QuickActions, cfg.SmartDispatch.DefaultAgent)
+
+	httpapi.RegisterAgentRoutes(mux, httpapi.AgentDeps{
+		HistoryDB: cfg.HistoryDB,
+		QueryAgentMessages: func(workflowRun, role string, limit int) (any, error) {
+			msgs, err := queryAgentMessages(cfg.HistoryDB, workflowRun, role, limit)
+			if msgs == nil {
+				msgs = []AgentMessage{}
+			}
+			return msgs, err
+		},
+		SendAgentMessage: func(body json.RawMessage) (string, error) {
+			var msg AgentMessage
+			if err := json.Unmarshal(body, &msg); err != nil {
+				return "", err
+			}
+			if msg.Type == "" {
+				msg.Type = "note"
+			}
+			if err := sendAgentMessage(cfg.HistoryDB, msg); err != nil {
+				return "", err
+			}
+			return msg.ID, nil
+		},
+		QueryHandoffs: func(workflowRun string) (any, error) {
+			handoffs, err := queryHandoffs(cfg.HistoryDB, workflowRun)
+			if handoffs == nil {
+				handoffs = []Handoff{}
+			}
+			return handoffs, err
+		},
+		TaskBoardEnabled: cfg.TaskBoard.Enabled,
+		ListTasksPaginated: func(status, assignee, project string, page, limit int) (any, error) {
+			if taskBoardEngine == nil {
+				return nil, fmt.Errorf("task board not enabled")
+			}
+			result, err := taskBoardEngine.ListTasksPaginated(status, assignee, project, page, limit)
+			if err != nil {
+				return nil, err
+			}
+			if result.Tasks == nil {
+				result.Tasks = []TaskBoard{}
+			}
+			return result, nil
+		},
+		CreateTask: func(body json.RawMessage) (any, error) {
+			if taskBoardEngine == nil {
+				return nil, fmt.Errorf("task board not enabled")
+			}
+			var task TaskBoard
+			if err := json.Unmarshal(body, &task); err != nil {
+				return nil, err
+			}
+			return taskBoardEngine.CreateTask(task)
+		},
+		GetTask: func(id string) (any, error) {
+			if taskBoardEngine == nil {
+				return nil, fmt.Errorf("task board not enabled")
+			}
+			return taskBoardEngine.GetTask(id)
+		},
+		UpdateTask: func(id string, body json.RawMessage) (any, error) {
+			if taskBoardEngine == nil {
+				return nil, fmt.Errorf("task board not enabled")
+			}
+			var updates map[string]any
+			if err := json.Unmarshal(body, &updates); err != nil {
+				return nil, err
+			}
+			return taskBoardEngine.UpdateTask(id, updates)
+		},
+		DeleteTask: func(id string) error {
+			if taskBoardEngine == nil {
+				return fmt.Errorf("task board not enabled")
+			}
+			return taskBoardEngine.DeleteTask(id)
+		},
+		MoveTask: func(id, status string) (any, error) {
+			if taskBoardEngine == nil {
+				return nil, fmt.Errorf("task board not enabled")
+			}
+			return taskBoardEngine.MoveTask(id, status)
+		},
+		AssignTask: func(id, assignee string) (any, error) {
+			if taskBoardEngine == nil {
+				return nil, fmt.Errorf("task board not enabled")
+			}
+			return taskBoardEngine.AssignTask(id, assignee)
+		},
+		GetBoardView: func(params map[string]string) (any, error) {
+			if taskBoardEngine == nil {
+				return nil, fmt.Errorf("task board not enabled")
+			}
+			includeDone := params["includeDone"] == "true"
+			return taskBoardEngine.GetBoardView(BoardFilter{
+				Project:     params["project"],
+				Assignee:    params["assignee"],
+				Priority:    params["priority"],
+				Workflow:    params["workflow"],
+				IncludeDone: includeDone,
+			})
+		},
+		ListChildren: func(parentID string) (any, error) {
+			if taskBoardEngine == nil {
+				return nil, fmt.Errorf("task board not enabled")
+			}
+			return taskBoardEngine.ListChildren(parentID)
+		},
+		AddComment: func(taskID, author, content, ctype string) (any, error) {
+			if taskBoardEngine == nil {
+				return nil, fmt.Errorf("task board not enabled")
+			}
+			return taskBoardEngine.AddComment(taskID, author, content, ctype)
+		},
+		GetThread: func(taskID string) (any, error) {
+			if taskBoardEngine == nil {
+				return nil, fmt.Errorf("task board not enabled")
+			}
+			comments, err := taskBoardEngine.GetThread(taskID)
+			if comments == nil {
+				comments = []TaskComment{}
+			}
+			return comments, err
+		},
+		PublishBoardUpdate: func(data map[string]any) {
+			if s.state != nil && s.state.broker != nil {
+				s.state.broker.Publish(SSEDashboardKey, SSEEvent{Type: "board_updated", Data: data})
+			}
+		},
+		ListQuickActions: func() any {
+			return quickActionEngine.List()
+		},
+		RunQuickAction: func(ctx context.Context, name string, params map[string]any) (any, error) {
+			prompt, role, err := quickActionEngine.BuildPrompt(name, params)
+			if err != nil {
+				return nil, err
+			}
+			task := Task{
+				Name:   "quick:" + name,
+				Prompt: prompt,
+				Agent:  role,
+				Source: "quick:" + name,
+			}
+			fillDefaults(cfg, &task)
+			tasks := []Task{task}
+			result := dispatch(ctx, cfg, tasks, s.state, s.sem, s.childSem)
+			if len(result.Tasks) == 0 {
+				return nil, fmt.Errorf("no result")
+			}
+			return result.Tasks[0], nil
+		},
+		SearchQuickActions: func(query string) any {
+			return quickActionEngine.Search(query)
+		},
+		ListAgents: func(ctx context.Context) (string, error) {
+			return toolAgentList(ctx, cfg, json.RawMessage(`{}`))
+		},
+		GetAgentMessages: func(role string, markAsRead bool) (any, error) {
+			return getAgentMessages(cfg.HistoryDB, role, markAsRead)
+		},
+		SendAgentMsg: func(ctx context.Context, body json.RawMessage) (string, error) {
+			return toolAgentMessage(ctx, cfg, body)
+		},
+		GetRunningAgents: func() any {
+			type runningTask struct {
+				ID       string `json:"id"`
+				Name     string `json:"name"`
+				Agent    string `json:"agent,omitempty"`
+				Source   string `json:"source,omitempty"`
+				Prompt   string `json:"prompt,omitempty"`
+				Elapsed  string `json:"elapsed"`
+				ParentID string `json:"parentId,omitempty"`
+				Depth    int    `json:"depth,omitempty"`
+			}
+			var tasks []runningTask
+			if s.state != nil {
+				s.state.mu.Lock()
+				for _, ts := range s.state.running {
+					prompt := ts.task.Prompt
+					if len(prompt) > 100 {
+						prompt = prompt[:100] + "..."
+					}
+					tasks = append(tasks, runningTask{
+						ID:       ts.task.ID,
+						Name:     ts.task.Name,
+						Agent:    ts.task.Agent,
+						Source:   ts.task.Source,
+						Prompt:   prompt,
+						Elapsed:  time.Since(ts.startAt).Round(time.Second).String(),
+						ParentID: ts.task.ParentID,
+						Depth:    ts.task.Depth,
+					})
+				}
+				s.state.mu.Unlock()
+			}
+			if tasks == nil {
+				tasks = []runningTask{}
+			}
+			return map[string]any{"running": tasks, "count": len(tasks)}
+		},
+		GetAllTrustStatuses: func() any {
+			return getAllTrustStatuses(cfg)
+		},
+		GetTrustStatus: func(agent string) any {
+			return getTrustStatus(cfg, agent)
+		},
+		AgentExists: func(name string) bool {
+			_, ok := cfg.Agents[name]
+			return ok
+		},
+		SetTrustLevel: func(agent, level, ip string) (any, error) {
+			oldLevel := resolveTrustLevel(cfg, agent)
+			if err := updateAgentTrustLevel(cfg, agent, level); err != nil {
+				return nil, err
+			}
+			configPath := filepath.Join(cfg.BaseDir, "config.json")
+			if err := saveAgentTrustLevel(configPath, agent, level); err != nil {
+				log.Warn("persist trust level failed", "agent", agent, "error", err)
+			}
+			recordTrustEvent(cfg.HistoryDB, agent, "set", oldLevel, level, 0, "set via API")
+			audit.Log(cfg.HistoryDB, "trust.set", "http",
+				fmt.Sprintf("agent=%s from=%s to=%s", agent, oldLevel, level), ip)
+			return getTrustStatus(cfg, agent), nil
+		},
+		ValidTrustLevels: func() []string {
+			return validTrustLevels
+		},
+		IsValidTrustLevel: func(level string) bool {
+			return isValidTrustLevel(level)
+		},
+		QueryTrustEvents: func(role string, limit int) (any, error) {
+			events, err := queryTrustEvents(cfg.HistoryDB, role, limit)
+			if events == nil {
+				events = []map[string]any{}
+			}
+			return events, err
+		},
+		AuditLog: func(action, source, detail, ip string) {
+			audit.Log(cfg.HistoryDB, action, source, detail, ip)
+		},
+	})
 	httpapi.RegisterMemoryRoutes(mux, httpapi.MemoryDeps{
 		ListMCPConfigs:  func() any { return listMCPConfigs(cfg) },
 		GetMCPConfig:    func(name string) (json.RawMessage, error) { return getMCPConfig(cfg, name) },
@@ -1110,7 +1366,326 @@ func startHTTPServer(s *Server) *http.Server {
 		SendMessage:  s.canvasEngine.handleCanvasMessage,
 		CloseSession: s.canvasEngine.closeCanvas,
 	})
-	s.registerWorkflowRoutes(mux)
+	// --- Workflow Routes ---
+	mutateTriggerConfig := func(mutate func(raw map[string]any)) error {
+		configPath := findConfigPath()
+		if configPath == "" {
+			return fmt.Errorf("config path not found")
+		}
+		if err := updateConfigField(configPath, mutate); err != nil {
+			return err
+		}
+		signalSelfReload()
+		return nil
+	}
+	httpapi.RegisterWorkflowRoutes(mux, httpapi.WorkflowDeps{
+		HistoryDB: func() string { return cfg.HistoryDB },
+		APIToken:  func() string { return cfg.APIToken },
+		ListWorkflows: func() (any, error) {
+			wfs, err := listWorkflows(cfg)
+			if wfs == nil {
+				wfs = []*Workflow{}
+			}
+			return wfs, err
+		},
+		SaveWorkflow: func(body json.RawMessage) (string, int, []string, error) {
+			var wf Workflow
+			if err := json.Unmarshal(body, &wf); err != nil {
+				return "", 0, nil, err
+			}
+			errs := validateWorkflow(&wf)
+			if len(errs) > 0 {
+				return "", 0, errs, nil
+			}
+			if err := saveWorkflow(cfg, &wf); err != nil {
+				return "", 0, nil, err
+			}
+			return wf.Name, len(wf.Steps), nil, nil
+		},
+		LoadWorkflow: func(name string) (any, error) {
+			return loadWorkflowByName(cfg, name)
+		},
+		DeleteWorkflow: func(name string) error {
+			return deleteWorkflow(cfg, name)
+		},
+		ExportWorkflow: func(name string) (any, error) {
+			wf, err := loadWorkflowByName(cfg, name)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"tetoraExport": "workflow/v1",
+				"exportedAt":   time.Now().UTC().Format(time.RFC3339),
+				"workflow":     wf,
+			}, nil
+		},
+		ValidateWorkflow: func(name string) (string, any, []string, error) {
+			wf, err := loadWorkflowByName(cfg, name)
+			if err != nil {
+				return "", nil, nil, err
+			}
+			errs := validateWorkflow(wf)
+			if len(errs) > 0 {
+				return wf.Name, nil, errs, nil
+			}
+			return wf.Name, topologicalSort(wf.Steps), nil, nil
+		},
+		RunWorkflow: func(ctx context.Context, name string, vars map[string]string) {
+			wf, err := loadWorkflowByName(cfg, name)
+			if err != nil {
+				log.Warn("RunWorkflow: load failed", "name", name, "error", err)
+				return
+			}
+			wfTraceID := trace.IDFromContext(ctx)
+			go executeWorkflow(trace.WithID(context.Background(), wfTraceID), cfg, wf, vars, s.state, s.sem, s.childSem)
+		},
+		DryRunWorkflow: func(ctx context.Context, name string, vars map[string]string) (any, error) {
+			wf, err := loadWorkflowByName(cfg, name)
+			if err != nil {
+				return nil, err
+			}
+			return executeWorkflow(ctx, cfg, wf, vars, s.state, s.sem, s.childSem, WorkflowModeDryRun), nil
+		},
+		ResumeWorkflow: func(ctx context.Context, runID string) {
+			wfTraceID := trace.IDFromContext(ctx)
+			go func() {
+				run, err := resumeWorkflow(trace.WithID(context.Background(), wfTraceID), cfg, runID, s.state, s.sem, s.childSem)
+				if err != nil {
+					log.Warn("workflow resume failed", "originalRunID", runID, "error", err)
+				} else {
+					log.Info("workflow resume dispatched", "originalRunID", runID, "newRunID", run.ID[:8])
+				}
+			}()
+		},
+		CancelRun: func(runID string) {
+			if cancel, ok := runCancellers.Load(runID); ok {
+				cancel.(context.CancelFunc)()
+				runCancellers.Delete(runID)
+			}
+		},
+		RestoreWorkflowVersion: func(historyDB, versionID string) error {
+			return restoreWorkflowVersion(historyDB, cfg, versionID)
+		},
+		QueryWorkflowRuns: func(historyDB string, limit int, name string) (any, error) {
+			runs, err := queryWorkflowRuns(historyDB, limit, name)
+			if runs == nil {
+				runs = []WorkflowRun{}
+			}
+			return runs, err
+		},
+		QueryWorkflowRunByID: func(historyDB, runID string) (any, error) {
+			return queryWorkflowRunByID(historyDB, runID)
+		},
+		IsResumableStatus: func(status string) bool {
+			return isResumableStatus(status)
+		},
+		QueryHandoffs: func(historyDB, runID string) (any, error) {
+			handoffs, err := queryHandoffs(historyDB, runID)
+			if handoffs == nil {
+				handoffs = []Handoff{}
+			}
+			return handoffs, err
+		},
+		QueryAgentMessages: func(historyDB, runID string, limit int) (any, error) {
+			msgs, err := queryAgentMessages(historyDB, runID, "", limit)
+			if msgs == nil {
+				msgs = []AgentMessage{}
+			}
+			return msgs, err
+		},
+		ImportWorkflow: func(body json.RawMessage) (string, int, []string, error) {
+			var pkg struct {
+				TetoraExport string   `json:"tetoraExport"`
+				Workflow     Workflow `json:"workflow"`
+			}
+			if err := json.Unmarshal(body, &pkg); err != nil {
+				return "", 0, nil, err
+			}
+			if pkg.TetoraExport == "" {
+				return "", 0, []string{"not a valid Tetora export package (missing tetoraExport field)"}, nil
+			}
+			wf := &pkg.Workflow
+			if wf.Name == "" {
+				return "", 0, []string{"workflow name is required"}, nil
+			}
+			errs := validateWorkflow(wf)
+			if len(errs) > 0 {
+				return "", 0, errs, nil
+			}
+			if err := saveWorkflow(cfg, wf); err != nil {
+				return "", 0, nil, fmt.Errorf("save failed: %w", err)
+			}
+			return wf.Name, len(wf.Steps), nil, nil
+		},
+		StoreBrowse: func() ([]byte, error) {
+			items, cats := storeBrowse(cfg)
+			return storeItemsToJSON(items, cats)
+		},
+		ListTemplates: func() (any, int) {
+			ts := listTemplates()
+			if ts == nil {
+				ts = []TemplateSummary{}
+			}
+			return ts, len(ts)
+		},
+		LoadTemplate: func(name string) (any, error) {
+			return loadTemplate(name)
+		},
+		InstallTemplate: func(name, newName string) error {
+			return installTemplate(cfg, name, newName)
+		},
+		ListSkillInfos: func() []httpapi.SkillInfo {
+			dir := skillsDir(cfg)
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				return nil
+			}
+			var skills []httpapi.SkillInfo
+			for _, e := range entries {
+				if !e.IsDir() {
+					continue
+				}
+				name := e.Name()
+				desc := ""
+				metaPath := filepath.Join(dir, name, "metadata.json")
+				if data, rerr := os.ReadFile(metaPath); rerr == nil {
+					var meta struct {
+						Description string `json:"description"`
+					}
+					if json.Unmarshal(data, &meta) == nil {
+						desc = meta.Description
+					}
+				}
+				if desc == "" {
+					skillPath := filepath.Join(dir, name, "SKILL.md")
+					if data, rerr := os.ReadFile(skillPath); rerr == nil {
+						content := string(data)
+						if strings.HasPrefix(content, "---\n") {
+							if end := strings.Index(content[4:], "\n---"); end >= 0 {
+								fm := content[4 : 4+end]
+								for _, line := range strings.Split(fm, "\n") {
+									line = strings.TrimSpace(line)
+									if strings.HasPrefix(line, "description:") {
+										desc = strings.TrimSpace(strings.TrimPrefix(line, "description:"))
+										desc = strings.Trim(desc, "\"'")
+										break
+									}
+								}
+							}
+						}
+					}
+				}
+				skills = append(skills, httpapi.SkillInfo{Name: name, Description: desc})
+			}
+			return skills
+		},
+		TriggerEngineAvailable: s.triggerEngine != nil,
+		ListTriggers: func() (any, int) {
+			if s.triggerEngine == nil {
+				return []TriggerInfo{}, 0
+			}
+			infos := s.triggerEngine.ListTriggers()
+			if infos == nil {
+				infos = []TriggerInfo{}
+			}
+			return infos, len(infos)
+		},
+		HandleWebhookTrigger: func(webhookID string, payload map[string]string) error {
+			if s.triggerEngine == nil {
+				return fmt.Errorf("no triggers configured")
+			}
+			return s.triggerEngine.HandleWebhookTrigger(webhookID, payload)
+		},
+		FireTrigger: func(name string) error {
+			if s.triggerEngine == nil {
+				return fmt.Errorf("no triggers configured")
+			}
+			return s.triggerEngine.FireTrigger(name)
+		},
+		GetCurrentTriggerNames: func() []string {
+			currentCfg := s.Cfg()
+			var names []string
+			for _, t := range currentCfg.WorkflowTriggers {
+				names = append(names, t.Name)
+			}
+			return names
+		},
+		ValidateTriggerConfig: func(body json.RawMessage, existingNames map[string]bool) []string {
+			var t WorkflowTriggerConfig
+			if err := json.Unmarshal(body, &t); err != nil {
+				return []string{fmt.Sprintf("invalid JSON: %v", err)}
+			}
+			return validateTriggerConfig(t, existingNames)
+		},
+		MutateTriggerConfig: mutateTriggerConfig,
+		DecodeTriggerConfig: func(body json.RawMessage) (string, string, string, error) {
+			var t WorkflowTriggerConfig
+			if err := json.Unmarshal(body, &t); err != nil {
+				return "", "", "", err
+			}
+			return t.Name, t.Trigger.Type, t.WorkflowName, nil
+		},
+		QueryTriggerRuns: func(historyDB, name string, limit int) ([]map[string]any, error) {
+			return queryTriggerRuns(historyDB, name, limit)
+		},
+		IsValidCallbackKey: isValidCallbackKey,
+		QueryPendingCallback: func(historyDB, key string) *httpapi.PendingCallbackRecord {
+			rec := queryPendingCallback(historyDB, key)
+			if rec == nil {
+				return nil
+			}
+			return &httpapi.PendingCallbackRecord{Status: rec.Status, AuthMode: rec.AuthMode}
+		},
+		QueryPendingCallbackByKey: func(historyDB, key string) *httpapi.PendingCallbackRecord {
+			rec := queryPendingCallbackByKey(historyDB, key)
+			if rec == nil {
+				return nil
+			}
+			return &httpapi.PendingCallbackRecord{Status: rec.Status, AuthMode: rec.AuthMode}
+		},
+		CallbackSignatureSecret: callbackSignatureSecret,
+		VerifyCallbackSignature: verifyCallbackSignature,
+		DeliverCallback: func(key string, payload httpapi.CallbackPayload) httpapi.DeliverCallbackResult {
+			if callbackMgr == nil {
+				return httpapi.DeliverCallbackResult{Outcome: "no_entry"}
+			}
+			result := CallbackResult{
+				Status:      payload.Status,
+				Body:        payload.Body,
+				ContentType: payload.ContentType,
+				RecvAt:      payload.RecvAt,
+			}
+			out := callbackMgr.DeliverAndSeq(key, result)
+			var outcome string
+			switch out.Result {
+			case DeliverOK:
+				outcome = "ok"
+			case DeliverDup:
+				outcome = "dup"
+			case DeliverFull:
+				outcome = "full"
+			default:
+				outcome = "no_entry"
+			}
+			return httpapi.DeliverCallbackResult{Outcome: outcome, Mode: out.Mode, Seq: out.Seq}
+		},
+		AppendStreamingCallback: func(historyDB, key string, seq int, payload httpapi.CallbackPayload) {
+			appendStreamingCallback(historyDB, key, seq, CallbackResult{
+				Status:      payload.Status,
+				Body:        payload.Body,
+				ContentType: payload.ContentType,
+				RecvAt:      payload.RecvAt,
+			})
+		},
+		MarkCallbackDelivered: func(historyDB, key string, seq int, payload httpapi.CallbackPayload) {
+			markCallbackDelivered(historyDB, key, seq, CallbackResult{
+				Status:      payload.Status,
+				Body:        payload.Body,
+				ContentType: payload.ContentType,
+				RecvAt:      payload.RecvAt,
+			})
+		},
+	})
 	httpapi.RegisterAgentRoleRoutes(mux, httpapi.AgentRoleDeps{
 		ListArchetypes: func() []httpapi.ArchetypeInfo {
 			out := make([]httpapi.ArchetypeInfo, len(builtinArchetypes))
