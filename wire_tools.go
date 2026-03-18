@@ -18,6 +18,8 @@ import (
 
 	"tetora/internal/circuit"
 	"tetora/internal/classify"
+	"tetora/internal/cron"
+	"tetora/internal/handoff"
 	"tetora/internal/cost"
 	"tetora/internal/db"
 	dtypes "tetora/internal/dispatch"
@@ -27,9 +29,11 @@ import (
 	iplugin "tetora/internal/plugin"
 	iproactive "tetora/internal/proactive"
 	"tetora/internal/prompt"
+	"tetora/internal/quiet"
 	"tetora/internal/sla"
 	"tetora/internal/tool"
 	"tetora/internal/tools"
+	"tetora/internal/webhook"
 )
 
 // buildMemoryDeps constructs MemoryDeps from root memory functions.
@@ -1732,4 +1736,402 @@ func (d *queueDrainer) processItem(ctx context.Context, item *QueueItem) {
 		recordHistory(d.cfg.HistoryDB, task.ID, task.Name, task.Source, item.AgentName, task, result,
 			start.Format(time.RFC3339), time.Now().Format(time.RFC3339), result.OutputFile)
 	}
+}
+
+// ============================================================
+// Merged from handoff.go
+// ============================================================
+
+// --- Type aliases ---
+
+type Handoff = handoff.Handoff
+type AgentMessage = handoff.AgentMessage
+type AutoDelegation = handoff.AutoDelegation
+
+const maxAutoDelegations = handoff.MaxAutoDelegations
+
+// --- Delegating functions ---
+
+func initHandoffTables(dbPath string)                       { handoff.InitTables(dbPath) }
+func recordHandoff(dbPath string, h Handoff) error          { return handoff.RecordHandoff(dbPath, h) }
+func updateHandoffStatus(dbPath, id, status string) error   { return handoff.UpdateStatus(dbPath, id, status) }
+func queryHandoffs(dbPath, wfID string) ([]Handoff, error)  { return handoff.QueryHandoffs(dbPath, wfID) }
+func sendAgentMessage(dbPath string, msg AgentMessage) error {
+	return handoff.SendAgentMessage(dbPath, msg, newUUID)
+}
+func queryAgentMessages(dbPath, wfID, role string, limit int) ([]AgentMessage, error) {
+	return handoff.QueryAgentMessages(dbPath, wfID, role, limit)
+}
+func parseAutoDelegate(output string) []AutoDelegation { return handoff.ParseAutoDelegate(output) }
+func findMatchingBrace(s string) int                   { return handoff.FindMatchingBrace(s) }
+func buildHandoffPrompt(ctx, instr string) string      { return handoff.BuildHandoffPrompt(ctx, instr) }
+
+// --- Execution (root-only: uses runSingleTask, dispatchState, sseBroker, etc.) ---
+
+func executeHandoff(ctx context.Context, cfg *Config, h *Handoff,
+	state *dispatchState, sem, childSem chan struct{}) TaskResult {
+
+	prompt := buildHandoffPrompt(h.Context, h.Instruction)
+
+	task := Task{
+		ID:        newUUID(),
+		Name:      fmt.Sprintf("handoff:%s→%s", h.FromAgent, h.ToAgent),
+		Prompt:    prompt,
+		Agent:     h.ToAgent,
+		Source:    "handoff:" + h.FromAgent,
+		SessionID: h.ToSessionID,
+	}
+	fillDefaults(cfg, &task)
+
+	if task.Agent != "" {
+		if soulPrompt, err := loadAgentPrompt(cfg, task.Agent); err == nil && soulPrompt != "" {
+			task.SystemPrompt = soulPrompt
+		}
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	createSession(cfg.HistoryDB, Session{
+		ID:        task.SessionID,
+		Agent:     h.ToAgent,
+		Source:    "handoff:" + h.FromAgent,
+		Status:    "active",
+		Title:     fmt.Sprintf("Handoff from %s", h.FromAgent),
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+
+	h.Status = "active"
+	updateHandoffStatus(cfg.HistoryDB, h.ID, "active")
+
+	result := runSingleTask(ctx, cfg, task, sem, childSem, h.ToAgent)
+	recordSessionActivity(cfg.HistoryDB, task, result, h.ToAgent)
+
+	if result.Status == "success" {
+		updateHandoffStatus(cfg.HistoryDB, h.ID, "completed")
+	} else {
+		updateHandoffStatus(cfg.HistoryDB, h.ID, "error")
+	}
+
+	if cfg.Log {
+		log.Info("handoff completed", "from", h.FromAgent, "to", h.ToAgent, "handoff", h.ID[:8], "status", result.Status)
+	}
+
+	return result
+}
+
+func processAutoDelegations(ctx context.Context, cfg *Config, delegations []AutoDelegation,
+	originalOutput, workflowRunID, fromAgent, fromStepID string,
+	state *dispatchState, sem, childSem chan struct{}, broker *sseBroker) string {
+
+	if len(delegations) == 0 {
+		return originalOutput
+	}
+
+	combinedOutput := originalOutput
+
+	for _, d := range delegations {
+		if _, ok := cfg.Agents[d.Agent]; !ok {
+			log.Warn("auto-delegate agent not found, skipping", "agent", d.Agent)
+			continue
+		}
+
+		now := time.Now().Format(time.RFC3339)
+		handoffID := newUUID()
+		toSessionID := newUUID()
+
+		h := Handoff{
+			ID:            handoffID,
+			WorkflowRunID: workflowRunID,
+			FromAgent:     fromAgent,
+			ToAgent:       d.Agent,
+			FromStepID:    fromStepID,
+			Context:       truncateStr(originalOutput, cfg.PromptBudget.ContextMaxOrDefault()),
+			Instruction:   d.Task,
+			Status:        "pending",
+			ToSessionID:   toSessionID,
+			CreatedAt:     now,
+		}
+		recordHandoff(cfg.HistoryDB, h)
+
+		sendAgentMessage(cfg.HistoryDB, AgentMessage{
+			WorkflowRunID: workflowRunID,
+			FromAgent:     fromAgent,
+			ToAgent:       d.Agent,
+			Type:          "handoff",
+			Content:       fmt.Sprintf("Auto-delegated: %s (reason: %s)", d.Task, d.Reason),
+			RefID:         handoffID,
+			CreatedAt:     now,
+		})
+
+		if broker != nil {
+			broker.PublishMulti([]string{
+				"workflow:" + workflowRunID,
+			}, SSEEvent{
+				Type: "auto_delegation",
+				Data: map[string]any{
+					"handoffId": handoffID,
+					"fromAgent": fromAgent,
+					"toAgent":   d.Agent,
+					"task":      d.Task,
+					"reason":    d.Reason,
+				},
+			})
+		}
+
+		if cfg.Log {
+			log.Info("auto-delegate executing", "from", fromAgent, "to", d.Agent, "task", truncate(d.Task, 60))
+		}
+
+		result := executeHandoff(ctx, cfg, &h, state, sem, childSem)
+
+		if result.Output != "" {
+			combinedOutput += fmt.Sprintf("\n---\n[Delegated to %s]\n%s", d.Agent, result.Output)
+		}
+
+		sendAgentMessage(cfg.HistoryDB, AgentMessage{
+			WorkflowRunID: workflowRunID,
+			FromAgent:     d.Agent,
+			ToAgent:       fromAgent,
+			Type:          "response",
+			Content:       truncateStr(result.Output, 2000),
+			RefID:         handoffID,
+			CreatedAt:     time.Now().Format(time.RFC3339),
+		})
+	}
+
+	return combinedOutput
+}
+
+// ============================================================
+// Merged from cron.go
+// ============================================================
+
+// --- Type aliases (internal/cron is canonical) ---
+
+// CronEngine is the cron scheduler. Root package uses this alias so existing
+// callers (app.go, discord.go, health.go, wire_*.go, etc.) continue to compile
+// without change. All logic lives in internal/cron.Engine.
+type CronEngine = cron.Engine
+
+// CronJobConfig is the persisted configuration for a single cron job.
+type CronJobConfig = cron.JobConfig
+
+// CronTaskConfig holds the execution parameters for a cron task.
+type CronTaskConfig = cron.TaskConfig
+
+// CronJobInfo is a read-only snapshot of a cron job for display/API.
+type CronJobInfo = cron.JobInfo
+
+// JobsFile is the top-level structure of jobs.json.
+type JobsFile = cron.JobsFile
+
+// --- Quiet hours (root-only global, used by tick and Telegram) ---
+
+var quietGlobal = quiet.NewState(func(msg string, kv ...any) {})
+
+func toQuietCfg(cfg *Config) quiet.Config {
+	return quiet.Config{
+		Enabled: cfg.QuietHours.Enabled,
+		Start:   cfg.QuietHours.Start,
+		End:     cfg.QuietHours.End,
+		TZ:      cfg.QuietHours.TZ,
+		Digest:  cfg.QuietHours.Digest,
+	}
+}
+
+// newCronEngine constructs a CronEngine (cron.Engine) wired with all root-
+// package callbacks that the internal cron package cannot import directly.
+func newCronEngine(cfg *Config, sem, childSem chan struct{}, notifyFn func(string)) *CronEngine {
+	env := cron.Env{
+		Executor: dtypes.TaskExecutorFunc(func(ctx context.Context, task dtypes.Task, agentName string) dtypes.TaskResult {
+			return runSingleTask(ctx, cfg, task, sem, childSem, agentName)
+		}),
+
+		FillDefaults: func(c *Config, t *dtypes.Task) {
+			fillDefaults(c, t)
+		},
+
+		LoadAgentPrompt: func(c *Config, agentName string) (string, error) {
+			return loadAgentPrompt(c, agentName)
+		},
+
+		ResolvePromptFile: func(c *Config, promptFile string) (string, error) {
+			return resolvePromptFile(c, promptFile)
+		},
+
+		ExpandPrompt: func(prompt, jobID, dbPath, agentName, knowledgeDir string, c *Config) string {
+			return expandPrompt(prompt, jobID, dbPath, agentName, knowledgeDir, c)
+		},
+
+		RecordHistory: func(dbPath, jobID, name, source, role string, task dtypes.Task, result dtypes.TaskResult, startedAt, finishedAt, outputFile string) {
+			recordHistory(dbPath, jobID, name, source, role, task, result, startedAt, finishedAt, outputFile)
+		},
+
+		RecordSessionActivity: func(dbPath string, task dtypes.Task, result dtypes.TaskResult, role string) {
+			recordSessionActivity(dbPath, task, result, role)
+		},
+
+		TriageBacklog: func(ctx context.Context, c *Config, s, cs chan struct{}) {
+			triageBacklog(ctx, c, s, cs)
+		},
+
+		RunDailyNotesJob: func(ctx context.Context, c *Config) error {
+			return runDailyNotesJob(ctx, c)
+		},
+
+		SendWebhooks: func(c *Config, event string, payload webhook.Payload) {
+			sendWebhooks(c, event, payload)
+		},
+
+		NewUUID: newUUID,
+
+		RegisterWorkerOrigin: func(sessionID, taskID, taskName, source, agent, jobID string) {
+			if cfg.Runtime.HookRecv == nil {
+				return
+			}
+			cfg.Runtime.HookRecv.(*hookReceiver).RegisterOrigin(sessionID, &workerOrigin{
+				TaskID:   taskID,
+				TaskName: taskName,
+				Source:   source,
+				Agent:    agent,
+				JobID:    jobID,
+			})
+		},
+
+		NotifyKeyboard: func(jobName, schedule string, approvalTimeout time.Duration, jobID string) {
+			// Telegram keyboard notification is wired in wire_telegram.go via
+			// the notifyKeyboardFn on the telegramRuntime, not directly here.
+			// For now, fall back to plain text notification.
+			if notifyFn != nil {
+				notifyFn("Job \"" + jobName + "\" requires approval. /approve " + jobID + " or /reject " + jobID)
+			}
+		},
+
+		QuietCfg: func(c *Config) quiet.Config {
+			return toQuietCfg(c)
+		},
+
+		QuietGlobal: quietGlobal,
+	}
+
+	return cron.NewEngine(cfg, sem, childSem, notifyFn, env)
+}
+
+// ============================================================
+// Merged from cron_expr.go
+// ============================================================
+
+type cronExpr = cron.Expr
+
+func parseCronExpr(s string) (cronExpr, error) {
+	return cron.Parse(s)
+}
+
+func nextRunAfter(expr cronExpr, loc *time.Location, after time.Time) time.Time {
+	return cron.NextRunAfter(expr, loc, after)
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+func seedDefaultJobs() []CronJobConfig {
+	return []CronJobConfig{
+		{
+			ID:           "self-improve",
+			Name:         "Self-Improvement",
+			Enabled:      true,
+			Schedule:     "0 3 */2 * *",
+			TZ:           "Asia/Taipei",
+			IdleMinHours: 2,
+			Task: CronTaskConfig{
+				Prompt: `You are a self-improvement agent for the Tetora AI orchestration system.
+
+Analyze the activity digest below. The digest includes existing Skills, Rules, and Memory —
+do NOT create anything that already exists.
+
+## Instructions
+1. Identify repeated patterns (3+ occurrences), low-score reflections, recurring failures
+2. For each actionable improvement, CREATE the file directly:
+   - **Rule**: Create ` + "`rules/{name}.md`" + ` — governance rules auto-injected into all agents
+   - **Memory**: Create/update ` + "`memory/{key}.md`" + ` — shared observations
+   - **Skill**: Create ` + "`skills/{name}/metadata.json`" + ` with ` + "`\"approved\": false`" + ` — requires human review
+3. Only apply HIGH and MEDIUM priority improvements
+4. Keep files concise and actionable
+5. Report what you created and why
+
+If insufficient data for improvements, say so and exit.
+
+---
+
+{{review.digest:7}}`,
+				Model:          "sonnet",
+				Timeout:        "5m",
+				Budget:         1.5,
+				PermissionMode: "acceptEdits",
+			},
+			Notify:     true,
+			MaxRetries: 1,
+			RetryDelay: "2m",
+		},
+		{
+			ID:       "backlog-triage",
+			Name:     "Backlog Triage",
+			Enabled:  true,
+			Schedule: "50 9 * * *",
+			TZ:       "Asia/Taipei",
+			Task:     CronTaskConfig{},
+			Notify:   true,
+		},
+	}
+}
+
+func cronDiscordSendBotChannel(botToken, channelID, msg string) error {
+	if len(msg) > 2000 {
+		msg = msg[:1997] + "..."
+	}
+	payload, err := json.Marshal(map[string]string{"content": msg})
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages", channelID)
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequest("POST", url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bot "+botToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("Discord returned HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func cronDiscordSendWebhook(webhookURL, msg string) error {
+	if len(msg) > 2000 {
+		msg = msg[:1997] + "..."
+	}
+	payload, err := json.Marshal(map[string]string{"content": msg})
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(webhookURL, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("Discord returned HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
