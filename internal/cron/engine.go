@@ -277,23 +277,35 @@ func (ce *Engine) checkJobsReload() {
 	}
 
 	ce.mu.Lock()
+	merged := make([]*cronJob, 0, len(ce.jobs))
 	for _, j := range ce.jobs {
-		if old, ok := stateMap[j.ID]; ok {
+		if old, ok := stateMap[j.ID]; ok && old.runCount > 0 {
+			// Job is currently running — reuse old pointer so that
+			// the in-flight goroutine's defer targets the same struct.
+			// Only update config fields from the new definition.
+			old.JobConfig = j.JobConfig
+			old.expr = j.expr
+			old.loc = j.loc
+			// Don't touch runtime state (runCount, running, runStart,
+			// cancelFn, pendingApproval, approvalCh).
+			merged = append(merged, old)
+		} else if old, ok := stateMap[j.ID]; ok {
+			// Job exists but not running — copy over persistent state.
 			j.lastRun = old.lastRun
 			j.lastErr = old.lastErr
 			j.lastCost = old.lastCost
 			j.errors = old.errors
-			j.running = old.running
-			j.runCount = old.runCount
-			j.runStart = old.runStart
-			j.cancelFn = old.cancelFn
 			j.pendingApproval = old.pendingApproval
 			j.approvalCh = old.approvalCh
 			if old.nextRun.After(time.Now()) {
 				j.nextRun = old.nextRun
 			}
+			merged = append(merged, j)
+		} else {
+			merged = append(merged, j)
 		}
 	}
+	ce.jobs = merged
 	ce.mu.Unlock()
 
 	log.Info("cron hot-reloaded jobs.json", "total", len(ce.jobs), "enabled", ce.countEnabled())
