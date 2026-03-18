@@ -545,6 +545,17 @@ func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem ch
 		}()
 	}
 
+	if cfg.Runtime.ProviderRegistry == nil {
+		if eventCh != nil {
+			close(eventCh)
+		}
+		return TaskResult{
+			ID:     task.ID,
+			Name:   task.Name,
+			Status: "error",
+			Output: "provider registry not initialized",
+		}
+	}
 	start := time.Now()
 	pr := executeWithProvider(taskCtx, cfg, task, agentName, cfg.Runtime.ProviderRegistry.(*providerRegistry), eventCh)
 	if eventCh != nil {

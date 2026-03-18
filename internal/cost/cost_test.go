@@ -321,7 +321,7 @@ func TestFormatBudgetSummary(t *testing.T) {
 		Global: GlobalBudget{Daily: 10.0},
 	}
 
-	summary := FormatBudgetSummary(budgets, dbPath)
+	summary := FormatBudgetSummary(QueryBudgetStatus(budgets, dbPath))
 	if summary == "" {
 		t.Error("expected non-empty summary")
 	}

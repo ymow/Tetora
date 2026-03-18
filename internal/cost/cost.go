@@ -1,7 +1,9 @@
 package cost
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -452,4 +454,41 @@ func FormatBudgetSummary(status *BudgetStatus) string {
 		return "No budget configured"
 	}
 	return strings.Join(lines, "\n")
+}
+
+// SetBudgetPaused updates the budgets.paused field in a config.json file.
+// It uses raw JSON manipulation to preserve all other config fields.
+func SetBudgetPaused(configPath string, paused bool) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+
+	var budgets map[string]json.RawMessage
+	if budgetsRaw, ok := raw["budgets"]; ok {
+		json.Unmarshal(budgetsRaw, &budgets) //nolint:errcheck
+	}
+	if budgets == nil {
+		budgets = make(map[string]json.RawMessage)
+	}
+
+	pausedJSON, _ := json.Marshal(paused)
+	budgets["paused"] = pausedJSON
+
+	budgetsJSON, err := json.Marshal(budgets)
+	if err != nil {
+		return fmt.Errorf("marshal budgets: %w", err)
+	}
+	raw["budgets"] = budgetsJSON
+
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	return os.WriteFile(configPath, out, 0644)
 }
