@@ -71,9 +71,10 @@ func TestProactiveCooldown(t *testing.T) {
 	// Cooldown should still be tracked but expired (current impl checks 1min default).
 	// This is a simplified test — in real usage, cooldown duration is per-rule.
 	// For this test, we verify the mechanism works.
-	engine.mu.RLock()
-	lastTriggered := engine.cooldowns[ruleName]
-	engine.mu.RUnlock()
+	lastTriggered, ok := engine.CooldownTime(ruleName)
+	if !ok {
+		t.Fatal("expected cooldown entry to exist")
+	}
 
 	if time.Since(lastTriggered) < 5*time.Second {
 		t.Error("cooldown should have expired")
@@ -82,7 +83,7 @@ func TestProactiveCooldown(t *testing.T) {
 
 // TestProactiveThresholdComparison tests the threshold comparison logic.
 func TestProactiveThresholdComparison(t *testing.T) {
-	engine := &ProactiveEngine{}
+	engine := newProactiveEngine(&Config{}, nil, nil, nil)
 
 	tests := []struct {
 		value     float64
@@ -102,7 +103,7 @@ func TestProactiveThresholdComparison(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		result := engine.compareThreshold(tt.value, tt.op, tt.threshold)
+		result := engine.CompareThreshold(tt.value, tt.op, tt.threshold)
 		if result != tt.expected {
 			t.Errorf("compareThreshold(%.2f, %s, %.2f) = %v, want %v",
 				tt.value, tt.op, tt.threshold, result, tt.expected)

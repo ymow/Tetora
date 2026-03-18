@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -15,6 +13,14 @@ import (
 	"tetora/internal/webhook"
 )
 
+// devQALoopResult holds the outcome of a Dev↔QA retry loop.
+type devQALoopResult struct {
+	Result     TaskResult
+	QAApproved bool
+	Attempts   int
+	TotalCost  float64
+}
+
 // --- Smart Dispatch Types (aliases to internal/dispatch) ---
 
 type RouteRequest = dtypes.RouteRequest
@@ -23,275 +29,47 @@ type SmartDispatchResult = dtypes.SmartDispatchResult
 
 // --- Binding Classification (Highest Priority) ---
 
-// checkBindings checks if the request matches any channel/user binding rules.
-// Returns nil if no binding match is found.
+// checkBindings delegates to internal/dispatch.CheckBindings.
 func checkBindings(cfg *Config, req RouteRequest) *RouteResult {
-	for _, binding := range cfg.SmartDispatch.Bindings {
-		// Channel must match.
-		if binding.Channel != "" && binding.Channel != req.Source {
-			continue
-		}
-
-		// Check if any of the ID fields match.
-		matched := false
-		if binding.UserID != "" && binding.UserID == req.UserID {
-			matched = true
-		}
-		if binding.ChannelID != "" && binding.ChannelID == req.ChannelID {
-			matched = true
-		}
-		if binding.GuildID != "" && binding.GuildID == req.GuildID {
-			matched = true
-		}
-
-		// If channel matches and at least one ID matches, return this binding.
-		if matched {
-			return &RouteResult{
-				Agent:       binding.Agent,
-				Method:     "binding",
-				Confidence: "high",
-				Reason:     fmt.Sprintf("matched binding rule for channel=%s", binding.Channel),
-			}
-		}
-	}
-
-	return nil
+	return dtypes.CheckBindings(cfg, req)
 }
 
 // --- Keyword Classification (Fast Path) ---
 
-// classifyByKeywords checks routing rules and agent keywords for a match.
-// Returns nil if no keyword match is found.
+// classifyByKeywords delegates to internal/dispatch.ClassifyByKeywords.
 func classifyByKeywords(cfg *Config, prompt string) *RouteResult {
-	lower := strings.ToLower(prompt)
-
-	// Check explicit routing rules first (higher priority).
-	for _, rule := range cfg.SmartDispatch.Rules {
-		for _, kw := range rule.Keywords {
-			if strings.Contains(lower, strings.ToLower(kw)) {
-				return &RouteResult{
-					Agent:       rule.Agent,
-					Method:     "keyword",
-					Confidence: "high",
-					Reason:     fmt.Sprintf("matched rule keyword %q", kw),
-				}
-			}
-		}
-		for _, pat := range rule.Patterns {
-			re, err := regexp.Compile("(?i)" + pat)
-			if err != nil {
-				continue
-			}
-			if re.MatchString(prompt) {
-				return &RouteResult{
-					Agent:       rule.Agent,
-					Method:     "keyword",
-					Confidence: "high",
-					Reason:     fmt.Sprintf("matched rule pattern %q", pat),
-				}
-			}
-		}
-	}
-
-	// Check agent-level keywords (lower priority).
-	for agentName, rc := range cfg.Agents {
-		for _, kw := range rc.Keywords {
-			if strings.Contains(lower, strings.ToLower(kw)) {
-				return &RouteResult{
-					Agent:       agentName,
-					Method:     "keyword",
-					Confidence: "medium",
-					Reason:     fmt.Sprintf("matched agent keyword %q", kw),
-				}
-			}
-		}
-	}
-
-	return nil
+	return dtypes.ClassifyByKeywords(cfg, prompt)
 }
 
 // --- LLM Classification (Slow Path) ---
 
-// routeSem is a dedicated semaphore for routing LLM calls.
-// Routing should never compete with task execution for slots,
-// otherwise new messages block until running tasks complete.
-var routeSem = make(chan struct{}, 5)
+// routeSemGlobal is a dedicated semaphore for routing LLM calls.
+// Routing should never compete with task execution for slots.
+var routeSemGlobal = make(chan struct{}, 5)
 
-// classifyByLLM asks the coordinator agent to classify the task.
+// classifyByLLM delegates to internal/dispatch.ClassifyByLLM, wiring
+// runSingleTask+routeSemGlobal as the TaskExecutor.
 func classifyByLLM(ctx context.Context, cfg *Config, prompt string) (*RouteResult, error) {
-	coordinator := cfg.SmartDispatch.Coordinator
-
-	// Build agent list for the classification prompt.
-	var roleLines []string
-	for name, rc := range cfg.Agents {
-		desc := rc.Description
-		if desc == "" {
-			desc = "(no description)"
-		}
-		kws := ""
-		if len(rc.Keywords) > 0 {
-			kws = " [keywords: " + strings.Join(rc.Keywords, ", ") + "]"
-		}
-		roleLines = append(roleLines, fmt.Sprintf("- %s: %s%s", name, desc, kws))
-	}
-	// Sort for deterministic output.
-	sort.Strings(roleLines)
-
-	// Build valid keys list for explicit constraint.
-	var validKeys []string
-	for name := range cfg.Agents {
-		validKeys = append(validKeys, name)
-	}
-	sort.Strings(validKeys)
-
-	classifyPrompt := fmt.Sprintf(
-		`You are a task router. Given a user request, decide which team member should handle it.
-
-Available agents:
-%s
-
-IMPORTANT: The "role" field in your response MUST be one of these exact keys: %s
-Do NOT use translated names, functional titles, or any other values.
-
-User request: %s
-
-Reply with ONLY a JSON object (no markdown, no explanation):
-{"role":"<exact_role_key>","confidence":"high|medium|low","reason":"<brief reason>"}
-
-If no agent is clearly appropriate, use %q as the default.`,
-		strings.Join(roleLines, "\n"),
-		strings.Join(validKeys, ", "),
-		prompt,
-		cfg.SmartDispatch.DefaultAgent,
-	)
-
-	task := Task{
-		Prompt:  classifyPrompt,
-		Timeout: cfg.SmartDispatch.ClassifyTimeout,
-		Budget:  cfg.SmartDispatch.ClassifyBudget,
-		Source:  "route-classify",
-	}
-	fillDefaults(cfg, &task)
-
-	// Step 1: Try with haiku for cost efficiency.
-	task.Model = "haiku"
-
-	result := runSingleTask(ctx, cfg, task, routeSem, nil, coordinator)
-	if result.Status != "success" {
-		return nil, fmt.Errorf("classification failed: %s", result.Error)
-	}
-
-	parsed, err := parseLLMRouteResult(result.Output, cfg.SmartDispatch.DefaultAgent)
-	if err != nil {
-		return nil, err
-	}
-
-	// Step 2: If low confidence, escalate to sonnet.
-	if parsed.Confidence == "low" {
-		log.Info("route: haiku confidence low, escalating to sonnet", "reason", parsed.Reason)
-		task.Model = "sonnet"
-		result2 := runSingleTask(ctx, cfg, task, routeSem, nil, coordinator)
-		if result2.Status == "success" {
-			parsed2, err2 := parseLLMRouteResult(result2.Output, cfg.SmartDispatch.DefaultAgent)
-			if err2 == nil {
-				parsed2.Method = "llm-escalated"
-				return parsed2, nil
-			}
-		}
-		// If opus also fails, return the sonnet result.
-	}
-
-	return parsed, nil
+	return dtypes.ClassifyByLLM(ctx, cfg, prompt, routeExecutor(cfg))
 }
 
-// parseLLMRouteResult extracts RouteResult from LLM output.
+// parseLLMRouteResult delegates to internal/dispatch.ParseLLMRouteResult.
 func parseLLMRouteResult(output, defaultAgent string) (*RouteResult, error) {
-	// Try to find JSON in the output (LLM may wrap it in text).
-	start := strings.Index(output, "{")
-	end := strings.LastIndex(output, "}")
-	if start < 0 || end <= start {
-		return &RouteResult{
-			Agent: defaultAgent, Method: "llm", Confidence: "low",
-			Reason: "could not parse LLM response",
-		}, nil
-	}
-
-	var result RouteResult
-	if err := json.Unmarshal([]byte(output[start:end+1]), &result); err != nil {
-		return &RouteResult{
-			Agent: defaultAgent, Method: "llm", Confidence: "low",
-			Reason: "JSON parse error: " + err.Error(),
-		}, nil
-	}
-	result.Method = "llm"
-
-	if result.Agent == "" {
-		result.Agent = defaultAgent
-	}
-	if result.Confidence == "" {
-		result.Confidence = "medium"
-	}
-
-	return &result, nil
+	return dtypes.ParseLLMRouteResult(output, defaultAgent)
 }
 
 // --- Multi-Tier Route ---
 
-// routeTask determines which agent should handle the given prompt.
-// Priority: bindings → keywords → LLM/coordinator fallback.
+// routeTask delegates to internal/dispatch.RouteTask, wiring runSingleTask as the executor.
 func routeTask(ctx context.Context, cfg *Config, req RouteRequest) *RouteResult {
-	// Tier 1: Check bindings (highest priority).
-	if result := checkBindings(cfg, req); result != nil {
-		if _, ok := cfg.Agents[result.Agent]; ok {
-			return result
-		}
-		log.WarnCtx(ctx, "binding matched agent not in config, falling through", "agent", result.Agent)
-	}
+	return dtypes.RouteTask(ctx, cfg, req, routeExecutor(cfg))
+}
 
-	// Tier 2: Keyword matching.
-	if result := classifyByKeywords(cfg, req.Prompt); result != nil {
-		if _, ok := cfg.Agents[result.Agent]; ok {
-			return result
-		}
-		log.WarnCtx(ctx, "keyword matched agent not in config, falling through", "agent", result.Agent)
-	}
-
-	// Tier 3: Fallback mode.
-	fallbackMode := cfg.SmartDispatch.Fallback
-	if fallbackMode == "" {
-		fallbackMode = "smart" // default to smart routing
-	}
-
-	if fallbackMode == "coordinator" {
-		// Direct fallback to coordinator (no LLM call).
-		return &RouteResult{
-			Agent:       cfg.SmartDispatch.DefaultAgent,
-			Method:     "coordinator",
-			Confidence: "high",
-			Reason:     "fallback mode set to coordinator",
-		}
-	}
-
-	// Smart fallback: LLM classification.
-	result, err := classifyByLLM(ctx, cfg, req.Prompt)
-	if err != nil {
-		log.WarnCtx(ctx, "LLM classify error, using default", "error", err)
-		return &RouteResult{
-			Agent:       cfg.SmartDispatch.DefaultAgent,
-			Method:     "default",
-			Confidence: "low",
-			Reason:     "LLM classification failed: " + err.Error(),
-		}
-	}
-
-	// Validate agent exists.
-	if _, ok := cfg.Agents[result.Agent]; !ok {
-		result.Agent = cfg.SmartDispatch.DefaultAgent
-		result.Confidence = "low"
-		result.Reason += " (agent not found, using default)"
-	}
-
-	return result
+// routeExecutor returns a TaskExecutor backed by runSingleTask + routeSemGlobal.
+func routeExecutor(cfg *Config) dtypes.TaskExecutor {
+	return dtypes.TaskExecutorFunc(func(ctx context.Context, task dtypes.Task, agentName string) dtypes.TaskResult {
+		return runSingleTask(ctx, cfg, task, routeSemGlobal, nil, agentName)
+	})
 }
 
 // --- Full Smart Dispatch Pipeline ---
@@ -334,7 +112,7 @@ func smartDispatch(ctx context.Context, cfg *Config, prompt string, source strin
 	// Step 2: Build and run task with the selected agent.
 	task := Task{
 		Prompt: prompt,
-		Agent:   route.Agent,
+		Agent:  route.Agent,
 		Source: "route:" + source,
 	}
 	fillDefaults(cfg, &task)
@@ -439,17 +217,12 @@ func smartDispatch(ctx context.Context, cfg *Config, prompt string, source strin
 
 // --- Route Dev↔QA Loop ---
 
-// routeDevQALoop runs the Dev↔QA retry loop for smart dtypes.
+// routeDevQALoop runs the Dev↔QA retry loop for smart dispatch.
 // Unlike the taskboard version, this operates without a TaskBoard record.
 //
 // Flow: Dev execute → QA review → (pass → done) | (fail → record failure → inject feedback → retry)
 func routeDevQALoop(ctx context.Context, cfg *Config, task Task, originalPrompt, agentName string, sem, childSem chan struct{}) devQALoopResult {
 	maxRetries := cfg.SmartDispatch.MaxRetriesOrDefault() // default 3
-
-	reviewer := cfg.SmartDispatch.ReviewAgent
-	if reviewer == "" {
-		reviewer = cfg.SmartDispatch.Coordinator
-	}
 
 	var accumulated float64
 
@@ -582,19 +355,7 @@ Reply with ONLY a JSON object:
 
 // --- Conditional Review Trigger ---
 
-// shouldReview determines if a task result should be reviewed by the coordinator.
-// Reviews are triggered by: low routing confidence, high task cost, or explicit priority.
+// shouldReview delegates to internal/dispatch.ShouldReview.
 func shouldReview(cfg *Config, routeResult *RouteResult, taskCost float64) bool {
-	if !cfg.SmartDispatch.Review {
-		return false
-	}
-	// Condition 1: routing confidence was low.
-	if routeResult != nil && routeResult.Confidence == "low" {
-		return true
-	}
-	// Condition 2: task cost exceeded threshold ($0.10).
-	if taskCost > 0.10 {
-		return true
-	}
-	return false
+	return dtypes.ShouldReview(cfg, routeResult, taskCost)
 }

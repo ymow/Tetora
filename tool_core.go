@@ -379,7 +379,7 @@ func toolMessage(ctx context.Context, cfg *Config, input json.RawMessage) (strin
 			if !ok || webhookURL == "" {
 				return "", fmt.Errorf("discord channel %q not configured (add to discord.webhooks in config.json)", name)
 			}
-			n := &DiscordNotifier{WebhookURL: webhookURL, client: &http.Client{Timeout: 10 * time.Second}}
+			n := newDiscordNotifier(webhookURL, 10*time.Second)
 			if err := n.Send(args.Message); err != nil {
 				return "", fmt.Errorf("send discord-%s: %w", name, err)
 			}

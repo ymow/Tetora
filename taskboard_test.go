@@ -10,7 +10,7 @@ func TestTaskBoardCRUD(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test_tasks.db")
 
 	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true, MaxRetries: 3}, nil)
-	if err := tb.initTaskBoardSchema(); err != nil {
+	if err := tb.InitSchema(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -70,7 +70,7 @@ func TestTaskBoardStatusTransitions(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test_tasks.db")
 
 	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true}, nil)
-	if err := tb.initTaskBoardSchema(); err != nil {
+	if err := tb.InitSchema(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -117,7 +117,7 @@ func TestTaskBoardDependencyEnforcement(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test_tasks.db")
 
 	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true}, nil)
-	if err := tb.initTaskBoardSchema(); err != nil {
+	if err := tb.InitSchema(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -168,7 +168,7 @@ func TestTaskBoardAssignment(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test_tasks.db")
 
 	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true}, nil)
-	if err := tb.initTaskBoardSchema(); err != nil {
+	if err := tb.InitSchema(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -203,7 +203,7 @@ func TestTaskBoardComments(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test_tasks.db")
 
 	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true}, nil)
-	if err := tb.initTaskBoardSchema(); err != nil {
+	if err := tb.InitSchema(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -241,7 +241,7 @@ func TestTaskBoardAutoRetry(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test_tasks.db")
 
 	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true, MaxRetries: 3}, nil)
-	if err := tb.initTaskBoardSchema(); err != nil {
+	if err := tb.InitSchema(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -292,7 +292,7 @@ func TestTaskBoardQualityGate(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test_tasks.db")
 
 	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true, RequireReview: true}, nil)
-	if err := tb.initTaskBoardSchema(); err != nil {
+	if err := tb.InitSchema(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -333,7 +333,7 @@ func TestTaskBoardInvalidStatus(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test_tasks.db")
 
 	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true}, nil)
-	if err := tb.initTaskBoardSchema(); err != nil {
+	if err := tb.InitSchema(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -356,7 +356,7 @@ func TestTaskBoardPriorityOrdering(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test_tasks.db")
 
 	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true}, nil)
-	if err := tb.initTaskBoardSchema(); err != nil {
+	if err := tb.InitSchema(); err != nil {
 		t.Fatal(err)
 	}
 

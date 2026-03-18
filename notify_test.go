@@ -28,7 +28,7 @@ func (m *mockNotifier) Name() string { return m.name }
 func TestMultiNotifierSend(t *testing.T) {
 	n1 := &mockNotifier{name: "slack"}
 	n2 := &mockNotifier{name: "discord"}
-	multi := &MultiNotifier{notifiers: []Notifier{n1, n2}}
+	multi := &MultiNotifier{Notifiers: []Notifier{n1, n2}}
 
 	multi.Send("hello")
 
@@ -43,7 +43,7 @@ func TestMultiNotifierSend(t *testing.T) {
 func TestMultiNotifierPartialFailure(t *testing.T) {
 	n1 := &mockNotifier{name: "slack", failErr: fmt.Errorf("timeout")}
 	n2 := &mockNotifier{name: "discord"}
-	multi := &MultiNotifier{notifiers: []Notifier{n1, n2}}
+	multi := &MultiNotifier{Notifiers: []Notifier{n1, n2}}
 
 	multi.Send("test")
 
@@ -98,7 +98,7 @@ func TestBuildNotifiersEmpty(t *testing.T) {
 }
 
 func TestMultiNotifierEmpty(t *testing.T) {
-	multi := &MultiNotifier{notifiers: nil}
+	multi := &MultiNotifier{Notifiers: nil}
 	// Should not panic with zero notifiers.
 	multi.Send("test")
 }

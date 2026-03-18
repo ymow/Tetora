@@ -12,70 +12,70 @@ import (
 
 // TestSpawnTrackerTrySpawn verifies basic spawn tracking and limit enforcement.
 func TestSpawnTrackerTrySpawn(t *testing.T) {
-	st := &spawnTracker{children: make(map[string]int)}
+	st := newSpawnTracker()
 
 	parentID := "parent-001"
 	maxChildren := 3
 
 	// Should allow up to maxChildren spawns.
 	for i := 0; i < maxChildren; i++ {
-		if !st.trySpawn(parentID, maxChildren) {
+		if !st.TrySpawn(parentID, maxChildren) {
 			t.Fatalf("trySpawn should succeed at count %d (limit %d)", i, maxChildren)
 		}
 	}
 
 	// The next spawn should be rejected.
-	if st.trySpawn(parentID, maxChildren) {
+	if st.TrySpawn(parentID, maxChildren) {
 		t.Fatal("trySpawn should fail when at maxChildren limit")
 	}
 
 	// Count should equal maxChildren.
-	if c := st.count(parentID); c != maxChildren {
+	if c := st.Count(parentID); c != maxChildren {
 		t.Fatalf("expected count %d, got %d", maxChildren, c)
 	}
 }
 
 // TestSpawnTrackerRelease verifies that releasing a child allows new spawns.
 func TestSpawnTrackerRelease(t *testing.T) {
-	st := &spawnTracker{children: make(map[string]int)}
+	st := newSpawnTracker()
 
 	parentID := "parent-002"
 	maxChildren := 2
 
 	// Fill up.
-	st.trySpawn(parentID, maxChildren)
-	st.trySpawn(parentID, maxChildren)
+	st.TrySpawn(parentID, maxChildren)
+	st.TrySpawn(parentID, maxChildren)
 
 	// Should be full.
-	if st.trySpawn(parentID, maxChildren) {
+	if st.TrySpawn(parentID, maxChildren) {
 		t.Fatal("should be at limit")
 	}
 
 	// Release one.
-	st.release(parentID)
+	st.Release(parentID)
 
 	// Should allow one more.
-	if !st.trySpawn(parentID, maxChildren) {
+	if !st.TrySpawn(parentID, maxChildren) {
 		t.Fatal("should allow spawn after release")
 	}
 
 	// Release all.
-	st.release(parentID)
-	st.release(parentID)
+	st.Release(parentID)
+	st.Release(parentID)
 
 	// Count should be 0 and key should be cleaned up.
-	if c := st.count(parentID); c != 0 {
+	if c := st.Count(parentID); c != 0 {
 		t.Fatalf("expected count 0 after all releases, got %d", c)
 	}
 }
 
 // TestSpawnTrackerEmptyParent verifies that empty parentID always allows spawns.
 func TestSpawnTrackerEmptyParent(t *testing.T) {
-	st := &spawnTracker{children: make(map[string]int)}
+	st := newSpawnTracker()
 
 	// Empty parentID should always succeed (top-level task).
 	for i := 0; i < 100; i++ {
-		if !st.trySpawn("", 1) {
+		if !st.TrySpawn("", 1) {
 			t.Fatal("empty parentID should always allow spawn")
 		}
 	}
@@ -83,7 +83,7 @@ func TestSpawnTrackerEmptyParent(t *testing.T) {
 
 // TestSpawnTrackerConcurrentAccess verifies thread-safety of spawnTracker.
 func TestSpawnTrackerConcurrentAccess(t *testing.T) {
-	st := &spawnTracker{children: make(map[string]int)}
+	st := newSpawnTracker()
 
 	parentID := "parent-concurrent"
 	maxChildren := 50
@@ -96,11 +96,11 @@ func TestSpawnTrackerConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if st.trySpawn(parentID, maxChildren) {
+			if st.TrySpawn(parentID, maxChildren) {
 				successCount <- 1
 				// Simulate some work.
-				st.count(parentID)
-				st.release(parentID)
+				st.Count(parentID)
+				st.Release(parentID)
 			} else {
 				successCount <- 0
 			}
@@ -116,7 +116,7 @@ func TestSpawnTrackerConcurrentAccess(t *testing.T) {
 	}
 
 	// After all goroutines complete, count should be 0.
-	if c := st.count(parentID); c != 0 {
+	if c := st.Count(parentID); c != 0 {
 		t.Fatalf("expected count 0 after concurrent test, got %d", c)
 	}
 
@@ -128,15 +128,15 @@ func TestSpawnTrackerConcurrentAccess(t *testing.T) {
 
 // TestSpawnTrackerReleaseNoUnderflow verifies release doesn't go below 0.
 func TestSpawnTrackerReleaseNoUnderflow(t *testing.T) {
-	st := &spawnTracker{children: make(map[string]int)}
+	st := newSpawnTracker()
 
 	parentID := "parent-underflow"
 
 	// Release without any spawns should not underflow.
-	st.release(parentID)
-	st.release(parentID)
+	st.Release(parentID)
+	st.Release(parentID)
 
-	if c := st.count(parentID); c != 0 {
+	if c := st.Count(parentID); c != 0 {
 		t.Fatalf("expected count 0, got %d", c)
 	}
 }
@@ -169,7 +169,7 @@ func TestMaxDepthEnforcement(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Reset spawn tracker for each sub-test.
-			globalSpawnTracker = &spawnTracker{children: make(map[string]int)}
+			globalSpawnTracker = newSpawnTracker()
 
 			input, _ := json.Marshal(map[string]any{
 				"agent":    "test-role",
@@ -204,7 +204,7 @@ func TestMaxDepthEnforcement(t *testing.T) {
 // TestMaxChildrenEnforcement verifies that toolAgentDispatch rejects when too many children.
 func TestMaxChildrenEnforcement(t *testing.T) {
 	// Reset global spawn tracker.
-	globalSpawnTracker = &spawnTracker{children: make(map[string]int)}
+	globalSpawnTracker = newSpawnTracker()
 
 	cfg := &Config{
 		AgentComm: AgentCommConfig{
@@ -220,8 +220,8 @@ func TestMaxChildrenEnforcement(t *testing.T) {
 	parentID := "parent-children-test"
 
 	// Pre-fill the spawn tracker to simulate active children.
-	globalSpawnTracker.trySpawn(parentID, 2)
-	globalSpawnTracker.trySpawn(parentID, 2)
+	globalSpawnTracker.TrySpawn(parentID, 2)
+	globalSpawnTracker.TrySpawn(parentID, 2)
 
 	input, _ := json.Marshal(map[string]any{
 		"agent":    "test-role",
@@ -240,7 +240,7 @@ func TestMaxChildrenEnforcement(t *testing.T) {
 	}
 
 	// Release one and try again -- should pass depth check but fail on HTTP (no server).
-	globalSpawnTracker.release(parentID)
+	globalSpawnTracker.Release(parentID)
 
 	_, err = toolAgentDispatch(context.Background(), cfg, input)
 	if err != nil && strings.Contains(err.Error(), "max children per task exceeded") {
@@ -251,7 +251,7 @@ func TestMaxChildrenEnforcement(t *testing.T) {
 // TestDepthTracking verifies that child task gets parent depth + 1.
 func TestDepthTracking(t *testing.T) {
 	// Reset spawn tracker.
-	globalSpawnTracker = &spawnTracker{children: make(map[string]int)}
+	globalSpawnTracker = newSpawnTracker()
 
 	cfg := &Config{
 		AgentComm: AgentCommConfig{
@@ -304,7 +304,7 @@ func TestParentIDPropagation(t *testing.T) {
 	})
 
 	// Reset spawn tracker.
-	globalSpawnTracker = &spawnTracker{children: make(map[string]int)}
+	globalSpawnTracker = newSpawnTracker()
 
 	// The function should pass depth/parentId checks.
 	// It will fail on HTTP connection, which is expected.
@@ -317,7 +317,7 @@ func TestParentIDPropagation(t *testing.T) {
 	}
 
 	// After the call (which defers release), spawn count should be 0.
-	if c := globalSpawnTracker.count(parentID); c != 0 {
+	if c := globalSpawnTracker.Count(parentID); c != 0 {
 		t.Fatalf("expected spawn count 0 after call, got %d", c)
 	}
 }

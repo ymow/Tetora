@@ -239,7 +239,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 
 		// Reset stale "doing" tasks before dispatch to prevent blocking.
 		if s.taskBoardDispatcher != nil {
-			s.taskBoardDispatcher.resetStuckDoing()
+			s.taskBoardDispatcher.ResetStuckDoing()
 		}
 
 		// Publish task_received to dashboard.

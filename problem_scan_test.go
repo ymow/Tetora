@@ -11,7 +11,7 @@ func TestProblemScanDisabledSkips(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 
 	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true, ProblemScan: false}, nil)
-	if err := tb.initTaskBoardSchema(); err != nil {
+	if err := tb.InitSchema(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -46,7 +46,7 @@ func TestProblemScanEmptyOutputSkips(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 
 	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true, ProblemScan: true}, nil)
-	if err := tb.initTaskBoardSchema(); err != nil {
+	if err := tb.InitSchema(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -84,7 +84,7 @@ func TestProblemScanFollowUpCreation(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 
 	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true, ProblemScan: true}, nil)
-	if err := tb.initTaskBoardSchema(); err != nil {
+	if err := tb.InitSchema(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -162,7 +162,7 @@ func TestProblemScanCommentFormat(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 
 	tb := newTaskBoardEngine(dbPath, TaskBoardConfig{Enabled: true}, nil)
-	if err := tb.initTaskBoardSchema(); err != nil {
+	if err := tb.InitSchema(); err != nil {
 		t.Fatal(err)
 	}
 

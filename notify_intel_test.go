@@ -58,10 +58,10 @@ func TestNotifyMessageDedupKey(t *testing.T) {
 	m2 := NotifyMessage{EventType: "task.complete", Agent: "琉璃"}
 	m3 := NotifyMessage{EventType: "task.complete", Agent: "黒曜"}
 
-	if m1.dedupKey() != m2.dedupKey() {
+	if m1.DedupKey() != m2.DedupKey() {
 		t.Error("same event+role should have same dedup key")
 	}
-	if m1.dedupKey() == m3.dedupKey() {
+	if m1.DedupKey() == m3.DedupKey() {
 		t.Error("different role should have different dedup key")
 	}
 }

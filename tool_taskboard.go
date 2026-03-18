@@ -65,7 +65,7 @@ func toolTaskboardGet(cfg *Config) ToolHandler {
 		if err != nil {
 			// Suggest similar tasks on not-found.
 			normalizedID := normalizeTaskID(args.ID)
-			if candidates := tb.suggestTasks(normalizedID); len(candidates) > 0 {
+			if candidates := tb.SuggestTasks(normalizedID); len(candidates) > 0 {
 				lines := []string{err.Error(), "Did you mean:"}
 				for _, c := range candidates {
 					lines = append(lines, fmt.Sprintf("  %s  %s  (%s)", c.ID, c.Title, c.Status))

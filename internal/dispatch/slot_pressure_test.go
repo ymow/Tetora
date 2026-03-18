@@ -1,22 +1,13 @@
-package main
+package dispatch
 
 import (
 	"context"
 	"sync"
 	"testing"
 	"time"
-)
 
-// newTestGuard creates a SlotPressureGuard for testing using exported fields.
-func newTestGuard(semCap int, cfg SlotPressureConfig) (*SlotPressureGuard, chan struct{}) {
-	sem := make(chan struct{}, semCap)
-	g := &SlotPressureGuard{
-		Cfg:    cfg,
-		Sem:    sem,
-		SemCap: semCap,
-	}
-	return g, sem
-}
+	"tetora/internal/config"
+)
 
 func TestIsInteractiveSource(t *testing.T) {
 	tests := []struct {
@@ -52,16 +43,26 @@ func TestIsInteractiveSource(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.source, func(t *testing.T) {
-			got := isInteractiveSource(tt.source)
+			got := IsInteractiveSource(tt.source)
 			if got != tt.interactive {
-				t.Errorf("isInteractiveSource(%q) = %v, want %v", tt.source, got, tt.interactive)
+				t.Errorf("IsInteractiveSource(%q) = %v, want %v", tt.source, got, tt.interactive)
 			}
 		})
 	}
 }
 
+func newTestGuard(semCap int, cfg config.SlotPressureConfig) (*SlotPressureGuard, chan struct{}) {
+	sem := make(chan struct{}, semCap)
+	g := &SlotPressureGuard{
+		Cfg:    cfg,
+		Sem:    sem,
+		SemCap: semCap,
+	}
+	return g, sem
+}
+
 func TestAcquireSlot_InteractiveNoWarning(t *testing.T) {
-	g, sem := newTestGuard(8, SlotPressureConfig{Enabled: true, WarnThreshold: 3})
+	g, sem := newTestGuard(8, config.SlotPressureConfig{Enabled: true, WarnThreshold: 3})
 	ctx := context.Background()
 
 	ar, err := g.AcquireSlot(ctx, sem, "route:discord")
@@ -71,21 +72,26 @@ func TestAcquireSlot_InteractiveNoWarning(t *testing.T) {
 	if ar.Warning != "" {
 		t.Errorf("expected no warning, got %q", ar.Warning)
 	}
+	if g.active.Load() != 1 {
+		t.Errorf("expected active=1, got %d", g.active.Load())
+	}
 
-	// Release and verify no error.
+	// Release and verify.
 	g.ReleaseSlot()
 	<-sem
+	if g.active.Load() != 0 {
+		t.Errorf("expected active=0 after release, got %d", g.active.Load())
+	}
 }
 
 func TestAcquireSlot_InteractiveWithWarning(t *testing.T) {
-	g, sem := newTestGuard(8, SlotPressureConfig{Enabled: true, WarnThreshold: 3})
+	g, sem := newTestGuard(8, config.SlotPressureConfig{Enabled: true, WarnThreshold: 3})
 	ctx := context.Background()
 
-	// Fill 6 slots via AcquireSlot (interactive) to leave only 2 available (<= warnThreshold of 3).
+	// Fill 6 slots to leave only 2 available (<= warnThreshold of 3).
 	for i := 0; i < 6; i++ {
-		if _, err := g.AcquireSlot(ctx, sem, "route:discord"); err != nil {
-			t.Fatalf("fill slot %d: %v", i, err)
-		}
+		sem <- struct{}{}
+		g.active.Add(1)
 	}
 
 	ar, err := g.AcquireSlot(ctx, sem, "route:telegram")
@@ -97,14 +103,16 @@ func TestAcquireSlot_InteractiveWithWarning(t *testing.T) {
 	}
 
 	// Cleanup.
-	for i := 0; i < 7; i++ {
-		g.ReleaseSlot()
+	g.ReleaseSlot()
+	<-sem
+	for i := 0; i < 6; i++ {
+		g.active.Add(-1)
 		<-sem
 	}
 }
 
 func TestAcquireSlot_NonInteractiveImmediate(t *testing.T) {
-	g, sem := newTestGuard(8, SlotPressureConfig{Enabled: true, ReservedSlots: 2})
+	g, sem := newTestGuard(8, config.SlotPressureConfig{Enabled: true, ReservedSlots: 2})
 	ctx := context.Background()
 
 	// Available = 8, reserved = 2 → 8 > 2, should acquire immediately.
@@ -121,7 +129,7 @@ func TestAcquireSlot_NonInteractiveImmediate(t *testing.T) {
 }
 
 func TestAcquireSlot_NonInteractiveWaits(t *testing.T) {
-	g, sem := newTestGuard(4, SlotPressureConfig{
+	g, sem := newTestGuard(4, config.SlotPressureConfig{
 		Enabled:               true,
 		ReservedSlots:         2,
 		PollInterval:          "50ms",
@@ -129,11 +137,10 @@ func TestAcquireSlot_NonInteractiveWaits(t *testing.T) {
 	})
 	ctx := context.Background()
 
-	// Fill 2 slots via interactive acquire → available=2, reserved=2 → 2 <= 2 → non-interactive must wait.
+	// Fill 2 slots → available=2, reserved=2 → 2 <= 2 → must wait.
 	for i := 0; i < 2; i++ {
-		if _, err := g.AcquireSlot(ctx, sem, "route:discord"); err != nil {
-			t.Fatalf("fill slot %d: %v", i, err)
-		}
+		sem <- struct{}{}
+		g.active.Add(1)
 	}
 
 	done := make(chan error, 1)
@@ -150,8 +157,8 @@ func TestAcquireSlot_NonInteractiveWaits(t *testing.T) {
 		// Good — it's waiting.
 	}
 
-	// Release one interactive slot.
-	g.ReleaseSlot()
+	// Now release a slot.
+	g.active.Add(-1)
 	<-sem
 
 	select {
@@ -165,14 +172,10 @@ func TestAcquireSlot_NonInteractiveWaits(t *testing.T) {
 
 	g.ReleaseSlot()
 	<-sem
-
-	// Release remaining interactive slot.
-	g.ReleaseSlot()
-	<-sem
 }
 
 func TestAcquireSlot_NonInteractiveTimeout(t *testing.T) {
-	g, sem := newTestGuard(4, SlotPressureConfig{
+	g, sem := newTestGuard(4, config.SlotPressureConfig{
 		Enabled:               true,
 		ReservedSlots:         2,
 		PollInterval:          "50ms",
@@ -182,9 +185,8 @@ func TestAcquireSlot_NonInteractiveTimeout(t *testing.T) {
 
 	// Fill 2 slots → available=2 == reserved=2 → must wait → timeout → force acquire.
 	for i := 0; i < 2; i++ {
-		if _, err := g.AcquireSlot(ctx, sem, "route:discord"); err != nil {
-			t.Fatalf("fill slot %d: %v", i, err)
-		}
+		sem <- struct{}{}
+		g.active.Add(1)
 	}
 
 	start := time.Now()
@@ -202,15 +204,16 @@ func TestAcquireSlot_NonInteractiveTimeout(t *testing.T) {
 		t.Errorf("expected to wait ~200ms, only waited %v", elapsed)
 	}
 
-	// Cleanup all 3 acquired slots.
-	for i := 0; i < 3; i++ {
-		g.ReleaseSlot()
+	g.ReleaseSlot()
+	<-sem
+	for i := 0; i < 2; i++ {
+		g.active.Add(-1)
 		<-sem
 	}
 }
 
 func TestAcquireSlot_NonInteractiveReleaseDuringWait(t *testing.T) {
-	g, sem := newTestGuard(4, SlotPressureConfig{
+	g, sem := newTestGuard(4, config.SlotPressureConfig{
 		Enabled:               true,
 		ReservedSlots:         2,
 		PollInterval:          "50ms",
@@ -220,9 +223,8 @@ func TestAcquireSlot_NonInteractiveReleaseDuringWait(t *testing.T) {
 
 	// Fill 2 slots.
 	for i := 0; i < 2; i++ {
-		if _, err := g.AcquireSlot(ctx, sem, "route:discord"); err != nil {
-			t.Fatalf("fill slot %d: %v", i, err)
-		}
+		sem <- struct{}{}
+		g.active.Add(1)
 	}
 
 	var wg sync.WaitGroup
@@ -235,7 +237,7 @@ func TestAcquireSlot_NonInteractiveReleaseDuringWait(t *testing.T) {
 
 	// Wait a bit then release a slot.
 	time.Sleep(100 * time.Millisecond)
-	g.ReleaseSlot()
+	g.active.Add(-1)
 	<-sem
 
 	wg.Wait()
@@ -243,15 +245,12 @@ func TestAcquireSlot_NonInteractiveReleaseDuringWait(t *testing.T) {
 		t.Fatalf("unexpected error: %v", acquireErr)
 	}
 
-	// Cleanup: 1 acquired by non-interactive + 1 remaining interactive.
-	g.ReleaseSlot()
-	<-sem
 	g.ReleaseSlot()
 	<-sem
 }
 
 func TestAcquireSlot_ContextCancelled(t *testing.T) {
-	g, sem := newTestGuard(4, SlotPressureConfig{
+	g, sem := newTestGuard(4, config.SlotPressureConfig{
 		Enabled:               true,
 		ReservedSlots:         2,
 		PollInterval:          "50ms",
@@ -261,9 +260,8 @@ func TestAcquireSlot_ContextCancelled(t *testing.T) {
 
 	// Fill 2 slots → non-interactive will wait.
 	for i := 0; i < 2; i++ {
-		if _, err := g.AcquireSlot(context.Background(), sem, "route:discord"); err != nil {
-			t.Fatalf("fill slot %d: %v", i, err)
-		}
+		sem <- struct{}{}
+		g.active.Add(1)
 	}
 
 	done := make(chan error, 1)
@@ -285,9 +283,9 @@ func TestAcquireSlot_ContextCancelled(t *testing.T) {
 		t.Fatal("timed out waiting for context cancellation")
 	}
 
-	// Cleanup filled slots.
+	// Cleanup.
 	for i := 0; i < 2; i++ {
-		g.ReleaseSlot()
+		g.active.Add(-1)
 		<-sem
 	}
 }
@@ -307,7 +305,7 @@ func TestAcquireSlot_GuardDisabled(t *testing.T) {
 }
 
 func TestRunMonitor_AlertAndCooldown(t *testing.T) {
-	g, sem := newTestGuard(4, SlotPressureConfig{
+	g, sem := newTestGuard(4, config.SlotPressureConfig{
 		Enabled:         true,
 		WarnThreshold:   2,
 		MonitorEnabled:  true,
@@ -322,11 +320,10 @@ func TestRunMonitor_AlertAndCooldown(t *testing.T) {
 		mu.Unlock()
 	}
 
-	// Fill 3 slots via interactive acquire → available=1 <= threshold=2 → should trigger alert.
+	// Fill 3 slots → available=1 <= threshold=2 → should trigger alert.
 	for i := 0; i < 3; i++ {
-		if _, err := g.AcquireSlot(context.Background(), sem, "route:discord"); err != nil {
-			t.Fatalf("fill slot %d: %v", i, err)
-		}
+		sem <- struct{}{}
+		g.active.Add(1)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -350,13 +347,13 @@ func TestRunMonitor_AlertAndCooldown(t *testing.T) {
 
 	// Cleanup.
 	for i := 0; i < 3; i++ {
-		g.ReleaseSlot()
+		g.active.Add(-1)
 		<-sem
 	}
 }
 
 func TestSlotPressureGuard_Defaults(t *testing.T) {
-	g, _ := newTestGuard(8, SlotPressureConfig{Enabled: true})
+	g, _ := newTestGuard(8, config.SlotPressureConfig{Enabled: true})
 
 	if g.ReservedSlots() != 2 {
 		t.Errorf("default ReservedSlots = %d, want 2", g.ReservedSlots())

@@ -292,14 +292,14 @@ func main() {
 	// Initialize slot pressure guard if enabled.
 	if cfg.SlotPressure.Enabled {
 		cfg.Runtime.SlotPressureGuard = &SlotPressureGuard{
-			cfg:    cfg.SlotPressure,
-			sem:    sem,
-			semCap: cfg.MaxConcurrent,
+			Cfg:    cfg.SlotPressure,
+			Sem:    sem,
+			SemCap: cfg.MaxConcurrent,
 		}
 		spg := cfg.Runtime.SlotPressureGuard.(*SlotPressureGuard)
 		log.Info("slot pressure guard enabled",
-			"reserved", spg.reservedSlots(),
-			"warnThreshold", spg.warnThreshold())
+			"reserved", spg.ReservedSlots(),
+			"warnThreshold", spg.WarnThreshold())
 	}
 
 	state := newDispatchState()
@@ -661,7 +661,7 @@ func main() {
 				names[i] = n.Name()
 			}
 			log.Info("notifications configured", "notifiers", strings.Join(names, ", "),
-				"batchInterval", notifyEngine.batchInterval.String())
+				"batchInterval", notifyEngine.BatchInterval().String())
 		}
 
 		// Security monitor.
@@ -705,11 +705,11 @@ func main() {
 		// Wire slot pressure guard to notification chain and SSE broker.
 		if cfg.Runtime.SlotPressureGuard != nil {
 			spg := cfg.Runtime.SlotPressureGuard.(*SlotPressureGuard)
-			spg.notifyFn = notifyFn
-			spg.broker = state.broker
+			spg.NotifyFn = notifyFn
+			spg.Broker = state.broker
 			if cfg.SlotPressure.MonitorEnabled {
 				go spg.RunMonitor(ctx)
-				log.Info("slot pressure monitor started", "interval", spg.monitorInterval().String())
+				log.Info("slot pressure monitor started", "interval", spg.MonitorInterval().String())
 			}
 		}
 

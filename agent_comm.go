@@ -3,138 +3,67 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
-	"sync"
 	"time"
 
-	"tetora/internal/db"
+	dtypes "tetora/internal/dispatch"
 	"tetora/internal/log"
 )
 
 // --- Agent Communication Tools ---
 // These are registered as built-in tools in the tool registry.
 
-// childSemConcurrentOrDefault returns the capacity for the child semaphore.
-// Default: 2x maxConcurrent. Configurable via agentComm.childPoolMultiplier.
-func childSemConcurrentOrDefault(cfg *Config) int {
-	m := cfg.AgentComm.ChildSem
-	if m <= 0 {
-		m = 2
-	}
-	return cfg.MaxConcurrent * m
-}
-
-// --- P13.3: Nested Sub-Agents ---
-
-// spawnTracker tracks the number of active child tasks per parent task ID.
-// This enforces the maxChildrenPerTask limit to prevent unbounded spawning.
-type spawnTracker struct {
-	mu       sync.RWMutex
-	children map[string]int // parentTaskID → active child count
-}
+// spawnTracker is a type alias for internal/dispatch.SpawnTracker.
+// Root code that references the concrete type (App.SpawnTracker, tests) continues to compile.
+type spawnTracker = dtypes.SpawnTracker
 
 // globalSpawnTracker is the package-level spawn tracker instance.
-var globalSpawnTracker = &spawnTracker{
-	children: make(map[string]int),
+var globalSpawnTracker = dtypes.NewSpawnTracker()
+
+// newSpawnTracker creates a new SpawnTracker (used in tests).
+func newSpawnTracker() *spawnTracker { return dtypes.NewSpawnTracker() }
+
+// childSemConcurrentOrDefault delegates to internal/dispatch.
+func childSemConcurrentOrDefault(cfg *Config) int {
+	return dtypes.ChildSemConcurrentOrDefault(cfg)
 }
 
-// trySpawn attempts to increment the child count for parentID.
-// Returns true if the spawn is allowed (count < maxChildren), false otherwise.
-func (st *spawnTracker) trySpawn(parentID string, maxChildren int) bool {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	if parentID == "" {
-		return true // no parent tracking for top-level tasks
-	}
-	if maxChildren <= 0 {
-		maxChildren = 5 // default
-	}
-	current := st.children[parentID]
-	if current >= maxChildren {
-		return false
-	}
-	st.children[parentID] = current + 1
-	return true
-}
-
-// release decrements the child count for parentID when a child task completes.
-func (st *spawnTracker) release(parentID string) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	if parentID == "" {
-		return
-	}
-	if st.children[parentID] > 0 {
-		st.children[parentID]--
-	}
-	if st.children[parentID] == 0 {
-		delete(st.children, parentID)
-	}
-}
-
-// count returns the number of active children for a parent task.
-func (st *spawnTracker) count(parentID string) int {
-	st.mu.RLock()
-	defer st.mu.RUnlock()
-	return st.children[parentID]
-}
-
-// maxDepthOrDefault returns the configured max nesting depth (default 3).
+// maxDepthOrDefault delegates to internal/dispatch.
 func maxDepthOrDefault(cfg *Config) int {
-	if cfg.AgentComm.MaxDepth > 0 {
-		return cfg.AgentComm.MaxDepth
-	}
-	return 3
+	return dtypes.MaxDepthOrDefault(cfg)
 }
 
-// maxChildrenPerTaskOrDefault returns the configured max children per task (default 5).
+// maxChildrenPerTaskOrDefault delegates to internal/dispatch.
 func maxChildrenPerTaskOrDefault(cfg *Config) int {
-	if cfg.AgentComm.MaxChildrenPerTask > 0 {
-		return cfg.AgentComm.MaxChildrenPerTask
-	}
-	return 5
+	return dtypes.MaxChildrenPerTaskOrDefault(cfg)
 }
 
-// toolAgentList lists all available agents/roles with their capabilities.
+// toolAgentList delegates to internal/dispatch.ToolAgentList.
 func toolAgentList(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
-	var agents []map[string]any
+	return dtypes.ToolAgentList(ctx, cfg, input)
+}
 
-	for name, role := range cfg.Agents {
-		agent := map[string]any{
-			"name":        name,
-			"description": role.Description,
-		}
+// toolAgentMessage delegates to internal/dispatch.ToolAgentMessage.
+func toolAgentMessage(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	return dtypes.ToolAgentMessage(ctx, cfg, input)
+}
 
-		// Add keywords if present.
-		if len(role.Keywords) > 0 {
-			agent["capabilities"] = role.Keywords
-		}
+// generateMessageID delegates to internal/dispatch.GenerateMessageID.
+func generateMessageID() string {
+	return dtypes.GenerateMessageID()
+}
 
-		// Add provider info.
-		provider := role.Provider
-		if provider == "" {
-			provider = cfg.DefaultProvider
-		}
-		agent["provider"] = provider
+// initAgentCommDB delegates to internal/dispatch.InitAgentCommDB.
+func initAgentCommDB(dbPath string) error {
+	return dtypes.InitAgentCommDB(dbPath)
+}
 
-		// Add model info.
-		model := role.Model
-		if model == "" {
-			model = cfg.DefaultModel
-		}
-		agent["model"] = model
-
-		agents = append(agents, agent)
-	}
-
-	b, _ := json.Marshal(agents)
-	return string(b), nil
+// getAgentMessages delegates to internal/dispatch.GetAgentMessages.
+func getAgentMessages(dbPath, role string, markAsRead bool) ([]map[string]any, error) {
+	return dtypes.GetAgentMessages(dbPath, role, markAsRead)
 }
 
 // toolAgentDispatch dispatches a sub-task to another agent and waits for the result.
@@ -189,12 +118,12 @@ func toolAgentDispatch(ctx context.Context, cfg *Config, input json.RawMessage) 
 		if app != nil && app.SpawnTracker != nil {
 			tracker = app.SpawnTracker
 		}
-		if !tracker.trySpawn(args.ParentID, maxChildren) {
+		if !tracker.TrySpawn(args.ParentID, maxChildren) {
 			return "", fmt.Errorf("max children per task exceeded: parent %s already has %d active children (limit %d)",
-				args.ParentID, tracker.count(args.ParentID), maxChildren)
+				args.ParentID, tracker.Count(args.ParentID), maxChildren)
 		}
 		// Release when done (deferred).
-		defer tracker.release(args.ParentID)
+		defer tracker.Release(args.ParentID)
 	}
 
 	// Check if agent exists.
@@ -208,7 +137,7 @@ func toolAgentDispatch(ctx context.Context, cfg *Config, input json.RawMessage) 
 		Agent:    args.Agent,
 		Timeout:  fmt.Sprintf("%.0fs", args.Timeout),
 		Source:   "agent_dispatch",
-		Depth:    childDepth,  // --- P13.3: propagate depth
+		Depth:    childDepth,   // --- P13.3: propagate depth
 		ParentID: args.ParentID, // --- P13.3: propagate parent ID
 	}
 	fillDefaults(cfg, &task)
@@ -282,133 +211,4 @@ func toolAgentDispatch(ctx context.Context, cfg *Config, input json.RawMessage) 
 
 	b, _ := json.Marshal(result)
 	return string(b), nil
-}
-
-// toolAgentMessage sends an async message to another agent's session.
-func toolAgentMessage(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
-	var args struct {
-		Agent     string `json:"agent"`
-		Role      string `json:"role"` // backward compat
-		Message   string `json:"message"`
-		SessionID string `json:"sessionId"`
-	}
-	if err := json.Unmarshal(input, &args); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
-	}
-	if args.Agent == "" {
-		args.Agent = args.Role
-	}
-	if args.Agent == "" {
-		return "", fmt.Errorf("agent is required")
-	}
-	if args.Message == "" {
-		return "", fmt.Errorf("message is required")
-	}
-
-	// Check if agent exists.
-	if _, ok := cfg.Agents[args.Agent]; !ok {
-		return "", fmt.Errorf("agent %q not found", args.Agent)
-	}
-
-	// Determine sender agent from context (if available).
-	fromAgent := "system"
-	// TODO: extract from context if we store current agent there
-
-	// Generate message ID.
-	messageID := generateMessageID()
-
-	// Store message in DB.
-	sql := fmt.Sprintf(
-		`INSERT INTO agent_messages (id, from_agent, to_agent, message, session_id, created_at)
-		 VALUES ('%s', '%s', '%s', '%s', '%s', '%s')`,
-		db.Escape(messageID),
-		db.Escape(fromAgent),
-		db.Escape(args.Agent),
-		db.Escape(args.Message),
-		db.Escape(args.SessionID),
-		time.Now().Format(time.RFC3339),
-	)
-
-	if _, err := db.Query(cfg.HistoryDB, sql); err != nil {
-		return "", fmt.Errorf("store message: %w", err)
-	}
-
-	result := map[string]any{
-		"status":    "sent",
-		"messageId": messageID,
-		"to":        args.Agent,
-	}
-
-	b, _ := json.Marshal(result)
-	return string(b), nil
-}
-
-// generateMessageID creates a random message ID.
-func generateMessageID() string {
-	var b [8]byte
-	rand.Read(b[:])
-	return "msg_" + hex.EncodeToString(b[:])
-}
-
-// initAgentCommDB initializes the agent_messages table.
-func initAgentCommDB(dbPath string) error {
-	// Migration: rename from_role/to_role -> from_agent/to_agent.
-	for _, stmt := range []string{
-		`ALTER TABLE agent_messages RENAME COLUMN from_role TO from_agent;`,
-		`ALTER TABLE agent_messages RENAME COLUMN to_role TO to_agent;`,
-	} {
-		if err := db.Exec(dbPath, stmt); err != nil {
-			// Ignore expected errors (column already renamed or table doesn't exist yet).
-		}
-	}
-
-	sql := `
-CREATE TABLE IF NOT EXISTS agent_messages (
-    id TEXT PRIMARY KEY,
-    from_agent TEXT NOT NULL,
-    to_agent TEXT NOT NULL,
-    message TEXT NOT NULL,
-    session_id TEXT DEFAULT '',
-    created_at TEXT NOT NULL,
-    read_at TEXT DEFAULT ''
-);
-
-CREATE INDEX IF NOT EXISTS idx_agent_messages_to_agent ON agent_messages(to_agent, read_at);
-CREATE INDEX IF NOT EXISTS idx_agent_messages_session ON agent_messages(session_id);
-`
-	_, err := db.Query(dbPath, sql)
-	return err
-}
-
-// getAgentMessages retrieves pending messages for a role.
-func getAgentMessages(dbPath, role string, markAsRead bool) ([]map[string]any, error) {
-	sql := fmt.Sprintf(
-		`SELECT id, from_agent, to_agent, message, session_id, created_at
-		 FROM agent_messages
-		 WHERE to_agent = '%s' AND read_at = ''
-		 ORDER BY created_at ASC
-		 LIMIT 50`,
-		db.Escape(role),
-	)
-
-	rows, err := db.Query(dbPath, sql)
-	if err != nil {
-		return nil, err
-	}
-
-	// Mark as read if requested.
-	if markAsRead && len(rows) > 0 {
-		ids := make([]string, len(rows))
-		for i, row := range rows {
-			ids[i] = fmt.Sprintf("'%s'", db.Escape(fmt.Sprintf("%v", row["id"])))
-		}
-		updateSQL := fmt.Sprintf(
-			`UPDATE agent_messages SET read_at = '%s' WHERE id IN (%s)`,
-			time.Now().Format(time.RFC3339),
-			strings.Join(ids, ", "),
-		)
-		db.Query(dbPath, updateSQL) // ignore error
-	}
-
-	return rows, nil
 }

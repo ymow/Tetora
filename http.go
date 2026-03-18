@@ -727,7 +727,7 @@ func startHTTPServer(s *Server) *http.Server {
 	var taskBoardEngine *TaskBoardEngine
 	if cfg.TaskBoard.Enabled {
 		taskBoardEngine = newTaskBoardEngine(cfg.HistoryDB, cfg.TaskBoard, cfg.Webhooks)
-		if err := taskBoardEngine.initTaskBoardSchema(); err != nil {
+		if err := taskBoardEngine.InitSchema(); err != nil {
 			log.Error("init task board schema failed", "error", err)
 		}
 		if cfg.TaskBoard.AutoDispatch.Enabled {
