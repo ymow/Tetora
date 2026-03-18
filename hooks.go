@@ -11,8 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"tetora/internal/log"
 	"tetora/internal/discord"
+	"tetora/internal/hooks"
+	"tetora/internal/log"
 )
 
 // --- Claude Code Hooks Event Receiver ---
@@ -223,7 +224,7 @@ func (s *Server) handleHookInstall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := s.Cfg()
-	if err := installHooks(cfg.ListenAddr); err != nil {
+	if err := hooks.Install(cfg.ListenAddr); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
@@ -251,7 +252,7 @@ func (s *Server) handleHookRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := removeHooks(); err != nil {
+	if err := hooks.Remove(); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
@@ -273,31 +274,31 @@ func (s *Server) handleHookInstallStatus(w http.ResponseWriter, r *http.Request)
 	hookCount := 0
 
 	// Check Claude Code settings for Tetora hooks.
-	settings, _, err := loadClaudeSettings()
+	settings, _, err := hooks.LoadSettings()
 	if err == nil {
-		raw, ok := settings.raw["hooks"]
+		raw, ok := settings.Raw["hooks"]
 		if ok {
-			var hooks hooksConfig
-			if json.Unmarshal(raw, &hooks) == nil {
-				for _, r := range hooks.PreToolUse {
-					if isTetoraRule(r) {
+			var hcfg hooks.HooksConfig
+			if json.Unmarshal(raw, &hcfg) == nil {
+				for _, r := range hcfg.PreToolUse {
+					if hooks.IsTetoraRule(r) {
 						installed = true
 						hookCount++
 					}
 				}
-				for _, r := range hooks.PostToolUse {
-					if isTetoraRule(r) {
+				for _, r := range hcfg.PostToolUse {
+					if hooks.IsTetoraRule(r) {
 						installed = true
 						hookCount++
 					}
 				}
-				for _, r := range hooks.Stop {
-					if isTetoraRule(r) {
+				for _, r := range hcfg.Stop {
+					if hooks.IsTetoraRule(r) {
 						hookCount++
 					}
 				}
-				for _, r := range hooks.Notification {
-					if isTetoraRule(r) {
+				for _, r := range hcfg.Notification {
+					if hooks.IsTetoraRule(r) {
 						hookCount++
 					}
 				}

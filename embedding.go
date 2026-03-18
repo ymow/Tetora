@@ -17,8 +17,9 @@ import (
 	"time"
 
 
-	"tetora/internal/log"
 	"tetora/internal/db"
+	"tetora/internal/knowledge"
+	"tetora/internal/log"
 )
 
 // --- Embedding helpers ---
@@ -411,9 +412,9 @@ func hybridSearch(ctx context.Context, cfg *Config, query string, source string,
 	// Build a knowledge index and search it, converting results to EmbeddingSearchResult.
 	var tfidfResults []EmbeddingSearchResult
 	if cfg.KnowledgeDir != "" {
-		idx, idxErr := buildKnowledgeIndex(cfg.KnowledgeDir)
+		idx, idxErr := knowledge.BuildIndex(cfg.KnowledgeDir)
 		if idxErr == nil && idx != nil {
-			kResults := idx.search(query, topK*2)
+			kResults := idx.Search(query, topK*2)
 			for _, kr := range kResults {
 				tfidfResults = append(tfidfResults, EmbeddingSearchResult{
 					Source:   "knowledge",

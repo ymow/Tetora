@@ -16,6 +16,7 @@ import (
 	"tetora/internal/completion"
 	"tetora/internal/db"
 	"tetora/internal/history"
+	"tetora/internal/hooks"
 	"tetora/internal/knowledge"
 	"tetora/internal/log"
 	"tetora/internal/messaging/groupchat"
@@ -184,7 +185,7 @@ func main() {
 				GenerateMCPBridge: func(baseDir, listenAddr, apiToken string) error {
 					return generateMCPBridgeConfig(&Config{BaseDir: baseDir, ListenAddr: listenAddr, APIToken: apiToken})
 				},
-				InstallHooks: installHooks,
+				InstallHooks: hooks.Install,
 			})
 			return
 		case "setup":

@@ -25,6 +25,7 @@ import (
 	"tetora/internal/history"
 	"tetora/internal/httpapi"
 	"tetora/internal/httputil"
+	"tetora/internal/knowledge"
 	"tetora/internal/log"
 	"tetora/internal/pwa"
 	"tetora/internal/quickaction"
@@ -1823,14 +1824,20 @@ func startHTTPServer(s *Server) *http.Server {
 		HistoryDB: func() string { return s.cfg.HistoryDB },
 	})
 	httpapi.RegisterKnowledgeRoutes(mux, httpapi.KnowledgeDeps{
-		KnowledgeDir: func() string { return knowledgeDir(s.Cfg()) },
-		HistoryDB:    func() string { return s.Cfg().HistoryDB },
+		KnowledgeDir: func() string {
+			cfg := s.Cfg()
+			if cfg.KnowledgeDir != "" {
+				return cfg.KnowledgeDir
+			}
+			return knowledge.InitDir(cfg.BaseDir)
+		},
+		HistoryDB: func() string { return s.Cfg().HistoryDB },
 		SearchKnowledge: func(dir, query string, limit int) ([]httpapi.KnowledgeSearchResult, error) {
-			idx, err := buildKnowledgeIndex(dir)
+			idx, err := knowledge.BuildIndex(dir)
 			if err != nil {
 				return nil, err
 			}
-			results := idx.search(query, limit)
+			results := idx.Search(query, limit)
 			out := make([]httpapi.KnowledgeSearchResult, len(results))
 			for i, r := range results {
 				out[i] = httpapi.KnowledgeSearchResult{
