@@ -3954,6 +3954,7 @@ body:not([class*="theme-"])::after, body.theme-default::after {
 <div class="modal-overlay" id="task-detail-modal">
   <div class="modal" style="max-width:900px">
     <button class="modal-close" onclick="closeTaskDetail()">&times;</button>
+    <button id="td-cancel-btn" onclick="cancelTaskFromDetail()" style="position:absolute;top:14px;right:120px;background:var(--warning,#d69e2e);color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:12px;cursor:pointer;display:none">Cancel</button>
     <button onclick="deleteTask()" style="position:absolute;top:14px;right:48px;background:var(--danger,#e53e3e);color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:12px;cursor:pointer">Delete</button>
     <h3 id="task-detail-title" style="margin-bottom:12px">Task Detail</h3>
     <input type="hidden" id="td-id" value="">
@@ -4036,7 +4037,8 @@ body:not([class*="theme-"])::after, body.theme-default::after {
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
         <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">Workflow Progress</span>
         <span id="td-wf-run-status" class="badge" style="font-size:10px"></span>
-        <a id="td-wf-run-link" href="#" onclick="return openWfRunFromTask()" style="font-size:11px;color:var(--accent);margin-left:auto">View Full Run</a>
+        <button id="td-wf-cancel-btn" onclick="cancelWorkflowRun()" style="display:none;font-size:11px;background:var(--warning,#d69e2e);color:#fff;border:none;border-radius:4px;padding:2px 8px;cursor:pointer;margin-left:auto">Cancel Run</button>
+        <a id="td-wf-run-link" href="#" onclick="return openWfRunFromTask()" style="font-size:11px;color:var(--accent)">View Full Run</a>
       </div>
       <div id="td-wf-steps" class="td-wf-steps"></div>
     </div>
@@ -6002,6 +6004,56 @@ async function cancelTask(id) {
     }
     setTimeout(refresh, 500);
   } catch (e) {
+    toast('Error: ' + e.message);
+  }
+}
+
+async function cancelTaskFromDetail() {
+  var taskId = document.getElementById('td-id').value;
+  if (!taskId) return;
+  if (!confirm('Cancel this running task?')) return;
+  try {
+    // Check if there's a running workflow run.
+    var wfEl = document.getElementById('td-wf-progress');
+    var runId = wfEl && wfEl.dataset.runId;
+    if (runId && wfEl.style.display !== 'none') {
+      var resp = await fetch('/workflow-runs/' + runId + '/cancel', { method: 'POST' });
+      if (!resp.ok) {
+        var data = await resp.json().catch(function() { return {}; });
+        toast('Error: ' + (data.error || 'cancel failed'));
+        return;
+      }
+    } else {
+      var resp = await fetch('/cancel/board:' + taskId, { method: 'POST' });
+      if (!resp.ok) {
+        var data = await resp.json().catch(function() { return {}; });
+        toast('Error: ' + (data.error || 'cancel failed'));
+        return;
+      }
+    }
+    toast('Cancelling task...');
+    setTimeout(function() { openTaskDetail(taskId); refreshBoard(); }, 500);
+  } catch(e) {
+    toast('Error: ' + e.message);
+  }
+}
+
+async function cancelWorkflowRun() {
+  var wfEl = document.getElementById('td-wf-progress');
+  var runId = wfEl && wfEl.dataset.runId;
+  if (!runId) return;
+  if (!confirm('Cancel this workflow run?')) return;
+  try {
+    var resp = await fetch('/workflow-runs/' + runId + '/cancel', { method: 'POST' });
+    if (resp.ok) {
+      toast('Cancelling workflow...');
+      var taskId = document.getElementById('td-id').value;
+      if (taskId) setTimeout(function() { openTaskDetail(taskId); refreshBoard(); }, 500);
+    } else {
+      var data = await resp.json().catch(function() { return {}; });
+      toast('Error: ' + (data.error || 'cancel failed'));
+    }
+  } catch(e) {
     toast('Error: ' + e.message);
   }
 }
@@ -8130,6 +8182,10 @@ async function openTaskDetail(taskId) {
     datesEl.textContent = 'Created: ' + (task.createdAt || '').substring(0, 10);
     if (task.completedAt) datesEl.textContent += ' | Done: ' + task.completedAt.substring(0, 10);
 
+    // Show/hide cancel button based on status.
+    var cancelBtn = document.getElementById('td-cancel-btn');
+    if (cancelBtn) cancelBtn.style.display = task.status === 'doing' ? '' : 'none';
+
     // Load workflow step progress.
     loadTaskWfProgress(task);
 
@@ -8240,6 +8296,9 @@ async function updateTaskField(field) {
 
   if (field === 'status') {
     var newStatus = document.getElementById('td-status').value;
+    // Toggle cancel button visibility.
+    var cb = document.getElementById('td-cancel-btn');
+    if (cb) cb.style.display = newStatus === 'doing' ? '' : 'none';
     try {
       await fetchJSON('/api/tasks/' + taskId + '/move', {
         method: 'POST',
@@ -8980,6 +9039,10 @@ function renderTaskWfProgress(run) {
   statusEl.textContent = run.status;
   statusEl.className = 'badge ' + statusCls;
 
+  // Show/hide workflow cancel button.
+  var wfCancelBtn = document.getElementById('td-wf-cancel-btn');
+  if (wfCancelBtn) wfCancelBtn.style.display = run.status === 'running' ? '' : 'none';
+
   var stepResults = run.stepResults || {};
   var steps = Object.values(stepResults);
   steps.sort(function(a, b) { return (a.startedAt || '').localeCompare(b.startedAt || ''); });
@@ -9044,6 +9107,11 @@ function subscribeTaskWfSSE(runId) {
       }
       if (ev.type === 'workflow_completed') {
         if (taskWfSSE) { taskWfSSE.close(); taskWfSSE = null; }
+        // Hide cancel buttons immediately.
+        var wfCb = document.getElementById('td-wf-cancel-btn');
+        if (wfCb) wfCb.style.display = 'none';
+        var tdCb = document.getElementById('td-cancel-btn');
+        if (tdCb) tdCb.style.display = 'none';
         // Refresh to get final state.
         var taskId = document.getElementById('td-id').value;
         if (taskId) {

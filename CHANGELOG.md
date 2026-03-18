@@ -1,3 +1,12 @@
+## [v2.2.1] - 2026-03-19
+
+### Added
+- **Task Detail cancel button**: Cancel running tasks directly from the Task Detail modal (yellow "Cancel" button, visible only when status is "doing")
+- **Workflow progress cancel button**: Cancel running workflow runs from the step progress panel ("Cancel Run" button next to "View Full Run")
+- Cancel buttons auto-hide when workflow completes or status changes away from "doing"
+
+---
+
 ## [v2.1.0] - 2026-03-18
 
 ### Highlights
