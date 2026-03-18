@@ -10,6 +10,7 @@ import (
 	"time"
 
 
+	dtypes "tetora/internal/dispatch"
 	"tetora/internal/log"
 	"tetora/internal/db"
 )
@@ -1539,14 +1540,14 @@ func runSingleTaskNoRecord(ctx context.Context, cfg *Config, task Task, sem, chi
 
 	s := selectSem(sem, childSem, task.Depth)
 	if task.Depth == 0 && cfg.Runtime.SlotPressureGuard != nil {
-		_, err := cfg.Runtime.SlotPressureGuard.(*SlotPressureGuard).AcquireSlot(ctx, s, task.Source)
+		_, err := cfg.Runtime.SlotPressureGuard.(*dtypes.SlotPressureGuard).AcquireSlot(ctx, s, task.Source)
 		if err != nil {
 			return TaskResult{
 				ID: task.ID, Name: task.Name, Status: "cancelled",
 				Error: "slot acquisition cancelled: " + err.Error(), Model: task.Model, SessionID: task.SessionID,
 			}
 		}
-		defer cfg.Runtime.SlotPressureGuard.(*SlotPressureGuard).ReleaseSlot()
+		defer cfg.Runtime.SlotPressureGuard.(*dtypes.SlotPressureGuard).ReleaseSlot()
 		defer func() { <-s }()
 	} else {
 		s <- struct{}{}

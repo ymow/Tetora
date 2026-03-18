@@ -61,7 +61,7 @@ func (ce *CanvasEngine) discoverMCPCanvas(mcpServerName, resourceURI string) (*C
 	}
 
 	// Check if MCP server exists.
-	server := ce.mcpHost.getServer(mcpServerName)
+	server := ce.mcpHost.GetServer(mcpServerName)
 	if server == nil {
 		return nil, fmt.Errorf("mcp server %q not found", mcpServerName)
 	}

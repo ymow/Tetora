@@ -1,4 +1,4 @@
-package main
+package push
 
 import (
 	"crypto/ecdh"
@@ -14,9 +14,9 @@ import (
 )
 
 func TestPushSubscription_JSON(t *testing.T) {
-	sub := PushSubscription{
+	sub := Subscription{
 		Endpoint: "https://fcm.googleapis.com/fcm/send/test123",
-		Keys: PushKeys{
+		Keys: SubscriptionKeys{
 			P256dh: "BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTp",
 			Auth:   "tBHItJI5svbpez7KI4CCXg",
 		},
@@ -29,7 +29,7 @@ func TestPushSubscription_JSON(t *testing.T) {
 		t.Fatalf("marshal failed: %v", err)
 	}
 
-	var decoded PushSubscription
+	var decoded Subscription
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestPushSubscription_JSON(t *testing.T) {
 }
 
 func TestPushNotification_JSON(t *testing.T) {
-	notif := PushNotification{
+	notif := Notification{
 		Title: "Test",
 		Body:  "Hello World",
 		Icon:  "/icon.png",
@@ -62,19 +62,16 @@ func TestPushNotification_JSON(t *testing.T) {
 }
 
 func TestPushConfig_Defaults(t *testing.T) {
-	cfg := PushConfig{
-		Enabled: true,
-		TTL:     0, // should default to 3600
+	cfg := Config{
+		TTL: 0,
 	}
 
-	if cfg.Enabled != true {
-		t.Errorf("enabled should be true")
+	if cfg.TTL != 0 {
+		t.Errorf("TTL should be 0 (defaulted in SendToEndpoint)")
 	}
-	// TTL default is handled in SendToEndpoint
 }
 
 func TestHKDF_SHA256(t *testing.T) {
-	// Test HKDF-Expand with known inputs.
 	prk := []byte("test-prk-key-for-hkdf-expand")
 	info := []byte("test-info")
 	result := hkdfExpand(prk, info, 32)
@@ -83,7 +80,6 @@ func TestHKDF_SHA256(t *testing.T) {
 		t.Errorf("expected 32 bytes, got %d", len(result))
 	}
 
-	// Test determinism: same inputs should give same output.
 	result2 := hkdfExpand(prk, info, 32)
 	if string(result) != string(result2) {
 		t.Errorf("hkdfExpand not deterministic")
@@ -99,7 +95,6 @@ func TestHMAC_SHA256(t *testing.T) {
 		t.Errorf("expected 32 bytes, got %d", len(mac))
 	}
 
-	// Test determinism.
 	mac2 := hmacSHA256(key, data)
 	if string(mac) != string(mac2) {
 		t.Errorf("hmacSHA256 not deterministic")
@@ -107,7 +102,6 @@ func TestHMAC_SHA256(t *testing.T) {
 }
 
 func TestVAPIDJWT_Generate(t *testing.T) {
-	// Generate a test ECDH P-256 keypair for VAPID.
 	privKey, err := ecdh.P256().GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("generate key failed: %v", err)
@@ -119,12 +113,11 @@ func TestVAPIDJWT_Generate(t *testing.T) {
 	endpoint := "https://fcm.googleapis.com/fcm/send/test123"
 	email := "test@example.com"
 
-	authHeader, err := generateVAPIDAuth(endpoint, vapidPrivateKey, email)
+	authHeader, err := GenerateVAPIDAuth(endpoint, vapidPrivateKey, email)
 	if err != nil {
-		t.Fatalf("generateVAPIDAuth failed: %v", err)
+		t.Fatalf("GenerateVAPIDAuth failed: %v", err)
 	}
 
-	// Verify format: vapid t=<jwt>,k=<publicKey>
 	if !strings.HasPrefix(authHeader, "vapid t=") {
 		t.Errorf("invalid auth header format: %s", authHeader)
 	}
@@ -142,7 +135,6 @@ func TestVAPIDJWT_Generate(t *testing.T) {
 }
 
 func TestPushPayload_Encrypt(t *testing.T) {
-	// Generate subscriber keypair.
 	subPrivKey, err := ecdh.P256().GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("generate subscriber key failed: %v", err)
@@ -150,7 +142,6 @@ func TestPushPayload_Encrypt(t *testing.T) {
 	subPubKeyBytes := subPrivKey.PublicKey().Bytes()
 	p256dh := base64.RawURLEncoding.EncodeToString(subPubKeyBytes)
 
-	// Generate auth secret (16 random bytes).
 	authBytes := make([]byte, 16)
 	if _, err := rand.Read(authBytes); err != nil {
 		t.Fatalf("generate auth failed: %v", err)
@@ -159,16 +150,15 @@ func TestPushPayload_Encrypt(t *testing.T) {
 
 	payload := []byte(`{"title":"Test","body":"Hello"}`)
 
-	encrypted, encHeader, cryptoHeader, err := encryptPayload(payload, p256dh, auth)
+	encrypted, encHeader, cryptoHeader, err := EncryptPayload(payload, p256dh, auth)
 	if err != nil {
-		t.Fatalf("encryptPayload failed: %v", err)
+		t.Fatalf("EncryptPayload failed: %v", err)
 	}
 
 	if len(encrypted) == 0 {
 		t.Errorf("encrypted payload is empty")
 	}
 
-	// Verify headers.
 	if !strings.HasPrefix(encHeader, "salt=") {
 		t.Errorf("Encryption header should start with salt=")
 	}
@@ -176,45 +166,37 @@ func TestPushPayload_Encrypt(t *testing.T) {
 		t.Errorf("Crypto-Key header should start with dh=")
 	}
 
-	// Encrypted payload should be larger than original (salt + rs + idlen + ciphertext + tag).
 	if len(encrypted) <= len(payload) {
 		t.Errorf("encrypted payload should be larger than original")
 	}
 }
 
 func TestPushManager_SubscribeUnsubscribe(t *testing.T) {
-	// Create temp DB.
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	cfg := &Config{
-		HistoryDB: dbPath,
-		Push: PushConfig{
-			Enabled:         true,
-			VAPIDPublicKey:  "test-public",
-			VAPIDPrivateKey: "test-private",
-			VAPIDEmail:      "test@example.com",
-			TTL:             7200,
-		},
+	cfg := Config{
+		HistoryDB:       dbPath,
+		VAPIDPrivateKey: "test-private",
+		VAPIDEmail:      "test@example.com",
+		TTL:             7200,
 	}
 
-	pm := newPushManager(cfg)
+	pm := NewManager(cfg)
 
-	sub := PushSubscription{
+	sub := Subscription{
 		Endpoint: "https://fcm.googleapis.com/fcm/send/test123",
-		Keys: PushKeys{
+		Keys: SubscriptionKeys{
 			P256dh: "BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTp",
 			Auth:   "tBHItJI5svbpez7KI4CCXg",
 		},
 		UserAgent: "Test/1.0",
 	}
 
-	// Subscribe.
 	if err := pm.Subscribe(sub); err != nil {
 		t.Fatalf("subscribe failed: %v", err)
 	}
 
-	// List.
 	subs := pm.ListSubscriptions()
 	if len(subs) != 1 {
 		t.Errorf("expected 1 subscription, got %d", len(subs))
@@ -223,12 +205,10 @@ func TestPushManager_SubscribeUnsubscribe(t *testing.T) {
 		t.Errorf("endpoint mismatch")
 	}
 
-	// Unsubscribe.
 	if err := pm.Unsubscribe(sub.Endpoint); err != nil {
 		t.Fatalf("unsubscribe failed: %v", err)
 	}
 
-	// List should be empty.
 	subs = pm.ListSubscriptions()
 	if len(subs) != 0 {
 		t.Errorf("expected 0 subscriptions after unsubscribe, got %d", len(subs))
@@ -236,22 +216,17 @@ func TestPushManager_SubscribeUnsubscribe(t *testing.T) {
 }
 
 func TestPushManager_LoadFromDB(t *testing.T) {
-	// Create temp DB.
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	cfg := &Config{
+	cfg := Config{
 		HistoryDB: dbPath,
-		Push: PushConfig{
-			Enabled: true,
-		},
 	}
 
-	// First manager: subscribe.
-	pm1 := newPushManager(cfg)
-	sub := PushSubscription{
+	pm1 := NewManager(cfg)
+	sub := Subscription{
 		Endpoint: "https://example.com/push/abc",
-		Keys: PushKeys{
+		Keys: SubscriptionKeys{
 			P256dh: "test-p256dh",
 			Auth:   "test-auth",
 		},
@@ -261,8 +236,7 @@ func TestPushManager_LoadFromDB(t *testing.T) {
 		t.Fatalf("subscribe failed: %v", err)
 	}
 
-	// Second manager: should load from DB.
-	pm2 := newPushManager(cfg)
+	pm2 := NewManager(cfg)
 	subs := pm2.ListSubscriptions()
 	if len(subs) != 1 {
 		t.Errorf("expected 1 subscription loaded from DB, got %d", len(subs))
@@ -276,18 +250,14 @@ func TestPushSubscription_Validation(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	cfg := &Config{
+	cfg := Config{
 		HistoryDB: dbPath,
-		Push: PushConfig{
-			Enabled: true,
-		},
 	}
 
-	pm := newPushManager(cfg)
+	pm := NewManager(cfg)
 
-	// Missing endpoint.
-	err := pm.Subscribe(PushSubscription{
-		Keys: PushKeys{
+	err := pm.Subscribe(Subscription{
+		Keys: SubscriptionKeys{
 			P256dh: "test",
 			Auth:   "test",
 		},
@@ -296,10 +266,9 @@ func TestPushSubscription_Validation(t *testing.T) {
 		t.Errorf("expected validation error for missing endpoint, got: %v", err)
 	}
 
-	// Invalid endpoint URL.
-	err = pm.Subscribe(PushSubscription{
+	err = pm.Subscribe(Subscription{
 		Endpoint: "not-a-url",
-		Keys: PushKeys{
+		Keys: SubscriptionKeys{
 			P256dh: "test",
 			Auth:   "test",
 		},
@@ -310,17 +279,14 @@ func TestPushSubscription_Validation(t *testing.T) {
 }
 
 func TestVAPIDKey_RoundTrip(t *testing.T) {
-	// Generate ECDSA P-256 private key.
 	curve := elliptic.P256()
 	privKeyECDSA, err := ecdsa.GenerateKey(curve, rand.Reader)
 	if err != nil {
 		t.Fatalf("generate ECDSA key failed: %v", err)
 	}
 
-	// Export private key (32 bytes).
 	privKeyBytes := privKeyECDSA.D.Bytes()
 	if len(privKeyBytes) < 32 {
-		// Pad to 32 bytes if needed.
 		padded := make([]byte, 32)
 		copy(padded[32-len(privKeyBytes):], privKeyBytes)
 		privKeyBytes = padded
@@ -328,22 +294,19 @@ func TestVAPIDKey_RoundTrip(t *testing.T) {
 
 	vapidPrivateKey := base64.RawURLEncoding.EncodeToString(privKeyBytes)
 
-	// Generate VAPID auth.
 	endpoint := "https://example.com/push/test"
 	email := "test@example.com"
-	authHeader, err := generateVAPIDAuth(endpoint, vapidPrivateKey, email)
+	authHeader, err := GenerateVAPIDAuth(endpoint, vapidPrivateKey, email)
 	if err != nil {
-		t.Fatalf("generateVAPIDAuth failed: %v", err)
+		t.Fatalf("GenerateVAPIDAuth failed: %v", err)
 	}
 
-	// Extract public key from auth header.
 	parts := strings.Split(authHeader, ",k=")
 	if len(parts) != 2 {
 		t.Fatalf("invalid auth header format")
 	}
 	pubKeyB64 := parts[1]
 
-	// Decode and verify it's a valid P-256 point.
 	pubKeyBytes, err := base64.RawURLEncoding.DecodeString(pubKeyB64)
 	if err != nil {
 		t.Fatalf("decode public key failed: %v", err)
@@ -354,7 +317,6 @@ func TestVAPIDKey_RoundTrip(t *testing.T) {
 		t.Fatalf("invalid public key point")
 	}
 
-	// Verify it matches the private key's public key.
 	if x.Cmp(privKeyECDSA.PublicKey.X) != 0 || y.Cmp(privKeyECDSA.PublicKey.Y) != 0 {
 		t.Errorf("public key mismatch")
 	}
@@ -364,16 +326,13 @@ func TestPushManager_NoSubscriptions(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	cfg := &Config{
+	cfg := Config{
 		HistoryDB: dbPath,
-		Push: PushConfig{
-			Enabled: true,
-		},
 	}
 
-	pm := newPushManager(cfg)
+	pm := NewManager(cfg)
 
-	notif := PushNotification{
+	notif := Notification{
 		Title: "Test",
 		Body:  "Hello",
 	}
@@ -384,11 +343,7 @@ func TestPushManager_NoSubscriptions(t *testing.T) {
 	}
 }
 
-// Cleanup test databases.
 func TestMain(m *testing.M) {
-	// Run tests.
 	code := m.Run()
-
-	// Cleanup (if needed).
 	os.Exit(code)
 }

@@ -33,6 +33,7 @@ import (
 	"tetora/internal/sla"
 	"tetora/internal/store"
 	"tetora/internal/trace"
+	"tetora/internal/voice"
 )
 
 // isValidOutputFilename checks that a filename contains only safe characters.
@@ -1347,8 +1348,8 @@ func startHTTPServer(s *Server) *http.Server {
 		HandleAPISpec: handleAPISpec(cfg),
 	})
 	httpapi.RegisterVoiceRoutes(mux, httpapi.VoiceDeps{
-		STTEnabled:       s.voiceEngine != nil && s.voiceEngine.stt != nil,
-		TTSEnabled:       s.voiceEngine != nil && s.voiceEngine.tts != nil,
+		STTEnabled:       s.voiceEngine != nil && s.voiceEngine.STT != nil,
+		TTSEnabled:       s.voiceEngine != nil && s.voiceEngine.TTS != nil,
 		WakeEnabled:      cfg.Voice.Wake.Enabled,
 		RealtimeEnabled:  cfg.Voice.Realtime.Enabled,
 		DefaultTTSFormat: cfg.Voice.TTS.Format,
@@ -1358,8 +1359,14 @@ func startHTTPServer(s *Server) *http.Server {
 		Synthesize: func(ctx context.Context, text string, opts httpapi.VoiceSynthesizeOpts) (io.ReadCloser, error) {
 			return s.voiceEngine.Synthesize(ctx, text, TTSOptions{Voice: opts.Voice, Speed: opts.Speed, Format: opts.Format})
 		},
-		HandleWakeWS:     func(w http.ResponseWriter, r *http.Request) { s.voiceRealtimeEngine.handleWakeWebSocket(w, r) },
-		HandleRealtimeWS: func(w http.ResponseWriter, r *http.Request) { s.voiceRealtimeEngine.handleRealtimeWebSocket(w, r) },
+		HandleWakeWS:     func(w http.ResponseWriter, r *http.Request) { s.voiceRealtimeEngine.HandleWakeWebSocket(w, r) },
+		HandleRealtimeWS: func(w http.ResponseWriter, r *http.Request) {
+			var reg voice.ToolRegistryIface
+			if cfg.Runtime.ToolRegistry != nil {
+				reg = &toolRegistryAdapter{cfg: cfg, reg: cfg.Runtime.ToolRegistry.(*ToolRegistry)}
+			}
+			s.voiceRealtimeEngine.HandleRealtimeWebSocket(w, r, reg)
+		},
 	})
 	httpapi.RegisterCanvasRoutes(mux, httpapi.CanvasDeps{
 		ListSessions: func() (any, int) {

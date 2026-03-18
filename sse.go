@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -40,139 +39,15 @@ const (
 	SSEPlanReview        = dtypes.SSEPlanReview
 )
 
-// Compile-time check: sseBroker implements dtypes.SSEBrokerPublisher.
-var _ dtypes.SSEBrokerPublisher = (*sseBroker)(nil)
-
-// --- SSE Broker ---
-
-// sseBroker is an in-memory pub/sub hub for SSE events.
-// Clients subscribe by key (task ID or session ID) and receive events on a channel.
-type sseBroker struct {
-	mu          sync.RWMutex
-	subscribers map[string]map[chan SSEEvent]struct{} // key -> set of channels
-	dropCount   atomic.Int64
-}
+// sseBroker is an alias for the canonical broker in internal/dispatch.
+type sseBroker = dtypes.Broker
 
 func newSSEBroker() *sseBroker {
-	return &sseBroker{
-		subscribers: make(map[string]map[chan SSEEvent]struct{}),
-	}
+	return dtypes.NewBroker()
 }
 
-// Subscribe registers a new listener for the given key.
-// Returns the event channel and an unsubscribe function.
-// The channel is buffered to avoid blocking publishers.
-func (b *sseBroker) Subscribe(key string) (chan SSEEvent, func()) {
-	ch := make(chan SSEEvent, 64)
-	b.mu.Lock()
-	if b.subscribers[key] == nil {
-		b.subscribers[key] = make(map[chan SSEEvent]struct{})
-	}
-	b.subscribers[key][ch] = struct{}{}
-	b.mu.Unlock()
+// --- SSE HTTP Helpers ---
 
-	unsubscribe := func() {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		if subs, ok := b.subscribers[key]; ok {
-			delete(subs, ch)
-			if len(subs) == 0 {
-				delete(b.subscribers, key)
-			}
-		}
-		// Drain remaining events to prevent goroutine leaks.
-		for len(ch) > 0 {
-			<-ch
-		}
-	}
-	return ch, unsubscribe
-}
-
-// Publish sends an event to all subscribers of the given key.
-// Non-blocking: if a subscriber's channel is full, the event is dropped.
-func (b *sseBroker) Publish(key string, event SSEEvent) {
-	if event.Timestamp == "" {
-		event.Timestamp = time.Now().Format(time.RFC3339)
-	}
-	b.mu.RLock()
-	// Copy channel references under the lock to avoid racing with unsubscribe.
-	channels := make([]chan SSEEvent, 0, len(b.subscribers[key]))
-	for ch := range b.subscribers[key] {
-		channels = append(channels, ch)
-	}
-	b.mu.RUnlock()
-
-	for _, ch := range channels {
-		select {
-		case ch <- event:
-		default:
-			// Channel full — drop event to avoid blocking.
-			b.dropCount.Add(1)
-		}
-	}
-}
-
-// PublishMulti sends an event to subscribers of all given keys.
-func (b *sseBroker) PublishMulti(keys []string, event SSEEvent) {
-	if event.Timestamp == "" {
-		event.Timestamp = time.Now().Format(time.RFC3339)
-	}
-	b.mu.RLock()
-	// Collect unique channels under the lock to avoid racing with unsubscribe.
-	seen := make(map[chan SSEEvent]struct{})
-	for _, key := range keys {
-		for ch := range b.subscribers[key] {
-			seen[ch] = struct{}{}
-		}
-	}
-	// Copy to slice before releasing lock.
-	channels := make([]chan SSEEvent, 0, len(seen))
-	for ch := range seen {
-		channels = append(channels, ch)
-	}
-	b.mu.RUnlock()
-
-	for _, ch := range channels {
-		select {
-		case ch <- event:
-		default:
-			b.dropCount.Add(1)
-		}
-	}
-}
-
-// DroppedEvents returns the total number of dropped events and resets the counter.
-func (b *sseBroker) DroppedEvents() int64 {
-	return b.dropCount.Swap(0)
-}
-
-// TotalDroppedEvents returns the total number of dropped events without resetting.
-func (b *sseBroker) TotalDroppedEvents() int64 {
-	return b.dropCount.Load()
-}
-
-// HasSubscribers returns true if the given key has any active subscribers.
-func (b *sseBroker) ClientCount() int {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	n := 0
-	for _, subs := range b.subscribers {
-		n += len(subs)
-	}
-	return n
-}
-
-func (b *sseBroker) HasSubscribers(key string) bool {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return len(b.subscribers[key]) > 0
-}
-
-// --- SSE HTTP Helper ---
-
-// serveSSE handles an SSE connection for the given subscription key.
-// It writes events from the broker and sends heartbeats every 15s.
-// Blocks until the client disconnects or a terminal event (completed/error) is received.
 func serveSSE(w http.ResponseWriter, r *http.Request, broker *sseBroker, key string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -183,14 +58,13 @@ func serveSSE(w http.ResponseWriter, r *http.Request, broker *sseBroker, key str
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no") // nginx proxy support
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	ch, unsub := broker.Subscribe(key)
 	defer unsub()
 
 	var eventID atomic.Int64
 
-	// Write initial comment to establish connection.
 	fmt.Fprintf(w, ": connected to %s\n\n", key)
 	flusher.Flush()
 
@@ -211,7 +85,6 @@ func serveSSE(w http.ResponseWriter, r *http.Request, broker *sseBroker, key str
 			writeSSEEvent(w, id, event)
 			flusher.Flush()
 
-			// Close connection on terminal events.
 			if event.Type == SSECompleted || event.Type == SSEError {
 				return
 			}
@@ -223,8 +96,6 @@ func serveSSE(w http.ResponseWriter, r *http.Request, broker *sseBroker, key str
 	}
 }
 
-// serveDashboardSSE handles a persistent SSE connection for the global dashboard feed.
-// Unlike serveSSE, it does NOT close on completed/error events (persistent stream).
 func serveDashboardSSE(w http.ResponseWriter, r *http.Request, broker *sseBroker) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -314,7 +185,6 @@ func serveSSEPersistent(w http.ResponseWriter, r *http.Request, broker *sseBroke
 	}
 }
 
-// writeSSEEvent formats and writes a single SSE event to the writer.
 func writeSSEEvent(w http.ResponseWriter, id int64, event SSEEvent) {
 	data, err := json.Marshal(event)
 	if err != nil {

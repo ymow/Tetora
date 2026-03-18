@@ -4,17 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"tetora/internal/classify"
-	"tetora/internal/log"
-	"tetora/internal/provider"
-
 	"tetora/internal/cost"
 	"tetora/internal/estimate"
+	"tetora/internal/log"
+	"tetora/internal/provider"
+	"tetora/internal/workspace"
 )
 
 // safeToolExec wraps tool execution with panic recovery.
@@ -444,128 +442,10 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 // agent: agent-specific rules from workspace/rules/{agentName}*
 // on-demand: memory only via {{memory.KEY}} template
 func injectWorkspaceContent(cfg *Config, task *Task, agentName string) {
-	if cfg.WorkspaceDir == "" {
-		return
-	}
-
-	maxInjectionSize := 50 * 1024 // 50KB — skip entirely above this
-	indexThreshold := 20 * 1024   // 20KB — inject index instead of full dir above this
-
-	// Helper: inject a directory either as full AddDirs, as a compact index, or skip.
-	injectDir := func(dir string) {
-		fi, err := os.Stat(dir)
-		if err != nil || !fi.IsDir() {
-			return
-		}
-		size := estimateDirSize(dir)
-		if size > maxInjectionSize {
-			log.Warn("workspace dir exceeds 50KB, skipping injection", "dir", dir, "size", size)
-			return
-		}
-		if size > indexThreshold {
-			// Inject compact index into system prompt instead of full dir.
-			idx := buildDirIndex(dir)
-			if idx != "" {
-				task.SystemPrompt += "\n\n" + idx
-			}
-			return
-		}
-		// Small enough — inject full directory.
-		for _, d := range task.AddDirs {
-			if d == dir {
-				return // already added
-			}
-		}
-		task.AddDirs = append(task.AddDirs, dir)
-	}
-
-	injectDir(filepath.Join(cfg.WorkspaceDir, "rules"))
-	injectDir(filepath.Join(cfg.WorkspaceDir, "knowledge"))
-
-	// Agent tier: find agent-specific rules and append to system prompt.
-	if agentName != "" {
-		roleRules := findAgentSpecificRules(filepath.Join(cfg.WorkspaceDir, "rules"), agentName)
-		if roleRules != "" {
-			task.SystemPrompt += "\n\n" + roleRules
-		}
-	}
-	// On-demand tier: memory is resolved via {{memory.KEY}} in template.go, not here.
-	// When index mode is active, individual rules can be loaded via {{rules.FILENAME}}.
+	workspace.InjectContent(cfg, &task.SystemPrompt, &task.AddDirs, agentName)
 }
 
-// buildDirIndex generates a compact markdown index of a directory.
-// Each file is summarized by its first line (or first 100 chars).
-func buildDirIndex(dir string) string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return ""
-	}
-	dirName := filepath.Base(dir)
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("## Directory Index: %s\n\nUse `{{rules.FILENAME}}` to load a specific file on demand.\n\n", dirName))
-	count := 0
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			continue
-		}
-		summary := strings.TrimSpace(string(data))
-		// Use first line as summary.
-		if idx := strings.IndexByte(summary, '\n'); idx >= 0 {
-			summary = summary[:idx]
-		}
-		if len(summary) > 100 {
-			summary = summary[:100] + "..."
-		}
-		// Strip markdown heading markers for cleaner display.
-		summary = strings.TrimLeft(summary, "# ")
-		b.WriteString(fmt.Sprintf("- **%s**: %s\n", e.Name(), summary))
-		count++
-	}
-	if count == 0 {
-		return ""
-	}
-	return b.String()
-}
-
-// findAgentSpecificRules reads files in rulesDir whose name contains agentName.
-func findAgentSpecificRules(rulesDir, agentName string) string {
-	entries, err := os.ReadDir(rulesDir)
-	if err != nil {
-		return ""
-	}
-	var parts []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		if strings.Contains(strings.ToLower(e.Name()), strings.ToLower(agentName)) {
-			data, err := os.ReadFile(filepath.Join(rulesDir, e.Name()))
-			if err == nil {
-				parts = append(parts, string(data))
-			}
-		}
-	}
-	return strings.Join(parts, "\n\n")
-}
-
-// estimateDirSize returns an estimate of the total file size in a directory.
+// estimateDirSize returns the total size of all files (non-recursive) in a directory.
 func estimateDirSize(dir string) int {
-	total := 0
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return 0
-	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		if info, err := e.Info(); err == nil {
-			total += int(info.Size())
-		}
-	}
-	return total
+	return workspace.DirSize(dir)
 }

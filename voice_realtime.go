@@ -1,674 +1,116 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/tls"
-	"encoding/base64"
 	"encoding/json"
-	"fmt"
-	"net"
 	"net/http"
-	"net/url"
-	"strings"
-	"sync"
-	"time"
 
-	"tetora/internal/discord"
-	"tetora/internal/log"
+	"tetora/internal/voice"
 )
-
-// --- Voice Realtime Engine ---
-
-// VoiceRealtimeEngine manages wake word detection and OpenAI Realtime API relay.
-type VoiceRealtimeEngine struct {
-	cfg         *Config
-	voiceEngine *VoiceEngine
-	sessions    sync.Map // sessionID -> *realtimeSession
-}
-
-// newVoiceRealtimeEngine initializes the voice realtime engine.
-func newVoiceRealtimeEngine(cfg *Config, voiceEngine *VoiceEngine) *VoiceRealtimeEngine {
-	vre := &VoiceRealtimeEngine{
-		cfg:         cfg,
-		voiceEngine: voiceEngine,
-	}
-	log.Info("voice realtime engine initialized")
-	return vre
-}
-
-// --- Wake Word Detection ---
-
-// wakeSession represents a wake word detection session over WebSocket.
-type wakeSession struct {
-	id          string
-	conn        *wsConn
-	cfg         *Config
-	voiceEngine *VoiceEngine
-	mu          sync.Mutex
-	closed      bool
-	audioBuffer *bytes.Buffer // accumulate audio until silence or wake word
-	lastAudio   time.Time
-}
-
-// handleWakeWebSocket handles the /ws/voice/wake WebSocket endpoint.
-func (vre *VoiceRealtimeEngine) handleWakeWebSocket(w http.ResponseWriter, r *http.Request) {
-	// Upgrade to WebSocket.
-	conn, err := wsUpgrade(w, r)
-	if err != nil {
-		log.Warn("wake websocket upgrade failed", "error", err)
-		http.Error(w, "upgrade failed", http.StatusBadRequest)
-		return
-	}
-
-	sessionID := generateSessionID()
-	sess := &wakeSession{
-		id:          sessionID,
-		conn:        conn,
-		cfg:         vre.cfg,
-		voiceEngine: vre.voiceEngine,
-		audioBuffer: &bytes.Buffer{},
-		lastAudio:   time.Now(),
-	}
-
-	log.Info("wake session started", "sessionID", sessionID)
-
-	// Run session in goroutine.
-	go sess.run()
-}
-
-func (ws *wakeSession) run() {
-	defer func() {
-		ws.mu.Lock()
-		ws.closed = true
-		ws.mu.Unlock()
-		ws.conn.Close()
-		log.Info("wake session closed", "sessionID", ws.id)
-	}()
-
-	// Start silence detector (detects end of utterance).
-	go ws.silenceDetector()
-
-	for {
-		// Read audio chunk from client.
-		opcode, payload, err := ws.conn.ReadMessage()
-		if err != nil {
-			if !ws.closed {
-				log.Debug("wake websocket read error", "sessionID", ws.id, "error", err)
-			}
-			return
-		}
-
-		if opcode == wsBinary {
-			// Accumulate audio.
-			ws.mu.Lock()
-			ws.audioBuffer.Write(payload)
-			ws.lastAudio = time.Now()
-			ws.mu.Unlock()
-		}
-	}
-}
-
-func (ws *wakeSession) silenceDetector() {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		<-ticker.C
-		ws.mu.Lock()
-		if ws.closed {
-			ws.mu.Unlock()
-			return
-		}
-
-		// Check if silence threshold exceeded (no audio for 1 second).
-		silenceDuration := time.Since(ws.lastAudio)
-		if silenceDuration > 1*time.Second && ws.audioBuffer.Len() > 0 {
-			// Process accumulated audio.
-			audioData := ws.audioBuffer.Bytes()
-			ws.audioBuffer.Reset()
-			ws.mu.Unlock()
-
-			ws.processAudio(audioData)
-		} else {
-			ws.mu.Unlock()
-		}
-	}
-}
-
-func (ws *wakeSession) processAudio(audioData []byte) {
-	// Run STT on audio chunk.
-	if ws.voiceEngine == nil || ws.voiceEngine.stt == nil {
-		log.Debug("wake stt not enabled", "sessionID", ws.id)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	result, err := ws.voiceEngine.Transcribe(ctx, bytes.NewReader(audioData), STTOptions{
-		Format: "webm", // assume WebM Opus from browser
-	})
-	if err != nil {
-		log.Debug("wake stt error", "sessionID", ws.id, "error", err)
-		return
-	}
-
-	log.Debug("wake stt result", "sessionID", ws.id, "text", result.Text)
-
-	// Check for wake word.
-	wakeWords := ws.cfg.Voice.Wake.WakeWords
-	if len(wakeWords) == 0 {
-		wakeWords = []string{"テトラ", "tetora"} // default
-	}
-
-	lowerText := strings.ToLower(result.Text)
-	wakeDetected := false
-	for _, ww := range wakeWords {
-		if strings.Contains(lowerText, strings.ToLower(ww)) {
-			wakeDetected = true
-			break
-		}
-	}
-
-	if wakeDetected {
-		// Send wake detection event to client.
-		ws.sendEvent("wake_detected", map[string]any{
-			"text": result.Text,
-		})
-		log.Info("wake word detected", "sessionID", ws.id, "text", result.Text)
-	}
-}
-
-func (ws *wakeSession) sendEvent(eventType string, data any) {
-	ws.mu.Lock()
-	defer ws.mu.Unlock()
-
-	if ws.closed {
-		return
-	}
-
-	msg := map[string]any{
-		"type": eventType,
-		"data": data,
-	}
-	jsonData, _ := json.Marshal(msg)
-	ws.conn.WriteMessage(wsText, jsonData)
-}
-
-// --- OpenAI Realtime API Relay ---
-
-// realtimeSession represents an OpenAI Realtime API relay session.
-type realtimeSession struct {
-	id           string
-	clientConn   *wsConn
-	openaiConn   *wsConn
-	cfg          *Config
-	ctx          context.Context
-	cancel       context.CancelFunc
-	mu           sync.Mutex
-	closed       bool
-	voiceEngine  *VoiceEngine
-	toolRegistry *ToolRegistry
-}
-
-// handleRealtimeWebSocket handles the /ws/voice/realtime WebSocket endpoint.
-func (vre *VoiceRealtimeEngine) handleRealtimeWebSocket(w http.ResponseWriter, r *http.Request) {
-	// Upgrade to WebSocket.
-	conn, err := wsUpgrade(w, r)
-	if err != nil {
-		log.Warn("realtime websocket upgrade failed", "error", err)
-		http.Error(w, "upgrade failed", http.StatusBadRequest)
-		return
-	}
-
-	sessionID := generateSessionID()
-	ctx, cancel := context.WithCancel(context.Background())
-
-	sess := &realtimeSession{
-		id:           sessionID,
-		clientConn:   conn,
-		cfg:          vre.cfg,
-		ctx:          ctx,
-		cancel:       cancel,
-		voiceEngine:  vre.voiceEngine,
-		toolRegistry: vre.cfg.Runtime.ToolRegistry.(*ToolRegistry),
-	}
-
-	vre.sessions.Store(sessionID, sess)
-	log.Info("realtime session started", "sessionID", sessionID)
-
-	// Run session in goroutine.
-	go sess.run()
-}
-
-func (rs *realtimeSession) run() {
-	defer func() {
-		rs.mu.Lock()
-		rs.closed = true
-		rs.mu.Unlock()
-
-		if rs.openaiConn != nil {
-			rs.openaiConn.Close()
-		}
-		rs.clientConn.Close()
-		rs.cancel()
-
-		log.Info("realtime session closed", "sessionID", rs.id)
-	}()
-
-	// Connect to OpenAI Realtime API.
-	if err := rs.connectOpenAI(); err != nil {
-		log.Error("realtime openai connect failed", "sessionID", rs.id, "error", err)
-		rs.sendError(err.Error())
-		return
-	}
-
-	// Start bidirectional relay.
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	// Client -> OpenAI
-	go func() {
-		defer wg.Done()
-		rs.relayClientToOpenAI()
-	}()
-
-	// OpenAI -> Client
-	go func() {
-		defer wg.Done()
-		rs.relayOpenAIToClient()
-	}()
-
-	wg.Wait()
-}
-
-func (rs *realtimeSession) connectOpenAI() error {
-	apiKey := rs.cfg.Voice.Realtime.APIKey
-	if apiKey == "" {
-		return fmt.Errorf("openai api key not configured")
-	}
-
-	model := rs.cfg.Voice.Realtime.Model
-	if model == "" {
-		model = "gpt-4o-realtime-preview-2024-12-17"
-	}
-
-	// OpenAI Realtime API endpoint.
-	realtimeURL := fmt.Sprintf("wss://api.openai.com/v1/realtime?model=%s", url.QueryEscape(model))
-
-	// Create WebSocket connection with Authorization header.
-	conn, err := rs.wsConnectWithAuth(realtimeURL, apiKey)
-	if err != nil {
-		return fmt.Errorf("connect openai realtime: %w", err)
-	}
-
-	rs.openaiConn = conn
-	log.Info("realtime connected to openai", "sessionID", rs.id, "model", model)
-
-	// Send session.update with system prompt and tools.
-	if err := rs.configureSession(); err != nil {
-		return fmt.Errorf("configure session: %w", err)
-	}
-
-	return nil
-}
-
-func (rs *realtimeSession) configureSession() error {
-	// Build system prompt with agent context.
-	systemPrompt := "You are Tetora, an AI agent orchestrator. You are helpful, concise, and proactive."
-
-	// Build tool definitions.
-	tools := rs.buildToolDefinitions()
-
-	// Send session.update event.
-	sessionUpdate := map[string]any{
-		"type": "session.update",
-		"session": map[string]any{
-			"modalities":   []string{"text", "audio"},
-			"instructions": systemPrompt,
-			"voice":        rs.getVoice(),
-			"tools":        tools,
-			"tool_choice":  "auto",
-		},
-	}
-
-	jsonData, err := json.Marshal(sessionUpdate)
-	if err != nil {
-		return fmt.Errorf("marshal session update: %w", err)
-	}
-
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-
-	if rs.closed {
-		return fmt.Errorf("session closed")
-	}
-
-	return rs.openaiConn.WriteMessage(wsText, jsonData)
-}
-
-func (rs *realtimeSession) getVoice() string {
-	voice := rs.cfg.Voice.Realtime.Voice
-	if voice == "" {
-		voice = "alloy"
-	}
-	return voice
-}
-
-func (rs *realtimeSession) buildToolDefinitions() []map[string]any {
-	if rs.toolRegistry == nil {
-		return nil
-	}
-
-	var tools []map[string]any
-
-	// Add built-in tools.
-	for _, tool := range rs.toolRegistry.List() {
-		// Parse InputSchema to extract parameters.
-		var schema map[string]any
-		if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
-			log.Warn("failed to parse tool input schema", "tool", tool.Name, "error", err)
-			continue
-		}
-
-		tools = append(tools, map[string]any{
-			"type":        "function",
-			"name":        tool.Name,
-			"description": tool.Description,
-			"parameters":  schema,
-		})
-	}
-
-	return tools
-}
-
-func (rs *realtimeSession) relayClientToOpenAI() {
-	for {
-		opcode, payload, err := rs.clientConn.ReadMessage()
-		if err != nil {
-			if !rs.closed {
-				log.Debug("realtime client read error", "sessionID", rs.id, "error", err)
-			}
-			return
-		}
-
-		rs.mu.Lock()
-		if rs.closed || rs.openaiConn == nil {
-			rs.mu.Unlock()
-			return
-		}
-
-		// Forward to OpenAI.
-		if err := rs.openaiConn.WriteMessage(opcode, payload); err != nil {
-			log.Debug("realtime openai write error", "sessionID", rs.id, "error", err)
-			rs.mu.Unlock()
-			return
-		}
-		rs.mu.Unlock()
-	}
-}
-
-func (rs *realtimeSession) relayOpenAIToClient() {
-	for {
-		opcode, payload, err := rs.openaiConn.ReadMessage()
-		if err != nil {
-			if !rs.closed {
-				log.Debug("realtime openai read error", "sessionID", rs.id, "error", err)
-			}
-			return
-		}
-
-		// Check for tool calls (function_call events).
-		if opcode == wsText {
-			rs.handleOpenAIEvent(payload)
-		}
-
-		rs.mu.Lock()
-		if rs.closed {
-			rs.mu.Unlock()
-			return
-		}
-
-		// Forward to client.
-		if err := rs.clientConn.WriteMessage(opcode, payload); err != nil {
-			log.Debug("realtime client write error", "sessionID", rs.id, "error", err)
-			rs.mu.Unlock()
-			return
-		}
-		rs.mu.Unlock()
-	}
-}
-
-func (rs *realtimeSession) handleOpenAIEvent(payload []byte) {
-	var event map[string]any
-	if err := json.Unmarshal(payload, &event); err != nil {
-		return
-	}
-
-	eventType, _ := event["type"].(string)
-	if eventType != "response.function_call_arguments.done" {
-		return
-	}
-
-	// Extract function call details.
-	callID, _ := event["call_id"].(string)
-	name, _ := event["name"].(string)
-	argsStr, _ := event["arguments"].(string)
-
-	log.Info("realtime function call", "sessionID", rs.id, "callID", callID, "name", name)
-
-	// Execute tool.
-	go rs.executeToolCall(callID, name, argsStr)
-}
-
-func (rs *realtimeSession) executeToolCall(callID, name, argsJSON string) {
-	if rs.toolRegistry == nil {
-		rs.sendToolResult(callID, "", fmt.Errorf("tool registry not available"))
-		return
-	}
-
-	tool, ok := rs.toolRegistry.Get(name)
-	if !ok {
-		rs.sendToolResult(callID, "", fmt.Errorf("tool not found: %s", name))
-		return
-	}
-
-	// Execute tool with proper handler signature.
-	ctx, cancel := context.WithTimeout(rs.ctx, 30*time.Second)
-	defer cancel()
-
-	result, err := tool.Handler(ctx, rs.cfg, json.RawMessage(argsJSON))
-	if err != nil {
-		rs.sendToolResult(callID, "", err)
-		return
-	}
-
-	rs.sendToolResult(callID, result, nil)
-}
-
-func (rs *realtimeSession) sendToolResult(callID, result string, err error) {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-
-	if rs.closed || rs.openaiConn == nil {
-		return
-	}
-
-	output := result
-	if err != nil {
-		output = fmt.Sprintf("Error: %v", err)
-	}
-
-	// Send conversation.item.create with function_call_output.
-	itemCreate := map[string]any{
-		"type": "conversation.item.create",
-		"item": map[string]any{
-			"type":    "function_call_output",
-			"call_id": callID,
-			"output":  output,
-		},
-	}
-
-	jsonData, _ := json.Marshal(itemCreate)
-	rs.openaiConn.WriteMessage(wsText, jsonData)
-
-	// Send response.create to trigger model response.
-	responseCreate := map[string]any{
-		"type": "response.create",
-	}
-	jsonData, _ = json.Marshal(responseCreate)
-	rs.openaiConn.WriteMessage(wsText, jsonData)
-}
-
-func (rs *realtimeSession) sendError(msg string) {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-
-	if rs.closed {
-		return
-	}
-
-	errMsg := map[string]any{
-		"type":  "error",
-		"error": msg,
-	}
-	jsonData, _ := json.Marshal(errMsg)
-	rs.clientConn.WriteMessage(wsText, jsonData)
-}
-
-func (rs *realtimeSession) wsConnectWithAuth(rawURL, apiKey string) (*wsConn, error) {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return nil, err
-	}
-
-	host := u.Host
-	if !strings.Contains(host, ":") {
-		host += ":443"
-	}
-
-	// TLS dial.
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", host, &tls.Config{})
-	if err != nil {
-		return nil, fmt.Errorf("tls dial: %w", err)
-	}
-
-	// Generate WebSocket key.
-	keyBytes := make([]byte, 16)
-	rand.Read(keyBytes)
-	key := base64.StdEncoding.EncodeToString(keyBytes)
-
-	// Send HTTP upgrade request with Authorization header.
-	path := u.RequestURI()
-	reqStr := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nAuthorization: Bearer %s\r\nOpenAI-Beta: realtime=v1\r\n\r\n",
-		path, u.Host, key, apiKey)
-	if _, err := conn.Write([]byte(reqStr)); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("write upgrade: %w", err)
-	}
-
-	// Read response.
-	reader := bufio.NewReader(conn)
-	statusLine, err := reader.ReadString('\n')
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("read status: %w", err)
-	}
-	if !strings.Contains(statusLine, "101") {
-		conn.Close()
-		return nil, fmt.Errorf("upgrade failed: %s", strings.TrimSpace(statusLine))
-	}
-
-	// Read headers until empty line.
-	expectedAccept := wsAcceptKey(key)
-	gotAccept := false
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("read headers: %w", err)
-		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			break
-		}
-		if strings.HasPrefix(strings.ToLower(line), "sec-websocket-accept:") {
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 && strings.TrimSpace(parts[1]) == expectedAccept {
-				gotAccept = true
-			}
-		}
-	}
-
-	if !gotAccept {
-		conn.Close()
-		return nil, fmt.Errorf("handshake failed: accept key mismatch")
-	}
-
-	return discord.NewWsConn(conn, reader), nil
-}
-
-// --- WebSocket Upgrade (HTTP -> WebSocket) ---
-
-// wsUpgrade upgrades an HTTP connection to WebSocket (server-side).
-func wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsConn, error) {
-	// Validate upgrade headers.
-	if r.Method != "GET" {
-		return nil, fmt.Errorf("method not allowed")
-	}
-	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-		return nil, fmt.Errorf("missing upgrade header")
-	}
-	if !strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") {
-		return nil, fmt.Errorf("missing connection upgrade header")
-	}
-	wsKey := r.Header.Get("Sec-WebSocket-Key")
-	if wsKey == "" {
-		return nil, fmt.Errorf("missing sec-websocket-key")
-	}
-
-	// Hijack connection.
-	hj, ok := w.(http.Hijacker)
-	if !ok {
-		return nil, fmt.Errorf("server does not support hijacking")
-	}
-	conn, bufrw, err := hj.Hijack()
-	if err != nil {
-		return nil, fmt.Errorf("hijack failed: %w", err)
-	}
-
-	// Send upgrade response.
-	accept := wsAcceptKey(wsKey)
-	resp := fmt.Sprintf("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", accept)
-	if _, err := bufrw.Write([]byte(resp)); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("write upgrade response: %w", err)
-	}
-	if err := bufrw.Flush(); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("flush upgrade response: %w", err)
-	}
-
-	return discord.NewWsConn(conn, bufrw.Reader), nil
-}
 
 // --- WebSocket opcode constants ---
 
 const (
-	wsText   = 1
-	wsBinary = 2
-	wsClose  = 8
-	wsPing   = 9
-	wsPong   = 10
+	wsText   = voice.WSText
+	wsBinary = voice.WSBinary
+	wsClose  = voice.WSClose
+	wsPing   = voice.WSPing
+	wsPong   = voice.WSPong
 )
 
-// --- Utilities ---
+// VoiceRealtimeEngine manages wake word detection and OpenAI Realtime API relay.
+type VoiceRealtimeEngine = voice.VoiceRealtimeEngine
 
-func generateSessionID() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	return fmt.Sprintf("%x", b)
+// newVoiceRealtimeEngine initializes the voice realtime engine.
+func newVoiceRealtimeEngine(cfg *Config, ve *VoiceEngine) *VoiceRealtimeEngine {
+	vcfg := voice.VoiceConfig{
+		STT: voice.STTConfig{
+			Enabled:  cfg.Voice.STT.Enabled,
+			Provider: cfg.Voice.STT.Provider,
+			Model:    cfg.Voice.STT.Model,
+			Endpoint: cfg.Voice.STT.Endpoint,
+			APIKey:   cfg.Voice.STT.APIKey,
+			Language: cfg.Voice.STT.Language,
+		},
+		TTS: voice.TTSConfig{
+			Enabled:  cfg.Voice.TTS.Enabled,
+			Provider: cfg.Voice.TTS.Provider,
+			Model:    cfg.Voice.TTS.Model,
+			Endpoint: cfg.Voice.TTS.Endpoint,
+			APIKey:   cfg.Voice.TTS.APIKey,
+			Voice:    cfg.Voice.TTS.Voice,
+			Format:   cfg.Voice.TTS.Format,
+		},
+		Wake: voice.VoiceWakeConfig{
+			Enabled:   cfg.Voice.Wake.Enabled,
+			WakeWords: cfg.Voice.Wake.WakeWords,
+			Threshold: cfg.Voice.Wake.Threshold,
+		},
+		Realtime: voice.VoiceRealtimeConfig{
+			Enabled:  cfg.Voice.Realtime.Enabled,
+			Provider: cfg.Voice.Realtime.Provider,
+			Model:    cfg.Voice.Realtime.Model,
+			APIKey:   cfg.Voice.Realtime.APIKey,
+			Voice:    cfg.Voice.Realtime.Voice,
+		},
+	}
+	return voice.NewVoiceRealtimeEngine(vcfg, ve)
 }
+
+// toolRegistryAdapter bridges *ToolRegistry to voice.ToolRegistryIface.
+type toolRegistryAdapter struct {
+	cfg *Config
+	reg *ToolRegistry
+}
+
+func (a *toolRegistryAdapter) GetTool(name string) *voice.ToolEntry {
+	tool, ok := a.reg.Get(name)
+	if !ok {
+		return nil
+	}
+	cfg := a.cfg
+	return &voice.ToolEntry{
+		Name:        tool.Name,
+		Description: tool.Description,
+		InputSchema: tool.InputSchema,
+		Handler: func(ctx context.Context, argsJSON json.RawMessage) (string, error) {
+			return tool.Handler(ctx, cfg, argsJSON)
+		},
+	}
+}
+
+func (a *toolRegistryAdapter) ListTools() []*voice.ToolEntry {
+	defs := a.reg.List()
+	entries := make([]*voice.ToolEntry, 0, len(defs))
+	cfg := a.cfg
+	for _, tool := range defs {
+		t := tool
+		entries = append(entries, &voice.ToolEntry{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+			Handler: func(ctx context.Context, argsJSON json.RawMessage) (string, error) {
+				return t.Handler(ctx, cfg, argsJSON)
+			},
+		})
+	}
+	return entries
+}
+
+// wsUpgrade upgrades an HTTP connection to WebSocket (server-side).
+func wsUpgrade(w http.ResponseWriter, r *http.Request) (voice.WSConn, error) {
+	return voice.WSUpgrade(w, r)
+}
+
+// generateSessionID returns a random 32-character hex session ID.
+func generateSessionID() string {
+	return voice.GenerateSessionID()
+}
+
+// handleWakeWebSocket is the root-level handler for /ws/voice/wake.
+// Called by http.go via s.voiceRealtimeEngine.handleWakeWebSocket.
+// NOTE: the VoiceRealtimeEngine type alias exposes HandleWakeWebSocket (exported).
+// http.go calls s.voiceRealtimeEngine.handleWakeWebSocket which is routed below.
+
+// handleRealtimeWebSocket is the root-level handler for /ws/voice/realtime.
+// http.go calls s.voiceRealtimeEngine.handleRealtimeWebSocket which is routed below.

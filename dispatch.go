@@ -357,7 +357,7 @@ func dispatch(ctx context.Context, cfg *Config, tasks []Task, state *dispatchSta
 			defer wg.Done()
 			s := selectSem(sem, childSem, t.Depth)
 			if t.Depth == 0 && cfg.Runtime.SlotPressureGuard != nil {
-				ar, err := cfg.Runtime.SlotPressureGuard.(*SlotPressureGuard).AcquireSlot(ctx, s, t.Source)
+				ar, err := cfg.Runtime.SlotPressureGuard.(*dtypes.SlotPressureGuard).AcquireSlot(ctx, s, t.Source)
 				if err != nil {
 					results <- TaskResult{
 						ID: t.ID, Name: t.Name, Status: "cancelled",
@@ -365,7 +365,7 @@ func dispatch(ctx context.Context, cfg *Config, tasks []Task, state *dispatchSta
 					}
 					return
 				}
-				defer cfg.Runtime.SlotPressureGuard.(*SlotPressureGuard).ReleaseSlot()
+				defer cfg.Runtime.SlotPressureGuard.(*dtypes.SlotPressureGuard).ReleaseSlot()
 				defer func() { <-s }()
 				var r TaskResult
 				if t.ReviewLoop {
@@ -454,14 +454,14 @@ func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem ch
 	s := selectSem(sem, childSem, task.Depth)
 	var slotWarning string
 	if task.Depth == 0 && cfg.Runtime.SlotPressureGuard != nil {
-		ar, err := cfg.Runtime.SlotPressureGuard.(*SlotPressureGuard).AcquireSlot(ctx, s, task.Source)
+		ar, err := cfg.Runtime.SlotPressureGuard.(*dtypes.SlotPressureGuard).AcquireSlot(ctx, s, task.Source)
 		if err != nil {
 			return TaskResult{
 				ID: task.ID, Name: task.Name, Status: "cancelled",
 				Error: "slot acquisition cancelled: " + err.Error(), Model: task.Model, SessionID: task.SessionID,
 			}
 		}
-		defer cfg.Runtime.SlotPressureGuard.(*SlotPressureGuard).ReleaseSlot()
+		defer cfg.Runtime.SlotPressureGuard.(*dtypes.SlotPressureGuard).ReleaseSlot()
 		defer func() { <-s }()
 		slotWarning = ar.Warning
 	} else {
