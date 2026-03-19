@@ -234,6 +234,9 @@ func main() {
 		case "team":
 			cli.CmdTeam(os.Args[2:])
 			return
+		case "time-savings":
+			cmdTimeSavings(os.Args[2:])
+			return
 		case "task":
 			cmdTask(os.Args[2:])
 			return
@@ -415,6 +418,8 @@ func main() {
 			if err := initAgentCommDB(cfg.HistoryDB); err != nil {
 				log.Warn("init agent_messages failed", "error", err)
 			}
+			// Init handoff tables (also runs column migrations on agent_messages).
+			initHandoffTables(cfg.HistoryDB)
 			// --- P18.4: Self-Improving Skills --- Init skill usage table.
 			if err := initSkillUsageTable(cfg.HistoryDB); err != nil {
 				log.Warn("init skill_usage failed", "error", err)
@@ -762,14 +767,6 @@ func main() {
 			cron.SetIdleChecker(heartbeatMon)
 		}
 
-		// Proactive engine.
-		var proactiveEngine *ProactiveEngine
-		if cfg.Proactive.Enabled {
-			proactiveEngine = newProactiveEngine(cfg, state.broker, sem, childSem)
-			proactiveEngine.Start(ctx)
-			log.Info("proactive engine started", "rules", len(cfg.Proactive.Rules))
-		}
-
 		// Group chat engine.
 		var groupChatEngine *groupchat.Engine
 		if cfg.GroupChat.Activation != "" {
@@ -880,6 +877,14 @@ func main() {
 				}
 				discordBot.sendNotify(text)
 			}
+		}
+
+		// Proactive engine — initialized after Discord so notifyFn includes Discord delivery.
+		var proactiveEngine *ProactiveEngine
+		if cfg.Proactive.Enabled {
+			proactiveEngine = newProactiveEngine(cfg, state.broker, sem, childSem, notifyFn)
+			proactiveEngine.Start(ctx)
+			log.Info("proactive engine started", "rules", len(cfg.Proactive.Rules))
 		}
 
 		// Start MCP host.

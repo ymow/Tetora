@@ -28,6 +28,16 @@ type Deps struct {
 
 	// FillDefaults populates empty Task fields from config.
 	FillDefaults func(cfg *config.Config, t *dispatch.Task)
+
+	// NotifyFn sends a notification string via the configured notification chain
+	// (e.g. Discord). May be nil if no notifier is wired up.
+	NotifyFn func(string)
+}
+
+// cooldownEntry tracks when a rule was last triggered and how long the cooldown lasts.
+type cooldownEntry struct {
+	lastTriggered time.Time
+	duration      time.Duration
 }
 
 // Engine manages proactive rules (scheduled, event-driven, threshold-based).
@@ -39,7 +49,7 @@ type Engine struct {
 	mu        sync.RWMutex
 	ctx       context.Context
 	cancel    context.CancelFunc
-	cooldowns map[string]time.Time // rule name → last triggered
+	cooldowns map[string]cooldownEntry // rule name → {lastTriggered, duration}
 	stopCh    chan struct{}
 	wg        sync.WaitGroup
 	sem       chan struct{} // shared semaphore for top-level tasks
@@ -65,7 +75,7 @@ func New(cfg *config.Config, broker *dispatch.Broker, sem, childSem chan struct{
 		cfg:       cfg,
 		broker:    broker,
 		deps:      deps,
-		cooldowns: make(map[string]time.Time),
+		cooldowns: make(map[string]cooldownEntry),
 		stopCh:    make(chan struct{}),
 		sem:       sem,
 		childSem:  childSem,
@@ -75,6 +85,7 @@ func New(cfg *config.Config, broker *dispatch.Broker, sem, childSem chan struct{
 // Start begins all rule evaluators in background goroutines.
 func (e *Engine) Start(ctx context.Context) {
 	e.ctx, e.cancel = context.WithCancel(ctx)
+	e.loadCooldownsFromDB()
 
 	log.Info("proactive engine starting", "rules", len(e.rules))
 
@@ -185,10 +196,10 @@ func (e *Engine) checkHeartbeatRules(ctx context.Context) {
 		}
 
 		e.mu.Lock()
-		lastTriggered, ok := e.cooldowns[rule.Name]
+		entry, ok := e.cooldowns[rule.Name]
 		e.mu.Unlock()
 
-		if !ok || now.Sub(lastTriggered) >= interval {
+		if !ok || now.Sub(entry.lastTriggered) >= interval {
 			log.Info("proactive heartbeat triggered", "rule", rule.Name, "interval", interval)
 			if err := e.executeAction(ctx, rule); err != nil {
 				log.Error("proactive action failed", "rule", rule.Name, "error", err)
@@ -277,10 +288,10 @@ func (e *Engine) matchesSchedule(rule config.ProactiveRule) bool {
 
 	// Avoid double-firing in the same minute.
 	e.mu.Lock()
-	lastTriggered, ok := e.cooldowns[rule.Name]
+	entry, ok := e.cooldowns[rule.Name]
 	e.mu.Unlock()
 
-	if ok && lastTriggered.In(loc).Truncate(time.Minute).Equal(now.Truncate(time.Minute)) {
+	if ok && entry.lastTriggered.In(loc).Truncate(time.Minute).Equal(now.Truncate(time.Minute)) {
 		return false
 	}
 
@@ -443,9 +454,14 @@ func (e *Engine) executeAction(ctx context.Context, rule config.ProactiveRule) e
 			e.SetCooldown(rule.Name, duration)
 		}
 	} else {
-		// Default cooldown: 1 minute for schedule/threshold, none for heartbeat.
-		if rule.Trigger.Type == "schedule" || rule.Trigger.Type == "threshold" {
+		// Default cooldown by trigger type.
+		switch rule.Trigger.Type {
+		case "schedule", "threshold":
 			e.SetCooldown(rule.Name, time.Minute)
+		case "heartbeat":
+			if interval, err := time.ParseDuration(rule.Trigger.Interval); err == nil {
+				e.SetCooldown(rule.Name, interval)
+			}
 		}
 	}
 
@@ -692,10 +708,11 @@ func (e *Engine) deliverDiscord(rule config.ProactiveRule, content string) error
 	if !e.cfg.Discord.Enabled {
 		return fmt.Errorf("discord not enabled")
 	}
-
-	// Use existing Discord notification mechanism.
+	if e.deps.NotifyFn == nil {
+		return fmt.Errorf("discord notifyFn not configured")
+	}
 	log.Info("proactive discord delivery", "rule", rule.Name, "message", truncate(content, 100))
-	// TODO: integrate with Discord send when available.
+	e.deps.NotifyFn(content)
 	return nil
 }
 
@@ -765,31 +782,98 @@ func (e *Engine) ResolveTemplate(tmpl string, rule config.ProactiveRule) string 
 // CheckCooldown returns true if the rule is still in cooldown.
 func (e *Engine) CheckCooldown(ruleName string) bool {
 	e.mu.RLock()
-	lastTriggered, ok := e.cooldowns[ruleName]
+	entry, ok := e.cooldowns[ruleName]
 	e.mu.RUnlock()
 
 	if !ok {
 		return false
 	}
 
-	// Check if cooldown has expired (we'll get duration from rule, but for simplicity check 1 min default).
-	return time.Since(lastTriggered) < time.Minute
+	d := entry.duration
+	if d <= 0 {
+		d = time.Minute // fallback for entries without a stored duration
+	}
+	return time.Since(entry.lastTriggered) < d
 }
 
-// SetCooldown records when a rule was triggered to enforce cooldown.
+// SetCooldown records when a rule was triggered and for how long to enforce cooldown.
 func (e *Engine) SetCooldown(ruleName string, duration time.Duration) {
+	now := time.Now()
 	e.mu.Lock()
-	e.cooldowns[ruleName] = time.Now()
+	e.cooldowns[ruleName] = cooldownEntry{lastTriggered: now, duration: duration}
 	e.mu.Unlock()
+	e.persistCooldownToDB(ruleName, now, duration)
+}
+
+// persistCooldownToDB writes a cooldown entry to SQLite (upsert).
+func (e *Engine) persistCooldownToDB(ruleName string, triggered time.Time, duration time.Duration) {
+	if e.cfg.HistoryDB == "" {
+		return
+	}
+	sql := fmt.Sprintf(
+		`INSERT INTO proactive_cooldowns (rule_name, last_triggered, duration_ns)
+		 VALUES ('%s', '%s', %d)
+		 ON CONFLICT(rule_name) DO UPDATE SET last_triggered=excluded.last_triggered, duration_ns=excluded.duration_ns`,
+		db.Escape(ruleName), triggered.UTC().Format(time.RFC3339), duration.Nanoseconds())
+	if err := db.Exec(e.cfg.HistoryDB, sql); err != nil {
+		log.Warn("proactive cooldown persist failed", "rule", ruleName, "error", err)
+	}
+}
+
+// loadCooldownsFromDB restores cooldown state from SQLite on startup.
+func (e *Engine) loadCooldownsFromDB() {
+	if e.cfg.HistoryDB == "" {
+		return
+	}
+	// Ensure table exists (idempotent).
+	if err := db.Exec(e.cfg.HistoryDB, `CREATE TABLE IF NOT EXISTS proactive_cooldowns (
+		rule_name TEXT PRIMARY KEY,
+		last_triggered TEXT NOT NULL,
+		duration_ns INTEGER NOT NULL
+	)`); err != nil {
+		log.Warn("proactive cooldown table creation failed", "error", err)
+		return
+	}
+
+	rows, err := db.Query(e.cfg.HistoryDB, "SELECT rule_name, last_triggered, duration_ns FROM proactive_cooldowns")
+	if err != nil {
+		log.Warn("proactive cooldown load failed", "error", err)
+		return
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	loaded := 0
+	for _, row := range rows {
+		name := db.Str(row["rule_name"])
+		triggeredStr := db.Str(row["last_triggered"])
+		durationNs := db.Int(row["duration_ns"])
+		if name == "" || triggeredStr == "" {
+			continue
+		}
+		triggered, err := time.Parse(time.RFC3339, triggeredStr)
+		if err != nil {
+			continue
+		}
+		dur := time.Duration(durationNs)
+		// Only restore if cooldown has not yet expired.
+		if time.Since(triggered) < dur {
+			e.cooldowns[name] = cooldownEntry{lastTriggered: triggered, duration: dur}
+			loaded++
+		}
+	}
+	if loaded > 0 {
+		log.Info("proactive cooldowns restored from DB", "count", loaded)
+	}
 }
 
 // CooldownTime returns the last-triggered time for a rule, if any.
 // Exported for testing.
 func (e *Engine) CooldownTime(ruleName string) (time.Time, bool) {
 	e.mu.RLock()
-	t, ok := e.cooldowns[ruleName]
+	entry, ok := e.cooldowns[ruleName]
 	e.mu.RUnlock()
-	return t, ok
+	return entry.lastTriggered, ok
 }
 
 // --- Public API ---
@@ -808,8 +892,8 @@ func (e *Engine) ListRules() []RuleInfo {
 			Cooldown:    rule.Cooldown,
 		}
 
-		if lastTriggered, ok := e.cooldowns[rule.Name]; ok {
-			info.LastTriggered = lastTriggered
+		if entry, ok := e.cooldowns[rule.Name]; ok {
+			info.LastTriggered = entry.lastTriggered
 		}
 
 		// Calculate next run for schedule rules.

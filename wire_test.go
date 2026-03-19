@@ -9424,7 +9424,7 @@ func TestProactiveCooldown(t *testing.T) {
 		},
 	}
 
-	engine := newProactiveEngine(cfg, nil, nil, nil)
+	engine := newProactiveEngine(cfg, nil, nil, nil, nil)
 
 	ruleName := "test-rule"
 
@@ -9444,9 +9444,7 @@ func TestProactiveCooldown(t *testing.T) {
 	// Wait for cooldown to expire.
 	time.Sleep(6 * time.Second)
 
-	// Cooldown should still be tracked but expired (current impl checks 1min default).
-	// This is a simplified test — in real usage, cooldown duration is per-rule.
-	// For this test, we verify the mechanism works.
+	// Cooldown entry should still exist but the 5s duration has elapsed.
 	lastTriggered, ok := engine.CooldownTime(ruleName)
 	if !ok {
 		t.Fatal("expected cooldown entry to exist")
@@ -9459,7 +9457,7 @@ func TestProactiveCooldown(t *testing.T) {
 
 // TestProactiveThresholdComparison tests the threshold comparison logic.
 func TestProactiveThresholdComparison(t *testing.T) {
-	engine := newProactiveEngine(&Config{}, nil, nil, nil)
+	engine := newProactiveEngine(&Config{}, nil, nil, nil, nil)
 
 	tests := []struct {
 		value     float64
@@ -9492,7 +9490,7 @@ func TestProactiveTemplateResolution(t *testing.T) {
 	cfg := &Config{
 		HistoryDB: "", // no DB for this test
 	}
-	engine := newProactiveEngine(cfg, nil, nil, nil)
+	engine := newProactiveEngine(cfg, nil, nil, nil, nil)
 
 	rule := ProactiveRule{
 		Name: "test-rule",
@@ -9536,7 +9534,7 @@ func TestProactiveRuleListInfo(t *testing.T) {
 		},
 	}
 
-	engine := newProactiveEngine(cfg, nil, nil, nil)
+	engine := newProactiveEngine(cfg, nil, nil, nil, nil)
 	infos := engine.ListRules()
 
 	if len(infos) != 2 {
@@ -9569,7 +9567,7 @@ func TestProactiveTriggerRuleNotFound(t *testing.T) {
 		},
 	}
 
-	engine := newProactiveEngine(cfg, nil, nil, nil)
+	engine := newProactiveEngine(cfg, nil, nil, nil, nil)
 
 	err := engine.TriggerRule("nonexistent")
 	if err == nil {
@@ -9596,7 +9594,7 @@ func TestProactiveTriggerRuleDisabled(t *testing.T) {
 		},
 	}
 
-	engine := newProactiveEngine(cfg, nil, nil, nil)
+	engine := newProactiveEngine(cfg, nil, nil, nil, nil)
 
 	err := engine.TriggerRule("disabled-rule")
 	if err == nil {
@@ -19691,5 +19689,99 @@ func TestInitProviders_ClaudeCLIProvider(t *testing.T) {
 	}
 	if p.Name() != "claude" {
 		t.Errorf("expected claude, got %s", p.Name())
+	}
+}
+
+// --- compaction backoff tests ---
+
+func resetCompactionBackoffState() {
+	compactionBackoffMu.Lock()
+	compactionBackoffState = make(map[string]*compactionBackoffEntry)
+	compactionBackoffMu.Unlock()
+}
+
+func TestCompactionBackoff_FirstFailureShouldNotSkip(t *testing.T) {
+	resetCompactionBackoffState()
+	sid := "test-session-1"
+	if compactionShouldSkip(sid) {
+		t.Fatal("should not skip before any failure")
+	}
+	compactionRecordFailure(sid)
+	// First failure: delay = baseDelay (1m). Since lastAttempt is now, should skip.
+	if !compactionShouldSkip(sid) {
+		t.Fatal("should skip immediately after first failure (backoff delay active)")
+	}
+}
+
+func TestCompactionBackoff_BackoffDelayIncreases(t *testing.T) {
+	resetCompactionBackoffState()
+	sid := "test-session-backoff"
+	// Record 3 failures.
+	for i := 0; i < 3; i++ {
+		compactionRecordFailure(sid)
+	}
+	compactionBackoffMu.Lock()
+	entry := compactionBackoffState[sid]
+	// Backdate: 3m elapsed, but failCount=3 → shift=2, delay=4m. Should still skip.
+	entry.lastAttempt = time.Now().Add(-3 * time.Minute)
+	compactionBackoffMu.Unlock()
+	if !compactionShouldSkip(sid) {
+		t.Fatal("should still skip: 3m elapsed but delay is 4m")
+	}
+	// Backdate past the 4m delay.
+	compactionBackoffMu.Lock()
+	entry.lastAttempt = time.Now().Add(-5 * time.Minute)
+	compactionBackoffMu.Unlock()
+	if compactionShouldSkip(sid) {
+		t.Fatal("should not skip: 5m elapsed and delay is 4m")
+	}
+}
+
+func TestCompactionBackoff_MaxRetriesSkipsPermanently(t *testing.T) {
+	resetCompactionBackoffState()
+	sid := "test-session-maxretry"
+	for i := 0; i < compactionMaxRetries; i++ {
+		compactionRecordFailure(sid)
+	}
+	if !compactionShouldSkip(sid) {
+		t.Fatal("should skip after maxRetries")
+	}
+}
+
+func TestCompactionBackoff_CooldownResetsAfterMaxRetries(t *testing.T) {
+	resetCompactionBackoffState()
+	sid := "test-session-cooldown"
+	for i := 0; i < compactionMaxRetries; i++ {
+		compactionRecordFailure(sid)
+	}
+	// Backdate past cooldown window.
+	compactionBackoffMu.Lock()
+	compactionBackoffState[sid].lastAttempt = time.Now().Add(-(compactionCooldownReset + time.Second))
+	compactionBackoffMu.Unlock()
+	if compactionShouldSkip(sid) {
+		t.Fatal("should not skip after cooldown reset")
+	}
+	// failCount should have been reset to 0.
+	compactionBackoffMu.Lock()
+	fc := compactionBackoffState[sid].failCount
+	compactionBackoffMu.Unlock()
+	if fc != 0 {
+		t.Fatalf("failCount should be 0 after cooldown reset, got %d", fc)
+	}
+}
+
+func TestCompactionBackoff_SuccessClearsState(t *testing.T) {
+	resetCompactionBackoffState()
+	sid := "test-session-success"
+	compactionRecordFailure(sid)
+	compactionRecordSuccess(sid)
+	if compactionShouldSkip(sid) {
+		t.Fatal("should not skip after success")
+	}
+	compactionBackoffMu.Lock()
+	_, exists := compactionBackoffState[sid]
+	compactionBackoffMu.Unlock()
+	if exists {
+		t.Fatal("state should be deleted after success")
 	}
 }

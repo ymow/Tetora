@@ -1820,7 +1820,7 @@ type toolsListResult struct {
 	Tools []struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
-		InputSchema []byte `json:"inputSchema"`
+		InputSchema json.RawMessage `json:"inputSchema"`
 	} `json:"tools"`
 }
 
@@ -2207,8 +2207,8 @@ func toolCalendarList(ctx context.Context, cfg *Config, input json.RawMessage) (
 	if !cfg.Calendar.Enabled {
 		return "", fmt.Errorf("calendar integration is not enabled")
 	}
-	app := appFromCtx(ctx)
-	if app == nil || app.Calendar == nil {
+	svc := globalCalendarService
+	if svc == nil {
 		return "", fmt.Errorf("calendar service not initialized")
 	}
 
@@ -2232,7 +2232,7 @@ func toolCalendarList(ctx context.Context, cfg *Config, input json.RawMessage) (
 		args.TimeMax = now.AddDate(0, 0, days).Format(time.RFC3339)
 	}
 
-	events, err := app.Calendar.ListEvents(ctx, args.TimeMin, args.TimeMax, args.MaxResults)
+	events, err := svc.ListEvents(ctx, args.TimeMin, args.TimeMax, args.MaxResults)
 	if err != nil {
 		return "", err
 	}
@@ -2252,8 +2252,8 @@ func toolCalendarCreate(ctx context.Context, cfg *Config, input json.RawMessage)
 	if !cfg.Calendar.Enabled {
 		return "", fmt.Errorf("calendar integration is not enabled")
 	}
-	app := appFromCtx(ctx)
-	if app == nil || app.Calendar == nil {
+	svc := globalCalendarService
+	if svc == nil {
 		return "", fmt.Errorf("calendar service not initialized")
 	}
 
@@ -2300,10 +2300,10 @@ func toolCalendarCreate(ctx context.Context, cfg *Config, input json.RawMessage)
 	}
 
 	if eventInput.TimeZone == "" {
-		eventInput.TimeZone = app.Calendar.TimeZone()
+		eventInput.TimeZone = svc.TimeZone()
 	}
 
-	ev, err := app.Calendar.CreateEvent(ctx, eventInput)
+	ev, err := svc.CreateEvent(ctx, eventInput)
 	if err != nil {
 		return "", err
 	}
@@ -2316,8 +2316,8 @@ func toolCalendarUpdate(ctx context.Context, cfg *Config, input json.RawMessage)
 	if !cfg.Calendar.Enabled {
 		return "", fmt.Errorf("calendar integration is not enabled")
 	}
-	app := appFromCtx(ctx)
-	if app == nil || app.Calendar == nil {
+	svc := globalCalendarService
+	if svc == nil {
 		return "", fmt.Errorf("calendar service not initialized")
 	}
 
@@ -2352,10 +2352,10 @@ func toolCalendarUpdate(ctx context.Context, cfg *Config, input json.RawMessage)
 	}
 
 	if eventInput.TimeZone == "" {
-		eventInput.TimeZone = app.Calendar.TimeZone()
+		eventInput.TimeZone = svc.TimeZone()
 	}
 
-	ev, err := app.Calendar.UpdateEvent(ctx, args.EventID, eventInput)
+	ev, err := svc.UpdateEvent(ctx, args.EventID, eventInput)
 	if err != nil {
 		return "", err
 	}
@@ -2368,8 +2368,8 @@ func toolCalendarDelete(ctx context.Context, cfg *Config, input json.RawMessage)
 	if !cfg.Calendar.Enabled {
 		return "", fmt.Errorf("calendar integration is not enabled")
 	}
-	app := appFromCtx(ctx)
-	if app == nil || app.Calendar == nil {
+	svc := globalCalendarService
+	if svc == nil {
 		return "", fmt.Errorf("calendar service not initialized")
 	}
 
@@ -2384,7 +2384,7 @@ func toolCalendarDelete(ctx context.Context, cfg *Config, input json.RawMessage)
 		return "", fmt.Errorf("eventId is required")
 	}
 
-	if err := app.Calendar.DeleteEvent(ctx, args.EventID); err != nil {
+	if err := svc.DeleteEvent(ctx, args.EventID); err != nil {
 		return "", err
 	}
 
@@ -2395,8 +2395,8 @@ func toolCalendarSearch(ctx context.Context, cfg *Config, input json.RawMessage)
 	if !cfg.Calendar.Enabled {
 		return "", fmt.Errorf("calendar integration is not enabled")
 	}
-	app := appFromCtx(ctx)
-	if app == nil || app.Calendar == nil {
+	svc := globalCalendarService
+	if svc == nil {
 		return "", fmt.Errorf("calendar service not initialized")
 	}
 
@@ -2420,7 +2420,7 @@ func toolCalendarSearch(ctx context.Context, cfg *Config, input json.RawMessage)
 		args.TimeMax = time.Now().AddDate(0, 0, 90).Format(time.RFC3339)
 	}
 
-	events, err := app.Calendar.SearchEvents(ctx, args.Query, args.TimeMin, args.TimeMax)
+	events, err := svc.SearchEvents(ctx, args.Query, args.TimeMin, args.TimeMax)
 	if err != nil {
 		return "", err
 	}
@@ -4362,7 +4362,7 @@ func truncateLessonsToRecent(content string, n int) string {
 type ProactiveEngine = iproactive.Engine
 type ProactiveRuleInfo = iproactive.RuleInfo
 
-func newProactiveEngine(cfg *Config, broker *sseBroker, sem, childSem chan struct{}) *ProactiveEngine {
+func newProactiveEngine(cfg *Config, broker *sseBroker, sem, childSem chan struct{}, notifyFn func(string)) *ProactiveEngine {
 	deps := iproactive.Deps{
 		RunTask: func(ctx context.Context, task Task, sem, childSem chan struct{}, agentName string) TaskResult {
 			return runSingleTask(ctx, cfg, task, sem, childSem, agentName)
@@ -4373,6 +4373,7 @@ func newProactiveEngine(cfg *Config, broker *sseBroker, sem, childSem chan struc
 		FillDefaults: func(c *Config, t *Task) {
 			fillDefaults(c, t)
 		},
+		NotifyFn: notifyFn,
 	}
 	return iproactive.New(cfg, broker, sem, childSem, deps)
 }
@@ -7275,6 +7276,12 @@ func buildReflectionContext(dbPath, role string, limit int) string {
 	return reflection.BuildContext(dbPath, role, limit)
 }
 func reflectionBudgetOrDefault(cfg *Config) float64 { return reflection.BudgetOrDefault(cfg) }
+func estimateManualDuration(taskType string, score int) int {
+	return reflection.EstimateManualDuration(taskType, score)
+}
+func queryTimeSavings(dbPath, month string) ([]reflection.TimeSavingsRow, error) {
+	return reflection.QueryTimeSavings(dbPath, month)
+}
 
 // ============================================================
 // Merged shims: usage, trust, retention
@@ -7656,8 +7663,8 @@ func (a *schedulingTaskAdapter) ListTasks(userID string, filter scheduling.TaskF
 // --- Scheduling Tool Handlers ---
 
 func toolScheduleView(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
-	app := appFromCtx(ctx)
-	if app == nil || app.Scheduling == nil {
+	svc := globalSchedulingService
+	if svc == nil {
 		return "", fmt.Errorf("scheduling service not initialized")
 	}
 
@@ -7675,7 +7682,7 @@ func toolScheduleView(ctx context.Context, cfg *Config, input json.RawMessage) (
 		args.Days = 30
 	}
 
-	schedules, err := app.Scheduling.ViewSchedule(args.Date, args.Days)
+	schedules, err := svc.ViewSchedule(args.Date, args.Days)
 	if err != nil {
 		return "", err
 	}
@@ -7688,8 +7695,8 @@ func toolScheduleView(ctx context.Context, cfg *Config, input json.RawMessage) (
 }
 
 func toolScheduleSuggest(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
-	app := appFromCtx(ctx)
-	if app == nil || app.Scheduling == nil {
+	svc := globalSchedulingService
+	if svc == nil {
 		return "", fmt.Errorf("scheduling service not initialized")
 	}
 
@@ -7711,7 +7718,7 @@ func toolScheduleSuggest(ctx context.Context, cfg *Config, input json.RawMessage
 		args.Days = 14
 	}
 
-	suggestions, err := app.Scheduling.SuggestSlots(args.DurationMinutes, args.PreferMorning, args.Days)
+	suggestions, err := svc.SuggestSlots(args.DurationMinutes, args.PreferMorning, args.Days)
 	if err != nil {
 		return "", err
 	}
@@ -7728,8 +7735,8 @@ func toolScheduleSuggest(ctx context.Context, cfg *Config, input json.RawMessage
 }
 
 func toolSchedulePlan(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
-	app := appFromCtx(ctx)
-	if app == nil || app.Scheduling == nil {
+	svc := globalSchedulingService
+	if svc == nil {
 		return "", fmt.Errorf("scheduling service not initialized")
 	}
 
@@ -7743,7 +7750,7 @@ func toolSchedulePlan(ctx context.Context, cfg *Config, input json.RawMessage) (
 		args.UserID = "default"
 	}
 
-	plan, err := app.Scheduling.PlanWeek(args.UserID)
+	plan, err := svc.PlanWeek(args.UserID)
 	if err != nil {
 		return "", err
 	}
@@ -9978,6 +9985,68 @@ Conversation (%d messages):
 	return nil
 }
 
+// compactionBackoff tracks per-session compaction failure state for exponential backoff.
+var (
+	compactionBackoffMu    sync.Mutex
+	compactionBackoffState = make(map[string]*compactionBackoffEntry)
+)
+
+type compactionBackoffEntry struct {
+	failCount   int
+	lastAttempt time.Time
+}
+
+const (
+	compactionMaxRetries   = 5
+	compactionBaseDelay    = 1 * time.Minute
+	compactionMaxDelay     = 30 * time.Minute
+	compactionCooldownReset = 1 * time.Hour
+)
+
+func compactionShouldSkip(sessionID string) bool {
+	compactionBackoffMu.Lock()
+	defer compactionBackoffMu.Unlock()
+	entry, ok := compactionBackoffState[sessionID]
+	if !ok {
+		return false
+	}
+	if entry.failCount >= compactionMaxRetries {
+		// Allow retry after cooldown reset to recover from transient failures.
+		if time.Since(entry.lastAttempt) > compactionCooldownReset {
+			delete(compactionBackoffState, sessionID)
+			return false
+		}
+		return true
+	}
+	if entry.failCount <= 0 {
+		return false
+	}
+	shift := uint(entry.failCount - 1)
+	delay := compactionBaseDelay * (1 << shift)
+	if delay > compactionMaxDelay {
+		delay = compactionMaxDelay
+	}
+	return time.Since(entry.lastAttempt) < delay
+}
+
+func compactionRecordFailure(sessionID string) {
+	compactionBackoffMu.Lock()
+	defer compactionBackoffMu.Unlock()
+	entry, ok := compactionBackoffState[sessionID]
+	if !ok {
+		entry = &compactionBackoffEntry{}
+		compactionBackoffState[sessionID] = entry
+	}
+	entry.failCount++
+	entry.lastAttempt = time.Now()
+}
+
+func compactionRecordSuccess(sessionID string) {
+	compactionBackoffMu.Lock()
+	defer compactionBackoffMu.Unlock()
+	delete(compactionBackoffState, sessionID)
+}
+
 // maybeCompactSession triggers compaction if the session exceeds thresholds.
 func maybeCompactSession(cfg *Config, dbPath, sessionID string, msgCount, tokensIn int, sem, childSem chan struct{}) {
 	msgThreshold := cfg.Session.CompactAfterOrDefault()
@@ -9986,11 +10055,18 @@ func maybeCompactSession(cfg *Config, dbPath, sessionID string, msgCount, tokens
 	if msgCount <= msgThreshold && !tokenTriggered {
 		return
 	}
+	if compactionShouldSkip(sessionID) {
+		log.Debug("session compaction skipped (backoff)", "session", sessionID)
+		return
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		if err := compactSession(ctx, cfg, dbPath, sessionID, tokenTriggered, sem, childSem); err != nil {
 			log.Warn("session compaction failed", "session", sessionID, "error", err)
+			compactionRecordFailure(sessionID)
+		} else {
+			compactionRecordSuccess(sessionID)
 		}
 	}()
 }
