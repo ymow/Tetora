@@ -314,3 +314,59 @@ func TestHistoryDBForTask_OtherClient(t *testing.T) {
 		t.Errorf("expected %q, got %q", expected, got)
 	}
 }
+
+// --- Tests for Config.OutputsDirFor ---
+
+func TestConfigOutputsDirFor_DefaultClient(t *testing.T) {
+	cfg := &Config{
+		BaseDir:         "/home/user/.tetora",
+		ClientsDir:      "/home/user/.tetora/clients",
+		DefaultClientID: "cli_default",
+	}
+
+	got := cfg.OutputsDirFor("cli_default")
+	if got != cfg.BaseDir {
+		t.Errorf("OutputsDirFor(default) = %q, want BaseDir %q", got, cfg.BaseDir)
+	}
+}
+
+func TestConfigOutputsDirFor_EmptyClient(t *testing.T) {
+	cfg := &Config{
+		BaseDir:         "/home/user/.tetora",
+		ClientsDir:      "/home/user/.tetora/clients",
+		DefaultClientID: "cli_default",
+	}
+
+	got := cfg.OutputsDirFor("")
+	if got != cfg.BaseDir {
+		t.Errorf("OutputsDirFor(\"\") = %q, want BaseDir %q", got, cfg.BaseDir)
+	}
+}
+
+func TestConfigOutputsDirFor_NonDefaultClient(t *testing.T) {
+	cfg := &Config{
+		BaseDir:         "/home/user/.tetora",
+		ClientsDir:      "/home/user/.tetora/clients",
+		DefaultClientID: "cli_default",
+	}
+
+	got := cfg.OutputsDirFor("cli_myapp")
+	expected := "/home/user/.tetora/clients/cli_myapp"
+	if got != expected {
+		t.Errorf("OutputsDirFor(cli_myapp) = %q, want %q", got, expected)
+	}
+}
+
+func TestConfigOutputsDirFor_NoClientsDir(t *testing.T) {
+	// When ClientsDir is unset, always fall back to BaseDir (backward compat).
+	cfg := &Config{
+		BaseDir:         "/home/user/.tetora",
+		ClientsDir:      "",
+		DefaultClientID: "cli_default",
+	}
+
+	got := cfg.OutputsDirFor("cli_myapp")
+	if got != cfg.BaseDir {
+		t.Errorf("OutputsDirFor with empty ClientsDir = %q, want BaseDir %q", got, cfg.BaseDir)
+	}
+}

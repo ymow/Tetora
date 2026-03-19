@@ -40,9 +40,10 @@ func FindConfigPath() string {
 
 // APIClient creates an HTTP client for daemon communication.
 type APIClient struct {
-	Client  *http.Client
-	BaseURL string
-	Token   string
+	Client   *http.Client
+	BaseURL  string
+	Token    string
+	ClientID string // X-Client-ID header value; empty means omit header (server uses default)
 }
 
 // NewAPIClient creates an API client from config values.
@@ -64,6 +65,9 @@ func (c *APIClient) Do(method, path string, body io.Reader) (*http.Response, err
 	}
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	if c.ClientID != "" {
+		req.Header.Set("X-Client-ID", c.ClientID)
 	}
 	return c.Client.Do(req)
 }

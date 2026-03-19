@@ -269,3 +269,13 @@ func (c *Config) HistoryDBFor(clientID string) string {
 func (c *Config) TaskboardDBFor(clientID string) string {
 	return filepath.Join(c.ClientsDir, clientID, "dbs", "taskboard.db")
 }
+
+// OutputsDirFor returns the task output directory for a given client.
+// For the default client (or when ClientsDir is unset), returns BaseDir so existing
+// behavior is preserved. Non-default clients write to their own client dir.
+func (c *Config) OutputsDirFor(clientID string) string {
+	if clientID == "" || clientID == c.DefaultClientID || c.ClientsDir == "" {
+		return c.BaseDir
+	}
+	return c.ClientDir(clientID)
+}

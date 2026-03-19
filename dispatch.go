@@ -712,9 +712,9 @@ func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem ch
 		CreatedAt:          time.Now().Format(time.RFC3339),
 	})
 
-	// Save output to file.
+	// Save output to file (per-client dir when tenant isolation is active).
 	if pr.Output != "" {
-		result.OutputFile = saveTaskOutput(cfg.BaseDir, task.ID, []byte(pr.Output))
+		result.OutputFile = saveTaskOutput(cfg.OutputsDirFor(task.ClientID), task.ID, []byte(pr.Output))
 	}
 
 	// SSE streaming: publish completed/error event.
@@ -998,9 +998,9 @@ func runTask(ctx context.Context, cfg *Config, task Task, state *dispatchState) 
 		CreatedAt:          time.Now().Format(time.RFC3339),
 	})
 
-	// Save output to file.
+	// Save output to file (per-client dir when tenant isolation is active).
 	if pr.Output != "" {
-		result.OutputFile = saveTaskOutput(cfg.BaseDir, task.ID, []byte(pr.Output))
+		result.OutputFile = saveTaskOutput(cfg.OutputsDirFor(task.ClientID), task.ID, []byte(pr.Output))
 	}
 
 	// Record to history DB (per-tenant aware).

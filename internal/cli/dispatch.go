@@ -63,6 +63,7 @@ func CmdDispatch(args []string) {
 	workdir := ""
 	permission := ""
 	role := ""
+	clientID := ""
 	notify := false
 	estimate_ := false
 	decompose := false
@@ -110,6 +111,13 @@ func CmdDispatch(args []string) {
 		case "--role", "-r":
 			if i+1 < len(args) {
 				role = args[i+1]
+				i += 2
+			} else {
+				i++
+			}
+		case "--client":
+			if i+1 < len(args) {
+				clientID = args[i+1]
 				i += 2
 			} else {
 				i++
@@ -166,6 +174,9 @@ func CmdDispatch(args []string) {
 	cfg := LoadCLIConfig(FindConfigPath())
 	api := cfg.NewAPIClient()
 	api.Client.Timeout = 0 // no timeout — dispatch can be long
+	if clientID != "" {
+		api.ClientID = clientID
+	}
 
 	// Build task payload.
 	task := map[string]any{
@@ -346,6 +357,7 @@ Options:
   --workdir, -w     Working directory
   --permission      Permission mode (acceptEdits, bypassPermissions, plan)
   --role, -r        Agent name (injects soul prompt + agent model)
+  --client          Client ID for tenant isolation (format: cli_<name>, e.g. cli_myapp)
   --notify          Send Telegram notification on completion
   --estimate, -e    Show cost estimate without executing (dry-run)
   --review          Enable Dev↔QA review loop (max 3 retries, auto-escalate)
