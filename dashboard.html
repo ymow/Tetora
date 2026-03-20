@@ -2421,6 +2421,343 @@ body:not([class*="theme-"])::after, body.theme-default::after {
 .store-card-featured { border-color: rgba(139,92,246,0.3); background: linear-gradient(135deg, var(--surface), rgba(139,92,246,0.04)); }
 .store-card-tags { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; }
 .store-tag { font-size: 9px; padding: 1px 5px; border-radius: 3px; background: rgba(255,255,255,0.03); color: var(--muted); }
+
+
+/* Agent Portrait Avatar */
+.agent-avatar {
+  width: 48px; height: 48px; border-radius: 50%; object-fit: cover;
+  flex-shrink: 0; border: 2px solid var(--border);
+}
+.agent-avatar-fallback {
+  width: 48px; height: 48px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; font-weight: bold; color: #fff;
+  border: 2px solid transparent; user-select: none;
+}
+.portrait-preview {
+  width: 80px; height: 80px; border-radius: 50%; object-fit: cover;
+  border: 2px solid var(--border); display: block;
+}
+.portrait-upload-area {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 12px;
+}
+
+/* =============================================
+   Team Builder Tab
+   ============================================= */
+
+/* Header */
+.tb-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.tb-header-left { display: flex; flex-direction: column; gap: 4px; }
+.tb-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: var(--font-heading);
+  letter-spacing: 0.2px;
+}
+.tb-subtitle {
+  font-size: 11px;
+  color: var(--muted);
+  max-width: 480px;
+  line-height: 1.5;
+}
+.tb-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+
+/* Team grid */
+.tb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+/* Team card */
+.tb-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--panel-radius);
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tb-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 2px 12px rgba(6,182,212,0.1);
+  background: rgba(6,182,212,0.03);
+}
+.tb-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.tb-card-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: var(--font-heading);
+}
+.tb-card-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2, #8b5cf6));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+}
+.tb-card-count {
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+.tb-card-desc {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.tb-badge-builtin {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(251,191,36,0.12);
+  color: var(--yellow);
+  border: 1px solid rgba(251,191,36,0.2);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  font-weight: 600;
+}
+
+/* Empty state */
+.tb-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  text-align: center;
+  gap: 10px;
+}
+.tb-empty-icon {
+  font-size: 36px;
+  line-height: 1;
+  margin-bottom: 4px;
+  opacity: 0.6;
+}
+.tb-empty-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: var(--font-heading);
+}
+.tb-empty-desc {
+  font-size: 12px;
+  color: var(--muted);
+  max-width: 360px;
+  line-height: 1.6;
+  margin-bottom: 8px;
+}
+
+/* Modal overlay */
+.tb-modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  z-index: 200;
+  justify-content: center;
+  align-items: center;
+  backdrop-filter: blur(2px);
+}
+.tb-modal-overlay.open { display: flex; }
+
+.tb-modal {
+  position: relative;
+  background: var(--surface);
+  border: var(--panel-border);
+  border-radius: var(--panel-radius);
+  padding: 24px 26px;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.5), var(--panel-shadow);
+  backdrop-filter: var(--panel-blur);
+}
+.tb-modal-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: var(--font-heading);
+  margin-bottom: 18px;
+  padding-right: 24px;
+}
+
+/* Progress/status */
+.tb-progress {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 8px 10px;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-top: 12px;
+}
+.tb-progress.active { display: flex; }
+.tb-progress.hidden { display: none; }
+.tb-progress.error { border-color: rgba(248,113,113,0.3); background: rgba(248,113,113,0.04); }
+
+.tb-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: tb-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes tb-spin { to { transform: rotate(360deg); } }
+
+/* Detail modal */
+.tb-detail-desc {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.tb-detail-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* Agent grid inside modal */
+.tb-agent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+.tb-agent-card {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color 0.15s;
+}
+.tb-agent-card:hover { border-color: rgba(6,182,212,0.3); }
+.tb-agent-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 6px;
+}
+.tb-agent-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: var(--font-heading);
+  line-height: 1.3;
+}
+.tb-agent-desc {
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Model tier badges */
+.tb-model-badge {
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.tb-model-fast {
+  background: rgba(52,211,153,0.12);
+  color: var(--green);
+  border: 1px solid rgba(52,211,153,0.2);
+}
+.tb-model-balanced {
+  background: rgba(6,182,212,0.12);
+  color: var(--accent);
+  border: 1px solid rgba(6,182,212,0.2);
+}
+.tb-model-deep {
+  background: rgba(139,92,246,0.12);
+  color: var(--accent2, #8b5cf6);
+  border: 1px solid rgba(139,92,246,0.2);
+}
+
+/* Keywords */
+.tb-keywords {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 2px;
+}
+.tb-keyword {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(255,255,255,0.04);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.tb-keyword-more {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(6,182,212,0.08);
+  color: var(--accent);
+}
+
+@media (max-width: 768px) {
+  .tb-header { flex-direction: column; gap: 12px; }
+  .tb-grid { grid-template-columns: 1fr; }
+  .tb-agent-grid { grid-template-columns: 1fr; }
+  .tb-modal { min-width: unset !important; max-width: calc(100vw - 32px) !important; margin: 16px; }
+}
 </style>
 </head>
 <body>
@@ -3874,6 +4211,19 @@ body:not([class*="theme-"])::after, body.theme-default::after {
         <div style="margin-bottom:12px">
           <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:4px">Description</label>
           <input id="af-description" type="text" placeholder="Short description of this agent's role" style="width:100%;padding:7px 10px;font-size:13px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);box-sizing:border-box">
+        </div>
+        <!-- Portrait -->
+        <div style="margin-bottom:12px">
+          <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:6px">Portrait</label>
+          <div class="portrait-upload-area">
+            <img id="af-portrait-preview" class="portrait-preview" src="" alt="portrait" style="display:none" onerror="this.style.display='none'">
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <input id="af-portrait-file" type="file" accept="image/png" style="font-size:12px;color:var(--muted)"
+                onchange="var f=this.files[0];if(f){var u=URL.createObjectURL(f);var p=document.getElementById('af-portrait-preview');p.src=u;p.style.display='block';}">
+              <button id="af-portrait-delete" type="button" class="btn" onclick="deleteAgentPortrait(document.getElementById('af-name').value)"
+                style="padding:3px 10px;font-size:11px;color:var(--red);border-color:var(--red);display:none">Delete custom portrait</button>
+            </div>
+          </div>
         </div>
         <!-- SOUL.md -->
         <div style="margin-bottom:16px">
@@ -9952,9 +10302,24 @@ async function refreshAgents() {
       var desc = esc(r.description || '');
       var preview = r.soulPreview ? esc(r.soulPreview.slice(0, 120)) + (r.soulPreview.length > 120 ? '…' : '') : '<span style="color:var(--muted)">No SOUL.md</span>';
 
+      // Avatar: portrait image or gem-color fallback circle
+      var gem = (typeof GEM_TEAM !== 'undefined' && GEM_TEAM[r.name]) || null;
+      var avatarHtml;
+      if (r.portraitURL) {
+        var fallbackColor = gem ? gem.color : '#888';
+        var initial = r.name.charAt(0).toUpperCase();
+        avatarHtml = '<img class="agent-avatar" src="' + esc(r.portraitURL) + '" alt="' + esc(r.name) + '"'
+          + ' onerror="this.style.display=\'none\';this.nextSibling.style.display=\'flex\'">'
+          + '<span class="agent-avatar-fallback" style="display:none;background:' + fallbackColor + '">' + initial + '</span>';
+      } else {
+        var fallbackColor = gem ? gem.color : '#888';
+        var initial = r.name.charAt(0).toUpperCase();
+        avatarHtml = '<span class="agent-avatar-fallback" style="background:' + fallbackColor + '">' + initial + '</span>';
+      }
+
       html += '<div class="agent-card" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--panel-radius);padding:16px;display:flex;flex-direction:column;gap:10px">';
       html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">';
-      html += '<div style="display:flex;align-items:center;gap:8px">' + statusDot + '<span style="font-weight:bold;font-size:14px">' + esc(r.name) + '</span></div>';
+      html += '<div style="display:flex;align-items:center;gap:10px">' + avatarHtml + '<div style="display:flex;flex-direction:column;gap:2px"><div style="display:flex;align-items:center;gap:6px">' + statusDot + '<span style="font-weight:bold;font-size:14px">' + esc(r.name) + '</span></div></div></div>';
       html += '<div style="display:flex;align-items:center;gap:6px">' + statusLabel;
       html += '<button class="btn" onclick="openAgentModal(\'' + esc(r.name) + '\')" style="padding:3px 10px;font-size:11px">Edit</button>';
       html += '<button class="btn" onclick="deleteAgent(\'' + esc(r.name) + '\')" style="padding:3px 10px;font-size:11px;color:var(--red);border-color:var(--red)">Delete</button>';
@@ -10005,6 +10370,12 @@ async function openAgentModal(editName) {
     archSel.appendChild(opt);
   });
 
+  // Reset portrait state
+  var previewEl = document.getElementById('af-portrait-preview');
+  var deleteBtn = document.getElementById('af-portrait-delete');
+  var fileInput = document.getElementById('af-portrait-file');
+  if (fileInput) fileInput.value = '';
+
   if (editName) {
     // Load existing agent data
     try {
@@ -10014,10 +10385,25 @@ async function openAgentModal(editName) {
       document.getElementById('af-permission').value = data.permissionMode || '';
       document.getElementById('af-description').value = data.description || '';
       document.getElementById('af-soul').value = data.soulContent || '';
+
+      // Load portrait preview
+      if (previewEl) {
+        var portraitURL = data.portraitURL || resolveAgentPortrait(editName);
+        if (portraitURL) {
+          previewEl.src = portraitURL;
+          previewEl.style.display = 'block';
+        } else {
+          previewEl.style.display = 'none';
+        }
+        if (deleteBtn) deleteBtn.style.display = portraitURL ? '' : 'none';
+      }
     } catch(e) {
       toast('Error loading agent: ' + e.message);
       return;
     }
+  } else {
+    if (previewEl) previewEl.style.display = 'none';
+    if (deleteBtn) deleteBtn.style.display = 'none';
   }
 
   modal.style.display = 'flex';
@@ -10041,6 +10427,12 @@ function onArchetypeChange() {
   if (!nameField.value) nameField.value = name.toLowerCase().replace(/\s+/g, '-');
 }
 
+// Returns /dashboard/portraits/{name}.png if the built-in exists, else empty string.
+// Used as a fallback when the API doesn't return portraitURL yet (e.g. during create).
+function resolveAgentPortrait(name) {
+  return '/dashboard/portraits/' + encodeURIComponent(name) + '.png';
+}
+
 async function submitAgentForm(e) {
   e.preventDefault();
   var mode = document.getElementById('af-mode').value;
@@ -10049,6 +10441,7 @@ async function submitAgentForm(e) {
   var permission = document.getElementById('af-permission').value.trim();
   var description = document.getElementById('af-description').value.trim();
   var soul = document.getElementById('af-soul').value;
+  var fileInput = document.getElementById('af-portrait-file');
 
   if (mode === 'create' && !name) {
     toast('Name is required');
@@ -10078,6 +10471,19 @@ async function submitAgentForm(e) {
     }
 
     if (resp.ok) {
+      // Upload portrait if a new file was selected
+      if (fileInput && fileInput.files && fileInput.files.length > 0) {
+        var agentName = mode === 'create' ? name : name;
+        var fd = new FormData();
+        fd.append('portrait', fileInput.files[0]);
+        var upResp = await fetch('/api/agents/' + encodeURIComponent(agentName) + '/portrait', {
+          method: 'POST', body: fd,
+        });
+        if (!upResp.ok) {
+          var upData = await upResp.json().catch(function() { return {}; });
+          toast('Portrait upload failed: ' + (upData.error || upResp.statusText));
+        }
+      }
       closeAgentModal();
       toast(mode === 'create' ? 'Agent created' : 'Agent updated');
       refreshAgents();
@@ -10090,6 +10496,28 @@ async function submitAgentForm(e) {
   } finally {
     btn.disabled = false;
     btn.textContent = mode === 'create' ? 'Create Agent' : 'Save Changes';
+  }
+}
+
+async function deleteAgentPortrait(agentName) {
+  if (!confirm('Delete custom portrait for "' + agentName + '"? (Built-in portrait will be restored)')) return;
+  try {
+    var resp = await fetch('/api/agents/' + encodeURIComponent(agentName) + '/portrait', { method: 'DELETE' });
+    if (resp.ok) {
+      var data = await resp.json().catch(function() { return {}; });
+      var previewEl = document.getElementById('af-portrait-preview');
+      if (previewEl && data.portraitURL) {
+        previewEl.src = data.portraitURL;
+        previewEl.style.display = 'block';
+      }
+      toast('Custom portrait deleted');
+      refreshAgents();
+    } else {
+      var data = await resp.json().catch(function() { return {}; });
+      toast('Error: ' + (data.error || resp.statusText));
+    }
+  } catch(e) {
+    toast('Error: ' + e.message);
   }
 }
 
@@ -13349,104 +13777,122 @@ function renderTeamBuilderView() {
   var container = document.getElementById('team-builder-content');
   container.innerHTML = [
     '<div class="section">',
-    '  <div class="section-header">',
-    '    <span class="section-title">Team Builder</span>',
-    '    <div style="display:flex;gap:8px;align-items:center">',
-    '      <button class="btn btn-primary" onclick="openTeamGenerateModal()">+ Generate Team</button>',
+    '  <div class="tb-header">',
+    '    <div class="tb-header-left">',
+    '      <span class="tb-title">Team Builder</span>',
+    '      <span class="tb-subtitle">Create and manage AI agent teams. Generate a team from a description or use a built-in template.</span>',
+    '    </div>',
+    '    <div class="tb-actions">',
     '      <button class="btn" onclick="loadTeamList()">Refresh</button>',
+    '      <button class="btn btn-run" onclick="openTeamGenerateModal()">+ Generate Team</button>',
     '    </div>',
     '  </div>',
-    '  <p style="color:var(--text-secondary);font-size:13px;margin-bottom:16px">',
-    '    Create and manage AI agent teams. Generate a team from a description or use a built-in template.',
-    '  </p>',
     '  <div id="team-list"></div>',
     '</div>',
-    '<div id="team-generate-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)closeTeamGenerateModal()">',
-    '  <div class="modal-box" style="max-width:520px">',
-    '    <div class="modal-header">',
-    '      <span>Generate New Team</span>',
-    '      <button class="modal-close" onclick="closeTeamGenerateModal()">&times;</button>',
-    '    </div>',
+
+    // Generate modal
+    '<div id="team-generate-modal" class="tb-modal-overlay" onclick="if(event.target===this)closeTeamGenerateModal()">',
+    '  <div class="tb-modal" style="min-width:460px;max-width:520px">',
+    '    <button class="modal-close" onclick="closeTeamGenerateModal()">&times;</button>',
+    '    <div class="tb-modal-title">Generate New Team</div>',
     '    <form id="team-generate-form" onsubmit="submitTeamGenerate(event)">',
-    '      <div class="form-group">',
+    '      <div class="form-row">',
     '        <label>Description</label>',
     '        <textarea id="tg-description" rows="4" placeholder="Describe the team you want, e.g.: A data engineering team for ETL pipelines, data quality, and analytics" required></textarea>',
     '      </div>',
-    '      <div class="form-group">',
-    '        <label>Team Size (optional)</label>',
-    '        <input type="number" id="tg-size" min="2" max="10" placeholder="Auto">',
+    '      <div class="form-row-inline">',
+    '        <div class="form-row">',
+    '          <label>Team Size</label>',
+    '          <input type="number" id="tg-size" min="2" max="10" placeholder="Auto">',
+    '        </div>',
+    '        <div class="form-row">',
+    '          <label>Base Template</label>',
+    '          <select id="tg-template">',
+    '            <option value="">None</option>',
+    '            <option value="software-dev">Software Dev</option>',
+    '            <option value="content-creation">Content Creation</option>',
+    '            <option value="customer-support">Customer Support</option>',
+    '          </select>',
+    '        </div>',
     '      </div>',
-    '      <div class="form-group">',
-    '        <label>Base Template (optional)</label>',
-    '        <select id="tg-template">',
-    '          <option value="">None</option>',
-    '          <option value="software-dev">Software Dev</option>',
-    '          <option value="content-creation">Content Creation</option>',
-    '          <option value="customer-support">Customer Support</option>',
-    '        </select>',
-    '      </div>',
-    '      <div id="tg-status" style="display:none;padding:12px;background:var(--bg-tertiary);border-radius:8px;margin-bottom:12px;font-size:13px"></div>',
-    '      <div style="display:flex;gap:8px;justify-content:flex-end">',
+    '      <div id="tg-status" class="tb-progress hidden"></div>',
+    '      <div class="form-actions">',
     '        <button type="button" class="btn" onclick="closeTeamGenerateModal()">Cancel</button>',
-    '        <button type="submit" class="btn btn-primary" id="tg-submit">Generate</button>',
+    '        <button type="submit" class="btn btn-run" id="tg-submit">Generate</button>',
     '      </div>',
     '    </form>',
     '  </div>',
     '</div>',
-    '<div id="team-detail-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)closeTeamDetailModal()">',
-    '  <div class="modal-box" style="max-width:700px;max-height:80vh;overflow-y:auto">',
-    '    <div class="modal-header">',
-    '      <span id="td-title">Team Details</span>',
-    '      <button class="modal-close" onclick="closeTeamDetailModal()">&times;</button>',
-    '    </div>',
+
+    // Detail modal
+    '<div id="team-detail-modal" class="tb-modal-overlay" onclick="if(event.target===this)closeTeamDetailModal()">',
+    '  <div class="tb-modal" style="min-width:460px;max-width:700px">',
+    '    <button class="modal-close" onclick="closeTeamDetailModal()">&times;</button>',
+    '    <div class="tb-modal-title" id="td-title">Team Details</div>',
     '    <div id="td-body"></div>',
-    '    <div id="td-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px"></div>',
+    '    <div id="td-actions" class="tb-detail-actions"></div>',
     '  </div>',
     '</div>'
   ].join('\n');
 }
 
+function _tbTeamInitial(name) {
+  if (!name) return '?';
+  return name.charAt(0).toUpperCase();
+}
+
 async function loadTeamList() {
   var list = document.getElementById('team-list');
   if (!list) return;
-  list.innerHTML = '<div style="color:var(--text-secondary);padding:20px;text-align:center">Loading teams...</div>';
+  list.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center;font-size:12px">Loading teams...</div>';
 
   try {
     var teams = await fetchJSON('/api/teams');
     if (!Array.isArray(teams) || teams.length === 0) {
-      list.innerHTML = '<div style="color:var(--text-secondary);padding:20px;text-align:center">No teams yet. Click "Generate Team" to create one.</div>';
+      list.innerHTML = [
+        '<div class="tb-empty">',
+        '  <div class="tb-empty-icon">&#x1f465;</div>',
+        '  <div class="tb-empty-title">No teams yet</div>',
+        '  <div class="tb-empty-desc">Teams let you group agents with complementary skills. Generate your first team from a natural language description.</div>',
+        '  <button class="btn btn-run" onclick="openTeamGenerateModal()">+ Generate Team</button>',
+        '</div>'
+      ].join('\n');
       return;
     }
 
-    var html = '<div class="agents-grid">';
+    var html = '<div class="tb-grid">';
     teams.forEach(function(t) {
-      var badge = t.builtin
-        ? '<span style="background:var(--accent);color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;margin-left:6px">BUILTIN</span>'
-        : '';
-      html += '<div class="agent-card" style="cursor:pointer" onclick="openTeamDetail(\'' + esc(t.name) + '\')">';
-      html += '<div style="display:flex;justify-content:space-between;align-items:center">';
-      html += '<span style="font-weight:600">' + esc(t.name) + badge + '</span>';
-      html += '<span style="color:var(--text-secondary);font-size:12px">' + t.agentCount + ' agents</span>';
-      html += '</div>';
-      html += '<div style="color:var(--text-secondary);font-size:13px;margin-top:4px">' + esc(t.description) + '</div>';
+      var badge = t.builtin ? '<span class="tb-badge-builtin">builtin</span>' : '';
+      html += '<div class="tb-card" onclick="openTeamDetail(\'' + esc(t.name) + '\')">';
+      html += '  <div class="tb-card-top">';
+      html += '    <div class="tb-card-name">';
+      html += '      <span class="tb-card-icon">' + esc(_tbTeamInitial(t.name)) + '</span>';
+      html += '      <span>' + esc(t.name) + '</span>';
+      html += '      ' + badge;
+      html += '    </div>';
+      html += '    <span class="tb-card-count">' + t.agentCount + ' agents</span>';
+      html += '  </div>';
+      html += '  <div class="tb-card-desc">' + esc(t.description) + '</div>';
       html += '</div>';
     });
     html += '</div>';
     list.innerHTML = html;
   } catch (e) {
-    list.innerHTML = '<div style="color:var(--danger);padding:20px">Error loading teams: ' + esc(e.message) + '</div>';
+    list.innerHTML = '<div style="color:var(--red);padding:20px;font-size:12px">Error loading teams: ' + esc(e.message) + '</div>';
   }
 }
 
 function openTeamGenerateModal() {
   document.getElementById('team-generate-form').reset();
-  document.getElementById('tg-status').style.display = 'none';
+  var status = document.getElementById('tg-status');
+  status.className = 'tb-progress hidden';
+  status.innerHTML = '';
   document.getElementById('tg-submit').disabled = false;
-  document.getElementById('team-generate-modal').style.display = 'flex';
+  document.getElementById('team-generate-modal').classList.add('open');
 }
 
 function closeTeamGenerateModal() {
-  document.getElementById('team-generate-modal').style.display = 'none';
+  document.getElementById('team-generate-modal').classList.remove('open');
 }
 
 async function submitTeamGenerate(e) {
@@ -13461,8 +13907,8 @@ async function submitTeamGenerate(e) {
 
   btn.disabled = true;
   btn.textContent = 'Generating...';
-  status.style.display = 'block';
-  status.textContent = 'Generating team... this may take a minute.';
+  status.className = 'tb-progress active';
+  status.innerHTML = '<span class="tb-spinner"></span><span>Generating team\u2026 this may take a minute.</span>';
 
   try {
     var payload = { description: desc };
@@ -13480,7 +13926,7 @@ async function submitTeamGenerate(e) {
     }
     var team = await resp.json();
 
-    status.textContent = 'Team generated! Saving...';
+    status.innerHTML = '<span class="tb-spinner"></span><span>Team generated. Saving\u2026</span>';
 
     // Save the team.
     var resp2 = await fetch(API + '/api/teams', {
@@ -13497,12 +13943,24 @@ async function submitTeamGenerate(e) {
     toast('Team "' + team.name + '" created with ' + team.agents.length + ' agents');
     loadTeamList();
   } catch (err) {
-    status.style.display = 'block';
-    status.innerHTML = '<span style="color:var(--danger)">Error: ' + esc(err.message) + '</span>';
+    status.className = 'tb-progress active error';
+    status.innerHTML = '<span class="tb-spinner"></span><span style="color:var(--red)">Error: ' + esc(err.message) + '</span>';
   } finally {
     btn.disabled = false;
     btn.textContent = 'Generate';
   }
+}
+
+function _tbModelTier(model) {
+  if (!model) return { cls: 'tb-model-balanced', label: model || 'unknown' };
+  var m = model.toLowerCase();
+  if (m.indexOf('haiku') !== -1 || m.indexOf('flash') !== -1 || m.indexOf('mini') !== -1) {
+    return { cls: 'tb-model-fast', label: model };
+  }
+  if (m.indexOf('opus') !== -1 || m.indexOf('pro') !== -1 || m.indexOf('deep') !== -1) {
+    return { cls: 'tb-model-deep', label: model };
+  }
+  return { cls: 'tb-model-balanced', label: model };
 }
 
 async function openTeamDetail(name) {
@@ -13512,28 +13970,29 @@ async function openTeamDetail(name) {
   title.textContent = 'Loading...';
   body.innerHTML = '';
   actions.innerHTML = '';
-  document.getElementById('team-detail-modal').style.display = 'flex';
+  document.getElementById('team-detail-modal').classList.add('open');
 
   try {
     var team = await fetchJSON('/api/teams/' + encodeURIComponent(name));
     title.textContent = team.name + (team.builtin ? ' (builtin)' : '');
 
-    var html = '<p style="color:var(--text-secondary);margin-bottom:16px">' + esc(team.description) + '</p>';
-    html += '<div class="agents-grid">';
+    var html = '<div class="tb-detail-desc">' + esc(team.description) + '</div>';
+    html += '<div class="tb-agent-grid">';
     (team.agents || []).forEach(function(a) {
-      html += '<div class="agent-card">';
-      html += '<div style="display:flex;justify-content:space-between;align-items:center">';
-      html += '<span style="font-weight:600">' + esc(a.displayName || a.key) + '</span>';
-      html += '<span style="background:var(--bg-tertiary);padding:2px 8px;border-radius:4px;font-size:11px">' + esc(a.model) + '</span>';
-      html += '</div>';
-      html += '<div style="color:var(--text-secondary);font-size:13px;margin-top:4px">' + esc(a.description) + '</div>';
+      var tier = _tbModelTier(a.model);
+      html += '<div class="tb-agent-card">';
+      html += '  <div class="tb-agent-top">';
+      html += '    <span class="tb-agent-name">' + esc(a.displayName || a.key) + '</span>';
+      html += '    <span class="tb-model-badge ' + tier.cls + '">' + esc(tier.label) + '</span>';
+      html += '  </div>';
+      html += '  <div class="tb-agent-desc">' + esc(a.description) + '</div>';
       if (a.keywords && a.keywords.length > 0) {
         var kw = a.keywords.slice(0, 8);
-        html += '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px">';
+        html += '<div class="tb-keywords">';
         kw.forEach(function(k) {
-          html += '<span style="background:var(--bg-tertiary);padding:1px 6px;border-radius:3px;font-size:10px">' + esc(k) + '</span>';
+          html += '<span class="tb-keyword">' + esc(k) + '</span>';
         });
-        if (a.keywords.length > 8) html += '<span style="font-size:10px;color:var(--text-secondary)">+' + (a.keywords.length - 8) + '</span>';
+        if (a.keywords.length > 8) html += '<span class="tb-keyword-more">+' + (a.keywords.length - 8) + '</span>';
         html += '</div>';
       }
       html += '</div>';
@@ -13543,19 +14002,19 @@ async function openTeamDetail(name) {
 
     // Actions.
     var actHtml = '';
-    actHtml += '<button class="btn btn-primary" onclick="applyTeam(\'' + esc(name) + '\',false)">Apply to Config</button>';
-    actHtml += '<button class="btn" onclick="applyTeam(\'' + esc(name) + '\',true)">Force Apply</button>';
     if (!team.builtin) {
-      actHtml += '<button class="btn" style="color:var(--danger)" onclick="deleteTeam(\'' + esc(name) + '\')">Delete</button>';
+      actHtml += '<button class="btn btn-del" onclick="deleteTeam(\'' + esc(name) + '\')">Delete</button>';
     }
+    actHtml += '<button class="btn" onclick="applyTeam(\'' + esc(name) + '\',true)">Force Apply</button>';
+    actHtml += '<button class="btn btn-run" onclick="applyTeam(\'' + esc(name) + '\',false)">Apply to Config</button>';
     actions.innerHTML = actHtml;
   } catch (err) {
-    body.innerHTML = '<div style="color:var(--danger)">Error: ' + esc(err.message) + '</div>';
+    body.innerHTML = '<div style="color:var(--red);font-size:12px">Error: ' + esc(err.message) + '</div>';
   }
 }
 
 function closeTeamDetailModal() {
-  document.getElementById('team-detail-modal').style.display = 'none';
+  document.getElementById('team-detail-modal').classList.remove('open');
 }
 
 async function applyTeam(name, force) {
@@ -14124,7 +14583,6 @@ SpriteEngine.prototype.updateAgentStates = function(sprites) {
     var newState = sprites[name];
     if (newState === agent.spriteState) continue;
 
-    var oldState = agent.spriteState;
     agent.spriteState = newState;
 
     // Special: celebrate/error stay in place
@@ -14152,7 +14610,7 @@ SpriteEngine.prototype.updateAgentStates = function(sprites) {
 
 SpriteEngine.prototype.update = function(dt) {
   var SPEED = 0.06; // pixels per ms
-  var cw = this.config ? this.config.cellWidth : 32;
+  // cellWidth reserved for future use
 
   for (var name in this.agents) {
     var a = this.agents[name];
@@ -14267,10 +14725,31 @@ var SPRITE_FRAMES = {}; // { agentName: [ImageBitmap, ...] }
 
 // Gem team identity — color palette, glow, and canvas filter for each agent
 var GEM_TEAM = {
-  ruri:    { color: '#5599ff', glow: 'rgba(85,153,255,0.28)', label: '琉璃', filter: '' },
-  hisui:   { color: '#44cc88', glow: 'rgba(68,204,136,0.28)', label: '翡翠', filter: '' },
-  kokuyou: { color: '#9977bb', glow: 'rgba(102,68,140,0.28)', label: '黒曜', filter: 'hue-rotate(240deg) brightness(0.65) saturate(1.3)' },
-  kohaku:  { color: '#eebb33', glow: 'rgba(238,187,51,0.28)', label: '琥珀', filter: '' }
+  ruri:       { color: '#5599ff', glow: 'rgba(85,153,255,0.28)',   label: '琉璃', filter: '' },
+  hisui:      { color: '#44cc88', glow: 'rgba(68,204,136,0.28)',   label: '翡翠', filter: '' },
+  kokuyou:    { color: '#9977bb', glow: 'rgba(102,68,140,0.28)',   label: '黒曜', filter: 'hue-rotate(240deg) brightness(0.65) saturate(1.3)' },
+  kohaku:     { color: '#eebb33', glow: 'rgba(238,187,51,0.28)',   label: '琥珀', filter: '' },
+  kougyoku:   { color: '#cc2244', glow: 'rgba(204,34,68,0.28)',    label: '紅玉', filter: 'hue-rotate(330deg) saturate(2.2) brightness(0.85)' },
+  daiya:      { color: '#ddeeff', glow: 'rgba(221,238,255,0.28)',  label: 'ダイヤ', filter: 'saturate(0.15) brightness(1.6)' },
+  spinel:     { color: '#dd2299', glow: 'rgba(221,34,153,0.28)',   label: '尖晶', filter: 'hue-rotate(300deg) saturate(2.0) brightness(0.9)' },
+  kirara:     { color: '#ccaa66', glow: 'rgba(204,170,102,0.28)',  label: '雲母', filter: 'hue-rotate(35deg) saturate(1.4) brightness(1.1)' },
+  sango:      { color: '#ee7766', glow: 'rgba(238,119,102,0.28)',  label: '珊瑚', filter: 'hue-rotate(10deg) saturate(1.8) brightness(1.05)' },
+  shinju:     { color: '#f5f0e8', glow: 'rgba(245,240,232,0.28)',  label: '真珠', filter: 'saturate(0.1) brightness(1.7)' },
+  menou:      { color: '#aa6633', glow: 'rgba(170,102,51,0.28)',   label: '瑪瑙', filter: 'hue-rotate(25deg) saturate(1.6) brightness(0.8)' },
+  gecchou:    { color: '#aaccdd', glow: 'rgba(170,204,221,0.28)',  label: '月長', filter: 'hue-rotate(195deg) saturate(0.7) brightness(1.4)' },
+  hotaruishi: { color: '#55cc77', glow: 'rgba(85,204,119,0.28)',   label: '蛍石', filter: 'hue-rotate(130deg) saturate(1.8) brightness(1.0)' },
+  tekkou:     { color: '#667788', glow: 'rgba(102,119,136,0.28)',  label: '鉄鉱', filter: 'saturate(0.4) brightness(0.75)' },
+  seigyoku:   { color: '#1144bb', glow: 'rgba(17,68,187,0.28)',    label: '青玉', filter: 'hue-rotate(215deg) saturate(2.5) brightness(0.7)' },
+  kujaku:     { color: '#229988', glow: 'rgba(34,153,136,0.28)',   label: '孔雀', filter: 'hue-rotate(165deg) saturate(2.0) brightness(0.85)' },
+  tanzanite:    { color: '#6B5B95', glow: 'rgba(107,91,149,0.28)',  label: 'タンザナイト', filter: 'hue-rotate(260deg) saturate(1.8) brightness(0.75)' },
+  alexandrite:  { color: '#2E8B57', glow: 'rgba(46,139,87,0.28)',   label: 'アレキ', filter: 'hue-rotate(140deg) saturate(2.0) brightness(0.85)' },
+  agate:        { color: '#4682B4', glow: 'rgba(70,130,180,0.28)',  label: 'アゲート', filter: 'hue-rotate(210deg) saturate(1.5) brightness(0.9)' },
+  tourmaline:   { color: '#FF6B6B', glow: 'rgba(255,107,107,0.28)', label: 'トルマリン', filter: 'hue-rotate(0deg) saturate(2.0) brightness(1.0)' },
+  citrine:      { color: '#FFD700', glow: 'rgba(255,215,0,0.28)',   label: 'シトリン', filter: 'hue-rotate(45deg) saturate(2.5) brightness(1.1)' },
+  garnet:       { color: '#8B0000', glow: 'rgba(139,0,0,0.28)',     label: 'ガーネット', filter: 'hue-rotate(350deg) saturate(3.0) brightness(0.55)' },
+  moonstone:    { color: '#B0C4DE', glow: 'rgba(176,196,222,0.28)', label: 'ムーンストーン', filter: 'saturate(0.3) brightness(1.5)' },
+  opal:         { color: '#A8D8EA', glow: 'rgba(168,216,234,0.28)', label: 'オパール', filter: 'hue-rotate(190deg) saturate(0.8) brightness(1.4)' },
+  labradorite:  { color: '#708090', glow: 'rgba(112,128,144,0.28)', label: 'ラブラドライト', filter: 'saturate(0.5) brightness(0.85)' }
 };
 
 // Load built-in sprite sheet PNG — split into individual canvas frames.
@@ -14904,7 +15383,7 @@ SpriteEngine.prototype._drawDecorEditOverlay = function(ctx) {
     d.y = p.y - _decorDragging.offY;
   });
 
-  cv.addEventListener('mouseup', function(e) {
+  cv.addEventListener('mouseup', function(_e) {
     if (!_decorDragging) return;
     var d = _decorations[_decorDragging.idx];
     var cat = DECOR_CATALOG[d.type];
@@ -14983,6 +15462,7 @@ var _audioCtx = null;
 var _soundEnabled = localStorage.getItem('tetora-sound') === 'true';
 function play8BitSound(type) {
   if (!_soundEnabled) return;
+  // @ts-ignore: webkitAudioContext is a legacy vendor-prefixed fallback
   if (!_audioCtx) { try { _audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) { return; } }
   var ctx = _audioCtx;
   var osc = ctx.createOscillator();

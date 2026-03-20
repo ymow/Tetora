@@ -16,104 +16,122 @@ function renderTeamBuilderView() {
   var container = document.getElementById('team-builder-content');
   container.innerHTML = [
     '<div class="section">',
-    '  <div class="section-header">',
-    '    <span class="section-title">Team Builder</span>',
-    '    <div style="display:flex;gap:8px;align-items:center">',
-    '      <button class="btn btn-primary" onclick="openTeamGenerateModal()">+ Generate Team</button>',
+    '  <div class="tb-header">',
+    '    <div class="tb-header-left">',
+    '      <span class="tb-title">Team Builder</span>',
+    '      <span class="tb-subtitle">Create and manage AI agent teams. Generate a team from a description or use a built-in template.</span>',
+    '    </div>',
+    '    <div class="tb-actions">',
     '      <button class="btn" onclick="loadTeamList()">Refresh</button>',
+    '      <button class="btn btn-run" onclick="openTeamGenerateModal()">+ Generate Team</button>',
     '    </div>',
     '  </div>',
-    '  <p style="color:var(--text-secondary);font-size:13px;margin-bottom:16px">',
-    '    Create and manage AI agent teams. Generate a team from a description or use a built-in template.',
-    '  </p>',
     '  <div id="team-list"></div>',
     '</div>',
-    '<div id="team-generate-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)closeTeamGenerateModal()">',
-    '  <div class="modal-box" style="max-width:520px">',
-    '    <div class="modal-header">',
-    '      <span>Generate New Team</span>',
-    '      <button class="modal-close" onclick="closeTeamGenerateModal()">&times;</button>',
-    '    </div>',
+
+    // Generate modal
+    '<div id="team-generate-modal" class="tb-modal-overlay" onclick="if(event.target===this)closeTeamGenerateModal()">',
+    '  <div class="tb-modal" style="min-width:460px;max-width:520px">',
+    '    <button class="modal-close" onclick="closeTeamGenerateModal()">&times;</button>',
+    '    <div class="tb-modal-title">Generate New Team</div>',
     '    <form id="team-generate-form" onsubmit="submitTeamGenerate(event)">',
-    '      <div class="form-group">',
+    '      <div class="form-row">',
     '        <label>Description</label>',
     '        <textarea id="tg-description" rows="4" placeholder="Describe the team you want, e.g.: A data engineering team for ETL pipelines, data quality, and analytics" required></textarea>',
     '      </div>',
-    '      <div class="form-group">',
-    '        <label>Team Size (optional)</label>',
-    '        <input type="number" id="tg-size" min="2" max="10" placeholder="Auto">',
+    '      <div class="form-row-inline">',
+    '        <div class="form-row">',
+    '          <label>Team Size</label>',
+    '          <input type="number" id="tg-size" min="2" max="10" placeholder="Auto">',
+    '        </div>',
+    '        <div class="form-row">',
+    '          <label>Base Template</label>',
+    '          <select id="tg-template">',
+    '            <option value="">None</option>',
+    '            <option value="software-dev">Software Dev</option>',
+    '            <option value="content-creation">Content Creation</option>',
+    '            <option value="customer-support">Customer Support</option>',
+    '          </select>',
+    '        </div>',
     '      </div>',
-    '      <div class="form-group">',
-    '        <label>Base Template (optional)</label>',
-    '        <select id="tg-template">',
-    '          <option value="">None</option>',
-    '          <option value="software-dev">Software Dev</option>',
-    '          <option value="content-creation">Content Creation</option>',
-    '          <option value="customer-support">Customer Support</option>',
-    '        </select>',
-    '      </div>',
-    '      <div id="tg-status" style="display:none;padding:12px;background:var(--bg-tertiary);border-radius:8px;margin-bottom:12px;font-size:13px"></div>',
-    '      <div style="display:flex;gap:8px;justify-content:flex-end">',
+    '      <div id="tg-status" class="tb-progress hidden"></div>',
+    '      <div class="form-actions">',
     '        <button type="button" class="btn" onclick="closeTeamGenerateModal()">Cancel</button>',
-    '        <button type="submit" class="btn btn-primary" id="tg-submit">Generate</button>',
+    '        <button type="submit" class="btn btn-run" id="tg-submit">Generate</button>',
     '      </div>',
     '    </form>',
     '  </div>',
     '</div>',
-    '<div id="team-detail-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)closeTeamDetailModal()">',
-    '  <div class="modal-box" style="max-width:700px;max-height:80vh;overflow-y:auto">',
-    '    <div class="modal-header">',
-    '      <span id="td-title">Team Details</span>',
-    '      <button class="modal-close" onclick="closeTeamDetailModal()">&times;</button>',
-    '    </div>',
+
+    // Detail modal
+    '<div id="team-detail-modal" class="tb-modal-overlay" onclick="if(event.target===this)closeTeamDetailModal()">',
+    '  <div class="tb-modal" style="min-width:460px;max-width:700px">',
+    '    <button class="modal-close" onclick="closeTeamDetailModal()">&times;</button>',
+    '    <div class="tb-modal-title" id="td-title">Team Details</div>',
     '    <div id="td-body"></div>',
-    '    <div id="td-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px"></div>',
+    '    <div id="td-actions" class="tb-detail-actions"></div>',
     '  </div>',
     '</div>'
   ].join('\n');
 }
 
+function _tbTeamInitial(name) {
+  if (!name) return '?';
+  return name.charAt(0).toUpperCase();
+}
+
 async function loadTeamList() {
   var list = document.getElementById('team-list');
   if (!list) return;
-  list.innerHTML = '<div style="color:var(--text-secondary);padding:20px;text-align:center">Loading teams...</div>';
+  list.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center;font-size:12px">Loading teams...</div>';
 
   try {
     var teams = await fetchJSON('/api/teams');
     if (!Array.isArray(teams) || teams.length === 0) {
-      list.innerHTML = '<div style="color:var(--text-secondary);padding:20px;text-align:center">No teams yet. Click "Generate Team" to create one.</div>';
+      list.innerHTML = [
+        '<div class="tb-empty">',
+        '  <div class="tb-empty-icon">&#x1f465;</div>',
+        '  <div class="tb-empty-title">No teams yet</div>',
+        '  <div class="tb-empty-desc">Teams let you group agents with complementary skills. Generate your first team from a natural language description.</div>',
+        '  <button class="btn btn-run" onclick="openTeamGenerateModal()">+ Generate Team</button>',
+        '</div>'
+      ].join('\n');
       return;
     }
 
-    var html = '<div class="agents-grid">';
+    var html = '<div class="tb-grid">';
     teams.forEach(function(t) {
-      var badge = t.builtin
-        ? '<span style="background:var(--accent);color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;margin-left:6px">BUILTIN</span>'
-        : '';
-      html += '<div class="agent-card" style="cursor:pointer" onclick="openTeamDetail(\'' + esc(t.name) + '\')">';
-      html += '<div style="display:flex;justify-content:space-between;align-items:center">';
-      html += '<span style="font-weight:600">' + esc(t.name) + badge + '</span>';
-      html += '<span style="color:var(--text-secondary);font-size:12px">' + t.agentCount + ' agents</span>';
-      html += '</div>';
-      html += '<div style="color:var(--text-secondary);font-size:13px;margin-top:4px">' + esc(t.description) + '</div>';
+      var badge = t.builtin ? '<span class="tb-badge-builtin">builtin</span>' : '';
+      html += '<div class="tb-card" onclick="openTeamDetail(\'' + esc(t.name) + '\')">';
+      html += '  <div class="tb-card-top">';
+      html += '    <div class="tb-card-name">';
+      html += '      <span class="tb-card-icon">' + esc(_tbTeamInitial(t.name)) + '</span>';
+      html += '      <span>' + esc(t.name) + '</span>';
+      html += '      ' + badge;
+      html += '    </div>';
+      html += '    <span class="tb-card-count">' + t.agentCount + ' agents</span>';
+      html += '  </div>';
+      html += '  <div class="tb-card-desc">' + esc(t.description) + '</div>';
       html += '</div>';
     });
     html += '</div>';
     list.innerHTML = html;
   } catch (e) {
-    list.innerHTML = '<div style="color:var(--danger);padding:20px">Error loading teams: ' + esc(e.message) + '</div>';
+    list.innerHTML = '<div style="color:var(--red);padding:20px;font-size:12px">Error loading teams: ' + esc(e.message) + '</div>';
   }
 }
 
 function openTeamGenerateModal() {
   document.getElementById('team-generate-form').reset();
-  document.getElementById('tg-status').style.display = 'none';
+  var status = document.getElementById('tg-status');
+  status.className = 'tb-progress hidden';
+  status.innerHTML = '';
   document.getElementById('tg-submit').disabled = false;
-  document.getElementById('team-generate-modal').style.display = 'flex';
+  document.getElementById('team-generate-modal').classList.add('open');
 }
 
 function closeTeamGenerateModal() {
-  document.getElementById('team-generate-modal').style.display = 'none';
+  document.getElementById('team-generate-modal').classList.remove('open');
 }
 
 async function submitTeamGenerate(e) {
@@ -128,8 +146,8 @@ async function submitTeamGenerate(e) {
 
   btn.disabled = true;
   btn.textContent = 'Generating...';
-  status.style.display = 'block';
-  status.textContent = 'Generating team... this may take a minute.';
+  status.className = 'tb-progress active';
+  status.innerHTML = '<span class="tb-spinner"></span><span>Generating team\u2026 this may take a minute.</span>';
 
   try {
     var payload = { description: desc };
@@ -147,7 +165,7 @@ async function submitTeamGenerate(e) {
     }
     var team = await resp.json();
 
-    status.textContent = 'Team generated! Saving...';
+    status.innerHTML = '<span class="tb-spinner"></span><span>Team generated. Saving\u2026</span>';
 
     // Save the team.
     var resp2 = await fetch(API + '/api/teams', {
@@ -164,12 +182,24 @@ async function submitTeamGenerate(e) {
     toast('Team "' + team.name + '" created with ' + team.agents.length + ' agents');
     loadTeamList();
   } catch (err) {
-    status.style.display = 'block';
-    status.innerHTML = '<span style="color:var(--danger)">Error: ' + esc(err.message) + '</span>';
+    status.className = 'tb-progress active error';
+    status.innerHTML = '<span class="tb-spinner"></span><span style="color:var(--red)">Error: ' + esc(err.message) + '</span>';
   } finally {
     btn.disabled = false;
     btn.textContent = 'Generate';
   }
+}
+
+function _tbModelTier(model) {
+  if (!model) return { cls: 'tb-model-balanced', label: model || 'unknown' };
+  var m = model.toLowerCase();
+  if (m.indexOf('haiku') !== -1 || m.indexOf('flash') !== -1 || m.indexOf('mini') !== -1) {
+    return { cls: 'tb-model-fast', label: model };
+  }
+  if (m.indexOf('opus') !== -1 || m.indexOf('pro') !== -1 || m.indexOf('deep') !== -1) {
+    return { cls: 'tb-model-deep', label: model };
+  }
+  return { cls: 'tb-model-balanced', label: model };
 }
 
 async function openTeamDetail(name) {
@@ -179,28 +209,29 @@ async function openTeamDetail(name) {
   title.textContent = 'Loading...';
   body.innerHTML = '';
   actions.innerHTML = '';
-  document.getElementById('team-detail-modal').style.display = 'flex';
+  document.getElementById('team-detail-modal').classList.add('open');
 
   try {
     var team = await fetchJSON('/api/teams/' + encodeURIComponent(name));
     title.textContent = team.name + (team.builtin ? ' (builtin)' : '');
 
-    var html = '<p style="color:var(--text-secondary);margin-bottom:16px">' + esc(team.description) + '</p>';
-    html += '<div class="agents-grid">';
+    var html = '<div class="tb-detail-desc">' + esc(team.description) + '</div>';
+    html += '<div class="tb-agent-grid">';
     (team.agents || []).forEach(function(a) {
-      html += '<div class="agent-card">';
-      html += '<div style="display:flex;justify-content:space-between;align-items:center">';
-      html += '<span style="font-weight:600">' + esc(a.displayName || a.key) + '</span>';
-      html += '<span style="background:var(--bg-tertiary);padding:2px 8px;border-radius:4px;font-size:11px">' + esc(a.model) + '</span>';
-      html += '</div>';
-      html += '<div style="color:var(--text-secondary);font-size:13px;margin-top:4px">' + esc(a.description) + '</div>';
+      var tier = _tbModelTier(a.model);
+      html += '<div class="tb-agent-card">';
+      html += '  <div class="tb-agent-top">';
+      html += '    <span class="tb-agent-name">' + esc(a.displayName || a.key) + '</span>';
+      html += '    <span class="tb-model-badge ' + tier.cls + '">' + esc(tier.label) + '</span>';
+      html += '  </div>';
+      html += '  <div class="tb-agent-desc">' + esc(a.description) + '</div>';
       if (a.keywords && a.keywords.length > 0) {
         var kw = a.keywords.slice(0, 8);
-        html += '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px">';
+        html += '<div class="tb-keywords">';
         kw.forEach(function(k) {
-          html += '<span style="background:var(--bg-tertiary);padding:1px 6px;border-radius:3px;font-size:10px">' + esc(k) + '</span>';
+          html += '<span class="tb-keyword">' + esc(k) + '</span>';
         });
-        if (a.keywords.length > 8) html += '<span style="font-size:10px;color:var(--text-secondary)">+' + (a.keywords.length - 8) + '</span>';
+        if (a.keywords.length > 8) html += '<span class="tb-keyword-more">+' + (a.keywords.length - 8) + '</span>';
         html += '</div>';
       }
       html += '</div>';
@@ -210,19 +241,19 @@ async function openTeamDetail(name) {
 
     // Actions.
     var actHtml = '';
-    actHtml += '<button class="btn btn-primary" onclick="applyTeam(\'' + esc(name) + '\',false)">Apply to Config</button>';
-    actHtml += '<button class="btn" onclick="applyTeam(\'' + esc(name) + '\',true)">Force Apply</button>';
     if (!team.builtin) {
-      actHtml += '<button class="btn" style="color:var(--danger)" onclick="deleteTeam(\'' + esc(name) + '\')">Delete</button>';
+      actHtml += '<button class="btn btn-del" onclick="deleteTeam(\'' + esc(name) + '\')">Delete</button>';
     }
+    actHtml += '<button class="btn" onclick="applyTeam(\'' + esc(name) + '\',true)">Force Apply</button>';
+    actHtml += '<button class="btn btn-run" onclick="applyTeam(\'' + esc(name) + '\',false)">Apply to Config</button>';
     actions.innerHTML = actHtml;
   } catch (err) {
-    body.innerHTML = '<div style="color:var(--danger)">Error: ' + esc(err.message) + '</div>';
+    body.innerHTML = '<div style="color:var(--red);font-size:12px">Error: ' + esc(err.message) + '</div>';
   }
 }
 
 function closeTeamDetailModal() {
-  document.getElementById('team-detail-modal').style.display = 'none';
+  document.getElementById('team-detail-modal').classList.remove('open');
 }
 
 async function applyTeam(name, force) {
