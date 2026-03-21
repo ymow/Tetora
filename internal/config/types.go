@@ -24,6 +24,8 @@ type AgentConfig struct {
 	ToolPolicy        AgentToolPolicy `json:"tools,omitempty"`
 	ToolProfile       string          `json:"toolProfile,omitempty"`
 	Workspace         WorkspaceConfig `json:"workspace,omitempty"`
+	Portrait              string          `json:"portrait,omitempty"`
+	DangerousOpsWhitelist []string        `json:"dangerousOpsWhitelist,omitempty"` // patterns allowed for this agent
 }
 
 type ProviderConfig struct {
@@ -930,6 +932,20 @@ func (cfg EmbeddingConfig) DecayHalfLifeOrDefault() float64 {
 
 // Injection / Security.
 
+// DangerousOpsConfig controls blocking of destructive shell/SQL/k8s commands in dispatch.
+type DangerousOpsConfig struct {
+	Enabled       *bool    `json:"enabled,omitempty"`       // nil = true (default enabled)
+	ExtraPatterns []string `json:"extraPatterns,omitempty"` // additional regex patterns to block
+}
+
+// EnabledOrDefault returns whether dangerous ops blocking is active (default: true).
+func (c *DangerousOpsConfig) EnabledOrDefault() bool {
+	if c == nil || c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
+}
+
 type InjectionDefenseConfig struct {
 	Level              string  `json:"level,omitempty"`
 	LLMJudgeProvider   string  `json:"llmJudgeProvider,omitempty"`
@@ -980,6 +996,7 @@ func (c InjectionDefenseConfig) CacheTTLOrDefault() time.Duration {
 
 type SecurityConfig struct {
 	InjectionDefense InjectionDefenseConfig `json:"injectionDefense,omitempty"`
+	DangerousOps     DangerousOpsConfig     `json:"dangerousOps,omitempty"`
 }
 
 // Trust.
