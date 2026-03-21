@@ -3898,38 +3898,92 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		w.Header().Set("Content-Type", "application/json")
 		wsDir := cfg.WorkspaceDir
 		if wsDir == "" {
-			json.NewEncoder(w).Encode(map[string]any{"files": []any{}})
+			json.NewEncoder(w).Encode(map[string]any{"entries": []any{}})
 			return
 		}
-		type wsFile struct {
+
+		// Determine target directory from ?dir= parameter
+		dirParam := r.URL.Query().Get("dir")
+		targetDir := wsDir
+		if dirParam != "" {
+			clean := filepath.Clean(dirParam)
+			if strings.Contains(clean, "..") {
+				http.Error(w, `{"error":"invalid path"}`, http.StatusBadRequest)
+				return
+			}
+			targetDir = filepath.Join(wsDir, clean)
+			if !strings.HasPrefix(targetDir, wsDir) {
+				http.Error(w, `{"error":"invalid path"}`, http.StatusBadRequest)
+				return
+			}
+		}
+
+		type wsEntry struct {
 			Path    string `json:"path"`
-			Folder  string `json:"folder"`
 			Name    string `json:"name"`
+			IsDir   bool   `json:"isDir"`
 			Size    int64  `json:"size"`
 			ModTime string `json:"modTime"`
 		}
-		var files []wsFile
-		for _, dir := range []string{"rules", "memory", "knowledge", "skills"} {
-			dirPath := filepath.Join(wsDir, dir)
-			entries, err := os.ReadDir(dirPath)
-			if err != nil {
-				continue
-			}
-			for _, e := range entries {
-				if e.IsDir() {
+
+		// Hidden/build directories to skip
+		skipDirs := map[string]bool{
+			".git": true, "node_modules": true, "__pycache__": true, ".next": true,
+			".venv": true, ".mypy_cache": true, ".pytest_cache": true,
+		}
+
+		// Allowed file extensions (whitelist)
+		allowedExts := map[string]bool{
+			".md": true, ".txt": true, ".json": true, ".yaml": true, ".yml": true,
+			".toml": true, ".sh": true, ".go": true, ".py": true, ".js": true,
+			".ts": true, ".css": true, ".html": true, ".csv": true, ".xml": true,
+			".cfg": true, ".ini": true, ".env": true, ".sql": true,
+		}
+
+		dirEntries, err := os.ReadDir(targetDir)
+		if err != nil {
+			json.NewEncoder(w).Encode(map[string]any{"entries": []any{}})
+			return
+		}
+
+		entries := make([]wsEntry, 0)
+		for _, e := range dirEntries {
+			name := e.Name()
+			if e.IsDir() {
+				if skipDirs[name] || strings.HasPrefix(name, ".") {
 					continue
 				}
-				info, _ := e.Info()
-				files = append(files, wsFile{
-					Path:    dir + "/" + e.Name(),
-					Folder:  dir,
-					Name:    e.Name(),
-					Size:    info.Size(),
-					ModTime: info.ModTime().Format(time.RFC3339),
-				})
+			} else {
+				ext := strings.ToLower(filepath.Ext(name))
+				if !allowedExts[ext] {
+					continue
+				}
 			}
+
+			// Build path relative to workspace root
+			var relPath string
+			if dirParam != "" {
+				relPath = filepath.Clean(dirParam) + "/" + name
+			} else {
+				relPath = name
+			}
+
+			var size int64
+			var modTime string
+			if info, err := e.Info(); err == nil {
+				size = info.Size()
+				modTime = info.ModTime().Format(time.RFC3339)
+			}
+
+			entries = append(entries, wsEntry{
+				Path:    relPath,
+				Name:    name,
+				IsDir:   e.IsDir(),
+				Size:    size,
+				ModTime: modTime,
+			})
 		}
-		json.NewEncoder(w).Encode(map[string]any{"files": files})
+		json.NewEncoder(w).Encode(map[string]any{"entries": entries})
 	})
 
 	mux.HandleFunc("GET /api/workspace/file", func(w http.ResponseWriter, r *http.Request) {

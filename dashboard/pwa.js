@@ -1237,50 +1237,141 @@ document.addEventListener('click', function(e) {
 });
 
 // --- Memory Browser ---
-var _memBrowserFiles = [], _memBrowserActive = '';
+var _memBrowserActive = '', _memOpenDirs = new Set(), _memViewMode = 'rendered', _memFileContent = '';
+
 async function loadMemoryBrowser() {
   try {
     var data = await fetchJSON(API + '/api/workspace/files');
-    _memBrowserFiles = data.files || [];
-    renderMemoryTree();
+    var entries = data.entries || [];
+    var tree = document.getElementById('memory-tree');
+    if (!tree) return;
+    tree.innerHTML = '';
+    renderMemoryEntries(entries, tree, 0);
+    if (entries.length === 0) tree.innerHTML = '<div class="search-empty">No workspace files</div>';
   } catch(e) { console.warn('memBrowser: no workspace API'); }
 }
-function renderMemoryTree() {
-  var tree = document.getElementById('memory-tree');
-  if (!tree) return;
-  var byFolder = {};
-  _memBrowserFiles.forEach(function(f) {
-    if (!byFolder[f.folder]) byFolder[f.folder] = [];
-    byFolder[f.folder].push(f);
+
+function renderMemoryEntries(entries, parentEl, depth) {
+  var depthClass = depth > 0 ? ' memory-tree-indent-' + Math.min(depth, 3) : '';
+  entries.forEach(function(entry) {
+    var el = document.createElement('div');
+    if (entry.isDir) {
+      var isOpen = _memOpenDirs.has(entry.path);
+      el.className = 'memory-tree-dir' + depthClass;
+      el.setAttribute('data-dir', entry.path);
+      el.innerHTML = '<span class="memory-tree-chevron' + (isOpen ? ' open' : '') + '">\u25B6</span> ' + escapeHtml(entry.name);
+      parentEl.appendChild(el);
+      if (isOpen) {
+        var childContainer = document.createElement('div');
+        childContainer.setAttribute('data-children', entry.path);
+        parentEl.appendChild(childContainer);
+        // Load children if open
+        fetchJSON(API + '/api/workspace/files?dir=' + encodeURIComponent(entry.path)).then(function(data) {
+          renderMemoryEntries(data.entries || [], childContainer, depth + 1);
+        });
+      }
+    } else {
+      var active = entry.path === _memBrowserActive ? ' active' : '';
+      el.className = 'memory-tree-item' + depthClass + active;
+      el.setAttribute('data-path', entry.path);
+      el.textContent = entry.name;
+      parentEl.appendChild(el);
+    }
   });
-  var html = '';
-  ['rules','memory','knowledge','skills'].forEach(function(folder) {
-    var files = byFolder[folder] || [];
-    if (files.length === 0) return;
-    html += '<div class="memory-tree-folder">' + folder + ' (' + files.length + ')</div>';
-    files.forEach(function(f) {
-      var active = f.path === _memBrowserActive ? ' active' : '';
-      html += '<div class="memory-tree-item' + active + '" onclick="loadMemoryFile(\'' + f.path.replace(/'/g,"\\'") + '\')">' + f.name + '</div>';
-    });
-  });
-  tree.innerHTML = html || '<div class="search-empty">No workspace files</div>';
 }
+
+function toggleTreeDir(path) {
+  if (_memOpenDirs.has(path)) {
+    _memOpenDirs.delete(path);
+    // Remove child container
+    var children = document.querySelector('[data-children="' + CSS.escape(path) + '"]');
+    if (children) children.remove();
+    // Update chevron
+    var dir = document.querySelector('[data-dir="' + CSS.escape(path) + '"]');
+    if (dir) { var chev = dir.querySelector('.memory-tree-chevron'); if (chev) chev.classList.remove('open'); }
+  } else {
+    _memOpenDirs.add(path);
+    var dirEl = document.querySelector('[data-dir="' + CSS.escape(path) + '"]');
+    if (!dirEl) return;
+    var chev = dirEl.querySelector('.memory-tree-chevron');
+    if (chev) chev.classList.add('open');
+    var childContainer = document.createElement('div');
+    childContainer.setAttribute('data-children', path);
+    dirEl.after(childContainer);
+    fetchJSON(API + '/api/workspace/files?dir=' + encodeURIComponent(path)).then(function(data) {
+      var d = (path.match(/\//g) || []).length + 1;
+      renderMemoryEntries(data.entries || [], childContainer, d);
+    });
+  }
+}
+
 async function loadMemoryFile(path) {
   _memBrowserActive = path;
-  renderMemoryTree();
+  // Update active state in tree
+  var tree = document.getElementById('memory-tree');
+  if (tree) {
+    tree.querySelectorAll('.memory-tree-item.active').forEach(function(el) { el.classList.remove('active'); });
+    var target = tree.querySelector('[data-path="' + CSS.escape(path) + '"]');
+    if (target) target.classList.add('active');
+  }
   var editor = document.getElementById('memory-editor');
   try {
     var data = await fetchJSON(API + '/api/workspace/file?path=' + encodeURIComponent(path));
-    editor.innerHTML = '<div class="memory-meta">' + path + '</div><textarea id="memory-editor-textarea">' + (data.content||'').replace(/</g,'&lt;') + '</textarea><button class="btn btn-add memory-save-btn" onclick="saveMemoryFile()">Save</button>';
+    _memFileContent = data.content || '';
+    _memViewMode = path.endsWith('.md') ? 'rendered' : 'edit';
+    renderMemoryEditor(path);
   } catch(e) { editor.innerHTML = '<div class="search-empty">Failed to load file</div>'; }
 }
+
+function renderMemoryEditor(path) {
+  var editor = document.getElementById('memory-editor');
+  if (!editor) return;
+  var isRendered = _memViewMode === 'rendered';
+  var isMd = path.endsWith('.md');
+  var metaHtml = '<div class="memory-meta"><span>' + escapeHtml(path) + '</span>';
+  if (isMd) {
+    metaHtml += '<div class="memory-view-toggle">' +
+      '<button class="btn-mini' + (isRendered ? ' active' : '') + '" data-view="rendered">View</button>' +
+      '<button class="btn-mini' + (!isRendered ? ' active' : '') + '" data-view="edit">Edit</button>' +
+      '</div>';
+  }
+  metaHtml += '</div>';
+
+  if (isRendered && isMd) {
+    editor.innerHTML = metaHtml + '<div class="memory-rendered">' + renderMarkdown(_memFileContent) + '</div>';
+  } else {
+    editor.innerHTML = metaHtml +
+      '<textarea id="memory-editor-textarea">' + escapeHtml(_memFileContent) + '</textarea>' +
+      '<button class="btn btn-add memory-save-btn" data-action="save">Save</button>';
+  }
+}
+
 async function saveMemoryFile() {
   if (!_memBrowserActive) return;
-  var content = document.getElementById('memory-editor-textarea').value;
+  var ta = document.getElementById('memory-editor-textarea');
+  if (!ta) return;
+  var content = ta.value;
   try {
     await fetch(API + '/api/workspace/file', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:_memBrowserActive, content:content}) });
+    _memFileContent = content;
   } catch(e) { console.warn('save failed', e); }
 }
+
+function escapeHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// Event delegation for memory tree and editor
+(function() {
+  document.addEventListener('click', function(e) {
+    var dir = e.target.closest('[data-dir]');
+    if (dir && dir.closest('#memory-tree')) { toggleTreeDir(dir.getAttribute('data-dir')); return; }
+    var file = e.target.closest('[data-path]');
+    if (file && file.closest('#memory-tree')) { loadMemoryFile(file.getAttribute('data-path')); return; }
+    var viewBtn = e.target.closest('[data-view]');
+    if (viewBtn && viewBtn.closest('.memory-view-toggle')) { _memViewMode = viewBtn.getAttribute('data-view'); renderMemoryEditor(_memBrowserActive); return; }
+    var saveBtn = e.target.closest('[data-action="save"]');
+    if (saveBtn && saveBtn.closest('#memory-editor')) { saveMemoryFile(); return; }
+  });
+})();
 
 // --- System Health ---
 function refreshHealth() {
