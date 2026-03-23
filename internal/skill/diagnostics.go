@@ -60,6 +60,7 @@ type diagSkill struct {
 	Name        string
 	Description string
 	Triggers    []string
+	Requires    []string // populated from "requires" or "compatibility" (aliases)
 	Version     string
 	Maintainer  string
 	BodyLines   int
@@ -110,18 +111,45 @@ func diagParseSkillMD(path string) (*diagSkill, error) {
 	s.BodyLines = strings.Count(body, "\n") + 1
 
 	var currentKey string
+	var inMetadata bool
 	for _, line := range strings.Split(frontmatter, "\n") {
+		isIndented := len(line) > 0 && (line[0] == ' ' || line[0] == '\t')
 		stripped := strings.TrimSpace(line)
+		if stripped == "" {
+			continue
+		}
 		if strings.HasPrefix(stripped, "- ") {
 			item := strings.TrimSpace(strings.TrimPrefix(stripped, "- "))
 			item = strings.Trim(item, `"'`)
-			if item != "" && currentKey == "triggers" {
-				s.Triggers = append(s.Triggers, item)
+			if item != "" {
+				switch currentKey {
+				case "triggers":
+					s.Triggers = append(s.Triggers, item)
+				case "requires", "compatibility":
+					s.Requires = diagAppendUnique(s.Requires, item)
+				}
 			}
-		} else if idx := strings.Index(stripped, ":"); idx > 0 {
+			continue
+		}
+		if idx := strings.Index(stripped, ":"); idx > 0 {
 			key := strings.TrimSpace(stripped[:idx])
 			val := strings.TrimSpace(stripped[idx+1:])
 			val = strings.Trim(val, `"'`)
+
+			// Handle metadata: sub-keys (version, maintainer)
+			if isIndented && inMetadata {
+				switch key {
+				case "version":
+					s.Version = val
+				case "maintainer":
+					s.Maintainer = val
+				}
+				continue
+			}
+
+			if !isIndented {
+				inMetadata = false
+			}
 			currentKey = key
 			switch key {
 			case "name":
@@ -131,9 +159,11 @@ func diagParseSkillMD(path string) (*diagSkill, error) {
 			case "description":
 				s.Description = val
 			case "version":
-				s.Version = val
+				s.Version = val // backward compat: top-level still works
 			case "maintainer":
-				s.Maintainer = val
+				s.Maintainer = val // backward compat
+			case "metadata":
+				inMetadata = true
 			case "triggers":
 				if strings.HasPrefix(val, "[") {
 					val = strings.Trim(val, "[]")
@@ -141,6 +171,17 @@ func diagParseSkillMD(path string) (*diagSkill, error) {
 						t = strings.TrimSpace(strings.Trim(t, `"'`))
 						if t != "" {
 							s.Triggers = append(s.Triggers, t)
+						}
+					}
+				}
+				// else multi-line block — items follow as "- " lines
+			case "requires", "compatibility":
+				if strings.HasPrefix(val, "[") {
+					val = strings.Trim(val, "[]")
+					for _, item := range strings.Split(val, ",") {
+						item = strings.TrimSpace(strings.Trim(item, `"'`))
+						if item != "" {
+							s.Requires = diagAppendUnique(s.Requires, item)
 						}
 					}
 				}
@@ -594,6 +635,16 @@ func diagGenerateReport(
 			fmt.Print("No significant coverage gaps found.\n\n")
 		}
 	}
+}
+
+// diagAppendUnique appends item to slice only if not already present.
+func diagAppendUnique(slice []string, item string) []string {
+	for _, s := range slice {
+		if s == item {
+			return slice
+		}
+	}
+	return append(slice, item)
 }
 
 // diagFloat safely converts a JSON-decoded map value to float64.
