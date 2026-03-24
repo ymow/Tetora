@@ -285,6 +285,11 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 			projectWorkdir = p.Workdir
 		}
 	}
+	// Fall back to workspace dir so that tasks without a dedicated project still
+	// get worktree isolation when gitWorktree is enabled.
+	if projectWorkdir == "" && d.cfg.WorkspaceDir != "" {
+		projectWorkdir = d.cfg.WorkspaceDir
+	}
 
 	// Worktree isolation.
 	var worktreeDir string
