@@ -9,6 +9,9 @@ import (
 	"time"
 )
 
+// AnthropicVersion is the Anthropic API version header value shared across the package.
+const AnthropicVersion = "2023-06-01"
+
 // Preset describes a static configuration template for a well-known LLM provider.
 type Preset struct {
 	Name        string   `json:"name"`        // e.g. "anthropic"
@@ -148,10 +151,18 @@ func FetchPresetModels(p Preset) ([]string, error) {
 func TestPresetConnection(p Preset, apiKey, model string) error {
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	url := p.BaseURL + "/chat/completions"
+	// Anthropic native endpoint uses /messages with x-api-key auth.
+	// The OpenAI-compat /chat/completions endpoint expects Authorization: Bearer,
+	// so hitting it with x-api-key would return 401 despite a valid key.
+	var testURL string
+	if p.Name == "anthropic" {
+		testURL = p.BaseURL + "/messages"
+	} else {
+		testURL = p.BaseURL + "/chat/completions"
+	}
 	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":1}`, model)
 
-	req, err := http.NewRequest("POST", url, strings.NewReader(body))
+	req, err := http.NewRequest("POST", testURL, strings.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("connect %s: %w", p.BaseURL, err)
 	}
@@ -159,7 +170,7 @@ func TestPresetConnection(p Preset, apiKey, model string) error {
 	if apiKey != "" {
 		if p.Name == "anthropic" {
 			req.Header.Set("x-api-key", apiKey)
-			req.Header.Set("anthropic-version", "2023-06-01")
+			req.Header.Set("anthropic-version", AnthropicVersion)
 		} else {
 			req.Header.Set("Authorization", "Bearer "+apiKey)
 		}
