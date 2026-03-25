@@ -171,7 +171,7 @@ func TestDevQALoop_PassFirstAttempt(t *testing.T) {
 		Source: "taskboard",
 	}
 
-	result := d.devQALoop(context.Background(), task, dispTask, false, "", "")
+	result := d.devQALoop(context.Background(), task, dispTask, false, "")
 
 	if !result.QAApproved {
 		t.Errorf("expected QAApproved=true, got false")
@@ -219,7 +219,7 @@ func TestDevQALoop_RetryOnRejection(t *testing.T) {
 		Source: "taskboard",
 	}
 
-	result := d.devQALoop(context.Background(), task, dispTask, false, "", "")
+	result := d.devQALoop(context.Background(), task, dispTask, false, "")
 
 	if !result.QAApproved {
 		t.Errorf("expected QAApproved=true, got false")
@@ -266,7 +266,7 @@ func TestDevQALoop_ExhaustsMaxRetries(t *testing.T) {
 		Source: "taskboard",
 	}
 
-	result := d.devQALoop(context.Background(), task, dispTask, false, "", "")
+	result := d.devQALoop(context.Background(), task, dispTask, false, "")
 
 	if result.QAApproved {
 		t.Errorf("expected QAApproved=false, got true")
@@ -938,5 +938,52 @@ func TestWorktreeGate_FallbackOnCreationError(t *testing.T) {
 	}
 	if hasComment(comments, "[worktree] Running in isolated worktree") {
 		t.Errorf("unexpected success comment when creation failed")
+	}
+}
+
+// TestTruncStr_ASCIIText verifies truncStr handles ASCII text correctly.
+func TestTruncStr_ASCIIText(t *testing.T) {
+	result := truncStr("hello world", 5)
+	if result != "hello" {
+		t.Errorf("expected 'hello', got '%s'", result)
+	}
+	if len([]rune(result)) != 5 {
+		t.Errorf("expected 5 runes, got %d", len([]rune(result)))
+	}
+}
+
+// TestTruncStr_CJKText verifies truncStr handles CJK characters without breaking multi-byte sequences.
+func TestTruncStr_CJKText(t *testing.T) {
+	// 漢字 is 2 CJK characters = 6 bytes in UTF-8
+	input := "漢字"
+	result := truncStr(input, 2)
+	if result != "漢字" {
+		t.Errorf("expected '漢字', got '%s'", result)
+	}
+	// Verify no U+FFFD in JSON encoding
+	data, err := json.Marshal(map[string]string{"text": result})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if strings.Contains(string(data), "\ufffd") {
+		t.Errorf("found U+FFFD replacement character in JSON: %s", string(data))
+	}
+}
+
+// TestTruncStr_MixedASCIIAndCJK verifies truncStr handles mixed ASCII and CJK text.
+func TestTruncStr_MixedASCIIAndCJK(t *testing.T) {
+	input := "ABC漢字XYZ"
+	result := truncStr(input, 5)
+	expected := "ABC漢字"
+	if result != expected {
+		t.Errorf("expected '%s', got '%s'", expected, result)
+	}
+	// Verify no U+FFFD in JSON encoding
+	data, err := json.Marshal(map[string]string{"text": result})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if strings.Contains(string(data), "\ufffd") {
+		t.Errorf("found U+FFFD replacement character in JSON: %s", string(data))
 	}
 }

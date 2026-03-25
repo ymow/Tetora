@@ -166,8 +166,9 @@ func resolveRegions(projectWorkdir string, cfg *config.Config) []string {
 }
 
 func truncStr(s string, n int) string {
-	if len(s) > n {
-		return s[:n]
+	runes := []rune(s)
+	if len(runes) > n {
+		return string(runes[:n])
 	}
 	return s
 }
@@ -500,10 +501,8 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 			log.Warn("coord: failed to release claim", "task", t.ID, "err", err)
 		}
 		resolution := "Task completed"
-		if len(summary) > 100 {
-			resolution = summary[:100]
-		} else if summary != "" {
-			resolution = summary
+		if summary != "" {
+			resolution = truncStr(summary, 100)
 		}
 		if err := coord.ResolveBlockersFor(coordDir, t.ID, finalAgent, resolution); err != nil {
 			log.Warn("coord: failed to resolve blockers", "task", t.ID, "err", err)
