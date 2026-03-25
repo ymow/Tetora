@@ -593,10 +593,15 @@ function providerStepNext(toStep) {
     var model = document.getElementById('provider-model-select').value ||
                 document.getElementById('provider-model-custom').value;
     var baseUrl = document.getElementById('provider-baseurl').value || _selectedPreset.baseUrl || '';
-    var summary = '<strong>' + _selectedPreset.displayName + '</strong><br>' +
-      'Base URL: ' + (baseUrl || '(default)') + '<br>' +
-      'Model: ' + (model || '(none selected)');
-    document.getElementById('provider-test-summary').innerHTML = summary;
+    var summaryEl = document.getElementById('provider-test-summary');
+    summaryEl.textContent = '';
+    var nameEl = document.createElement('strong');
+    nameEl.textContent = _selectedPreset.displayName;
+    summaryEl.appendChild(nameEl);
+    summaryEl.appendChild(document.createElement('br'));
+    summaryEl.appendChild(document.createTextNode('Base URL: ' + (baseUrl || '(default)')));
+    summaryEl.appendChild(document.createElement('br'));
+    summaryEl.appendChild(document.createTextNode('Model: ' + (model || '(none selected)')));
     document.getElementById('provider-test-result').innerHTML = '';
     document.getElementById('provider-save-btn').disabled = true;
   }
@@ -630,7 +635,7 @@ function testProviderConnection() {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
-      type: _selectedPreset.name === 'custom' ? 'custom' : _selectedPreset.type,
+      type: _selectedPreset.name === 'custom' ? 'openai-compatible' : _selectedPreset.type,
       baseUrl: baseUrl,
       apiKey: apiKey,
       model: model
