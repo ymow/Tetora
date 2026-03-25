@@ -1,49 +1,57 @@
 {
-  "roles": {
+  "agents": {
     "zhuxuanbai": {
       "soulFile": "agents/zhuxuanbai/SOUL.md",
       "model": "sonnet",
-      "description": "首席協調官，主公之手，居中調度全域。",
       "permissionMode": "acceptEdits"
     },
     "zhouyu": {
       "soulFile": "agents/zhouyu/SOUL.md",
       "model": "sonnet",
-      "description": "首席架構大都督，設計系統藍圖與高性能架構。",
       "permissionMode": "plan"
     },
     "zhangzhao": {
       "soulFile": "agents/zhangzhao/SOUL.md",
       "model": "sonnet",
-      "description": "首席督軍審核長，嚴格把關規範與代碼安全。",
       "permissionMode": "acceptEdits"
     },
     "luxun": {
       "soulFile": "agents/luxun/SOUL.md",
       "model": "sonnet",
-      "description": "高級需求分析師，思慮周密，拆解業務邏輯。",
       "permissionMode": "plan"
     },
     "taishici": {
       "soulFile": "agents/taishici/SOUL.md",
       "model": "sonnet",
-      "description": "首席核心開發工程師，高效實作核心演算法。",
       "permissionMode": "acceptEdits"
     },
     "ganning": {
       "soulFile": "agents/ganning/SOUL.md",
       "model": "sonnet",
-      "description": "視覺創意總監，打造極致交互體驗與視覺衝擊。",
       "permissionMode": "acceptEdits"
     },
     "guojia": {
       "soulFile": "agents/guojia/SOUL.md",
       "model": "sonnet",
-      "description": "首席風險顧問，模擬極端情況，預測技術死角。",
       "permissionMode": "plan"
+    },
+    "zhanghong": {
+      "soulFile": "agents/zhanghong/SOUL.md",
+      "model": "sonnet",
+      "description": "首席知識官與技術導師，專責撰寫教學、維護文檔與傳承經驗。",
+      "permissionMode": "acceptEdits"
     }
   },
-  "defaultRole": "zhuxuanbai",
+  "defaultAgent": "zhuxuanbai",
+  "taskBoard": {
+    "enabled": true,
+    "autoDispatch": {
+      "enabled": true,
+      "interval": "2m"
+    },
+    "gitCommit": true,
+    "gitWorktree": true
+  },
   "providers": {
     "anthropic": {
       "apiKey": "$ANTHROPIC_API_KEY"

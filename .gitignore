@@ -1,44 +1,38 @@
+
 # Binary
-tetora
-tetora-plugin-browser
-bin/
-dist/
-
-# Runtime data
-*.db
-*.db-wal
-*.db-shm
-config.json
-jobs.json
-logs/
-*.log
-
-# Secrets
-.env
-.env.*
-
+# Claude Code
 # Generated
-mcp/
-sessions/
-vault/
-workspace/
-outputs/
-uploads/
-knowledge/
-backups/
-
 # IDE
-.idea/
-.vscode/
+# Internal planning (sensitive)
+# OS
+# Runtime data
+# Secrets
+*.db
+*.db-shm
+*.db-wal
+*.log
 *.swp
 *~
-
-# OS
 .DS_Store
-
-# Internal planning (sensitive)
+.claude/
+.env
+.env.*
+.idea/
+.vscode/
+backups/
+bin/
+config.json
+dist/
+jobs.json
+knowledge/
+logs/
+mcp/
+outputs/
+sessions/
 tasks/gap*.md
 tasks/todo.md
-
-# Claude Code
-.claude/
+tetora
+tetora-plugin-browser
+uploads/
+vault/
+workspace/
