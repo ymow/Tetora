@@ -121,10 +121,15 @@ func ResolveBlockersFor(dir, taskID, agent, resolution string) error {
 	return writeErr
 }
 
-// CheckConflict returns the first active claim whose regions overlap with the
-// given regions. Returns nil if no conflict.
-func CheckConflict(activeClaims []Claim, regions []string) *Claim {
+// CheckConflict returns the first active claim by a *different* agent whose
+// regions overlap with the given regions. Same-agent claims are always skipped
+// because parallel execution in isolated worktrees is safe within one agent.
+// Returns nil if no conflict.
+func CheckConflict(activeClaims []Claim, agent string, regions []string) *Claim {
 	for i := range activeClaims {
+		if activeClaims[i].Agent == agent {
+			continue // same agent: worktree isolation prevents real conflicts
+		}
 		if regionsOverlap(activeClaims[i].Regions, regions) {
 			return &activeClaims[i]
 		}

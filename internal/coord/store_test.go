@@ -154,19 +154,29 @@ func TestCheckConflict(t *testing.T) {
 		{TaskID: "task-501", Agent: "hisui", Regions: []string{"/projects/beta"}, ClaimedAt: now, ExpiresAt: now.Add(2 * time.Hour), Status: "active"},
 	}
 
-	// Exact match.
-	if c := CheckConflict(claims, []string{"/projects/alpha"}); c == nil || c.TaskID != "task-500" {
+	// Exact match — different agent conflicts.
+	if c := CheckConflict(claims, "kokuyou", []string{"/projects/alpha"}); c == nil || c.TaskID != "task-500" {
 		t.Fatal("expected conflict with task-500")
 	}
 
-	// Subdirectory overlap.
-	if c := CheckConflict(claims, []string{"/projects/beta/src"}); c == nil || c.TaskID != "task-501" {
+	// Subdirectory overlap — different agent conflicts.
+	if c := CheckConflict(claims, "kokuyou", []string{"/projects/beta/src"}); c == nil || c.TaskID != "task-501" {
 		t.Fatal("expected conflict with task-501 (subdirectory)")
 	}
 
-	// No conflict.
-	if c := CheckConflict(claims, []string{"/projects/gamma"}); c != nil {
+	// No conflict — disjoint directories.
+	if c := CheckConflict(claims, "kokuyou", []string{"/projects/gamma"}); c != nil {
 		t.Fatalf("expected no conflict, got %+v", c)
+	}
+
+	// Same agent never conflicts, even with exact match.
+	if c := CheckConflict(claims, "ruri", []string{"/projects/alpha"}); c != nil {
+		t.Fatalf("same-agent should not conflict, got %+v", c)
+	}
+
+	// Same agent never conflicts with subdirectory either.
+	if c := CheckConflict(claims, "hisui", []string{"/projects/beta/src"}); c != nil {
+		t.Fatalf("same-agent (hisui) should not conflict, got %+v", c)
 	}
 }
 

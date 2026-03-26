@@ -275,10 +275,12 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 
 	// Look up project workdir.
 	var projectWorkdir string
+	var projectHasSpecificWorkdir bool
 	if t.Project != "" && t.Project != "default" && d.deps.GetProject != nil {
 		if p := d.deps.GetProject(d.cfg.HistoryDB, t.Project); p != nil && p.Workdir != "" {
 			task.Workdir = p.Workdir
 			projectWorkdir = p.Workdir
+			projectHasSpecificWorkdir = true
 		}
 	}
 	// Fall back to workspace dir so that tasks without a dedicated project still
@@ -384,11 +386,23 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 	coordDir := resolveCoordDir(d.cfg)
 	finalAgent := t.Assignee
 	if coordDir != "" && coord.KnownAgents[finalAgent] {
-		regions := resolveRegions(t.Workdirs, projectWorkdir, d.cfg)
+		// Resolve coord regions at directory granularity. Only use task-specific
+		// workdirs or the project's dedicated workdir — never the workspace root.
+		// Claiming the entire workspace root causes false conflicts between tasks
+		// that operate on non-overlapping subdirectories.
+		var coordRegions []string
+		if len(t.Workdirs) > 0 {
+			coordRegions = t.Workdirs
+		} else if projectHasSpecificWorkdir {
+			coordRegions = []string{projectWorkdir}
+		}
+		// coordRegions may be empty for tasks without explicit regions; an empty
+		// region list never overlaps with anything, so no false conflicts occur.
+
 		activeClaims, err := coord.ReadActiveClaims(coordDir)
 		if err != nil {
 			log.Warn("coord: failed to read active claims", "err", err)
-		} else if conflict := coord.CheckConflict(activeClaims, regions); conflict != nil {
+		} else if conflict := coord.CheckConflict(activeClaims, finalAgent, coordRegions); conflict != nil {
 			// Only write a blocker once — skip if one is already pending to avoid
 			// flooding comments on every scan cycle.
 			if !coord.HasPendingBlocker(coordDir, t.ID) {
@@ -419,7 +433,7 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 			Agent:     finalAgent,
 			ClaimedAt: now,
 			ExpiresAt: now.Add(2 * time.Hour),
-			Regions:   regions,
+			Regions:   coordRegions,
 			Status:    "active",
 		}); err != nil {
 			log.Warn("coord: failed to write claim", "task", t.ID, "err", err)
