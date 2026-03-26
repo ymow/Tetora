@@ -71,6 +71,28 @@ func WriteBlocker(dir string, b Blocker) error {
 	return atomicWrite(filepath.Join(dir, "blockers", name), b)
 }
 
+// HasPendingBlocker returns true if there is already an unresolved blocker for
+// the given taskID (i.e. Resolution is empty). Used to avoid writing duplicate
+// blocker files when the same region conflict is detected on repeated scans.
+func HasPendingBlocker(dir, taskID string) bool {
+	pattern := filepath.Join(dir, "blockers", taskID+"__*.json")
+	files, _ := filepath.Glob(pattern)
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		var b Blocker
+		if err := json.Unmarshal(data, &b); err != nil {
+			continue
+		}
+		if b.Resolution == "" {
+			return true
+		}
+	}
+	return false
+}
+
 // ResolveBlockersFor resolves all unresolved blockers whose depends_on_task
 // matches the given taskID.
 func ResolveBlockersFor(dir, taskID, agent, resolution string) error {

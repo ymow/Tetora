@@ -185,17 +185,19 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 		prompt = t.Title + "\n\n" + t.Description
 	}
 
-	// Inject spec/context comments.
+	// Inject task comments so the agent can read the full discussion thread.
 	allComments, _ := d.engine.GetThread(t.ID)
-	var specParts []string
+	var commentParts []string
 	for _, c := range allComments {
-		if c.Type == "spec" || c.Type == "context" {
-			specParts = append(specParts, c.Content)
+		// Skip auto-generated system noise on first run (retry injects these separately).
+		if t.RetryCount == 0 && c.Author == "system" {
+			continue
 		}
+		commentParts = append(commentParts, fmt.Sprintf("[%s] %s: %s", c.CreatedAt, c.Author, c.Content))
 	}
-	if len(specParts) > 0 {
-		prompt += "\n\n## Task Specifications\n\n"
-		prompt += strings.Join(specParts, "\n\n")
+	if len(commentParts) > 0 {
+		prompt += "\n\n## Task Comments\n\n"
+		prompt += strings.Join(commentParts, "\n\n")
 	}
 
 	// Inject dependency context from completed upstream tasks.
@@ -225,21 +227,7 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 		prompt += "\n\nContinue from where you left off. Update your todo.md as you complete items.\n"
 	}
 
-	// Inject previous execution log comments for retry context.
-	if t.RetryCount > 0 {
-		var logComments []TaskComment
-		for _, c := range allComments {
-			if c.Type == "log" || c.Type == "system" {
-				logComments = append(logComments, c)
-			}
-		}
-		if len(logComments) > 0 {
-			prompt += "\n\n## Previous Execution Log\n"
-			for _, c := range logComments {
-				prompt += fmt.Sprintf("[%s] %s: %s\n", c.CreatedAt, c.Author, c.Content)
-			}
-		}
-	}
+	// On retry, all comments (including system) are already injected above.
 
 	taskID := t.ID
 	task := dispatch.Task{
@@ -394,20 +382,27 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 		if err != nil {
 			log.Warn("coord: failed to read active claims", "err", err)
 		} else if conflict := coord.CheckConflict(activeClaims, regions); conflict != nil {
-			if err := coord.WriteBlocker(coordDir, coord.Blocker{
-				Version:       "1",
-				Type:          "blocker",
-				TaskID:        t.ID,
-				Agent:         finalAgent,
-				BlockedAt:     time.Now().UTC(),
-				Severity:      "high",
-				Description:   fmt.Sprintf("Region conflict with %s on task %s", conflict.Agent, conflict.TaskID),
-				DependsOnTask: conflict.TaskID,
-			}); err != nil {
-				log.Warn("coord: failed to write blocker", "task", t.ID, "err", err)
+			// Only write a blocker once — skip if one is already pending to avoid
+			// flooding comments on every scan cycle.
+			if !coord.HasPendingBlocker(coordDir, t.ID) {
+				if err := coord.WriteBlocker(coordDir, coord.Blocker{
+					Version:       "1",
+					Type:          "blocker",
+					TaskID:        t.ID,
+					Agent:         finalAgent,
+					BlockedAt:     time.Now().UTC(),
+					Severity:      "high",
+					Description:   fmt.Sprintf("Region conflict with %s on task %s", conflict.Agent, conflict.TaskID),
+					DependsOnTask: conflict.TaskID,
+				}); err != nil {
+					log.Warn("coord: failed to write blocker", "task", t.ID, "err", err)
+				}
+				d.engine.AddComment(t.ID, "system",
+					fmt.Sprintf("[coord] Region overlap with active claim from %s on task %s; deferring until conflict resolves", conflict.Agent, conflict.TaskID))
 			}
-			d.engine.AddComment(t.ID, "system",
-				fmt.Sprintf("[coord] Region overlap with active claim from %s on task %s", conflict.Agent, conflict.TaskID))
+			// Leave the task in todo so the next scan retries it after the
+			// conflicting task releases its claim. Do NOT write our own claim.
+			return
 		}
 		now := time.Now().UTC()
 		if err := coord.WriteClaim(coordDir, coord.Claim{
