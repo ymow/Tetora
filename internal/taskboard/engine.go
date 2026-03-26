@@ -275,6 +275,7 @@ func (tb *Engine) CreateTask(task TaskBoard) (TaskBoard, error) {
 
 // UpdateTask updates task fields.
 func (tb *Engine) UpdateTask(id string, updates map[string]any) (TaskBoard, error) {
+	id = NormalizeTaskID(id)
 	var setClauses []string
 	for key, val := range updates {
 		switch key {
@@ -306,6 +307,7 @@ func (tb *Engine) UpdateTask(id string, updates map[string]any) (TaskBoard, erro
 
 // DeleteTask removes a task and its comments from the DB.
 func (tb *Engine) DeleteTask(id string) error {
+	id = NormalizeTaskID(id)
 	sql := fmt.Sprintf(`
 		DELETE FROM task_comments WHERE task_id = '%s';
 		DELETE FROM tasks WHERE id = '%s';
@@ -369,6 +371,7 @@ func (tb *Engine) SuggestTasks(id string) []TaskBoard {
 
 // MoveTask moves a task to a new status, enforcing dependency checks.
 func (tb *Engine) MoveTask(id, newStatus string) (TaskBoard, error) {
+	id = NormalizeTaskID(id)
 	task, err := tb.GetTask(id)
 	if err != nil {
 		return TaskBoard{}, err
@@ -429,6 +432,7 @@ func (tb *Engine) MoveTask(id, newStatus string) (TaskBoard, error) {
 
 // AssignTask assigns a task to an agent.
 func (tb *Engine) AssignTask(id, assignee string) (TaskBoard, error) {
+	id = NormalizeTaskID(id)
 	sql := fmt.Sprintf(`
 		UPDATE tasks SET assignee = '%s', updated_at = '%s' WHERE id = '%s'
 	`, db.Escape(assignee), time.Now().UTC().Format(time.RFC3339), db.Escape(id))
@@ -449,6 +453,7 @@ func (tb *Engine) AssignTask(id, assignee string) (TaskBoard, error) {
 
 // AddComment adds a comment to a task.
 func (tb *Engine) AddComment(taskID, author, content string, commentType ...string) (TaskComment, error) {
+	taskID = NormalizeTaskID(taskID)
 	cType := "log"
 	if len(commentType) > 0 && commentType[0] != "" {
 		cType = commentType[0]
@@ -489,6 +494,7 @@ func (tb *Engine) AddComment(taskID, author, content string, commentType ...stri
 
 // GetThread returns all comments for a task.
 func (tb *Engine) GetThread(taskID string) ([]TaskComment, error) {
+	taskID = NormalizeTaskID(taskID)
 	sql := fmt.Sprintf(`
 		SELECT id, task_id, author, content, type, created_at
 		FROM task_comments
