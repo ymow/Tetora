@@ -12,8 +12,11 @@ export function getStaticPaths() {
 
 const { lang } = Astro.params as { lang: Lang };
 const allTips = await getCollection('tips');
-const tips = allTips
-  .filter(p => p.data.lang === lang)
+const langTips = allTips.filter(p => p.data.lang === lang);
+const langSlugs = new Set(langTips.map(p => p.id.replace(`${p.data.lang}/`, '')));
+const fallbackTips = lang === 'en' ? [] : allTips
+  .filter(p => p.data.lang === 'en' && !langSlugs.has(p.id.replace('en/', '')));
+const tips = [...langTips, ...fallbackTips]
   .sort((a, b) => new Date(b.data.date).getTime() - new Date(a.data.date).getTime());
 ---
 <Base title={`${t(lang, 'nav_tips')} — Tetora`} lang={lang}>
@@ -29,13 +32,15 @@ const tips = allTips
   </div>
   <div class="posts">
     {tips.map(tip => {
-      const slug = tip.id.replace(`${lang}/`, '');
+      const tipLang = tip.data.lang;
+      const slug = tip.id.replace(`${tipLang}/`, '');
+      const href = `/${tipLang}/tips/${slug}/`;
       return (
         <div class="card">
-          <h3><a href={`/${lang}/tips/${slug}/`}>{tip.data.title}</a></h3>
+          <h3><a href={href}>{tip.data.title}</a></h3>
           <div class="card-meta">{tip.data.date}</div>
           <p class="card-excerpt">{tip.data.excerpt}</p>
-          <a class="card-read" href={`/${lang}/tips/${slug}/`}>{t(lang, 'read_more')}</a>
+          <a class="card-read" href={href}>{t(lang, 'read_more')}</a>
         </div>
       );
     })}
