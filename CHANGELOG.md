@@ -21,6 +21,7 @@
 - **History CLI diagnostics**: `tetora history fails`, `streak`, `trace` subcommands for failure analysis and job tracing
 - **Store**: Skill-workflow items in browse results
 - **Worktree isolation**: Now applies to default-project tasks; gate coverage for all 4 conditions
+- **Worktree failure preservation**: Failed/cancelled tasks with commits or changes preserved as `partial-done` instead of discarded
 
 ### Fixed
 - **Reflection**: NOT NULL constraint on role column fix; duplicate `role` column in INSERT fix; wiring to taskboard + cron executors
@@ -39,6 +40,7 @@
 - **Skill completion tracking**: Fallback to role+time window matching
 - **Worktree data-loss**: Conditional cleanup with stale index.lock detection
 - **Dispatch workdir fallback**: Warn when project workdir is empty and fallback is used
+- **Agent AddDirs scope**: Block bare `$HOME` from agent AddDirs; add `find ~/` to dangerous ops patterns
 
 ### Changed
 - **Anthropic version constant**: Extracted shared `anthropic-version` into provider package constant
