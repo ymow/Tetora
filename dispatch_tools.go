@@ -101,6 +101,11 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 	}
 	req.Tools = toolDefs
 
+	// For claude-cli provider: suppress Claude Code built-in tools that overlap
+	// with Tetora native tools, so the agent doesn't ask for unneeded permissions.
+	// See TODO(#tool-passthrough) in provider_claude.go for the full MCP fix.
+	req.DisallowedTools = inferDisallowedTools(toolDefs)
+
 	// Initialize enhanced loop detector.
 	detector := NewLoopDetector()
 
@@ -556,4 +561,25 @@ func estimateDirSize(dir string) int {
 		}
 	}
 	return total
+}
+
+// inferDisallowedTools returns Claude Code built-in tool names to suppress
+// when equivalent Tetora native tools are present in the registry.
+//
+// This prevents the agent from requesting permission for Claude Code built-ins
+// (e.g. WebSearch) when Tetora already provides the capability (e.g. tweet_search).
+//
+// TODO(#tool-passthrough): remove once ClaudeProvider exposes Tetora tools
+// via MCP, making suppression unnecessary.
+func inferDisallowedTools(tools []ToolDef) []string {
+	names := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		names[t.Name] = true
+	}
+	var disallowed []string
+	// Twitter/X tools → suppress WebSearch (agent should use tweet_search instead).
+	if names["tweet_search"] || names["tweet_read_timeline"] || names["tweet_post"] {
+		disallowed = append(disallowed, "WebSearch")
+	}
+	return disallowed
 }

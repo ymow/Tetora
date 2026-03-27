@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -33,6 +35,7 @@ type OAuthServiceConfig struct {
 	Scopes       []string          `json:"scopes"`
 	RedirectURL  string            `json:"redirectUrl,omitempty"`  // default: {redirectBase}/api/oauth/{name}/callback
 	ExtraParams  map[string]string `json:"extraParams,omitempty"`
+	PKCE         bool              `json:"pkce,omitempty"`         // require PKCE (e.g. Twitter)
 }
 
 // OAuthToken represents a stored token.
@@ -67,8 +70,9 @@ type OAuthManager struct {
 }
 
 type oauthState struct {
-	service   string
-	createdAt time.Time
+	service      string
+	createdAt    time.Time
+	codeVerifier string // PKCE verifier, non-empty when PKCE is used
 }
 
 // globalOAuthManager is exposed for tool handlers (Gmail, Calendar, etc.) to make authenticated requests.
@@ -88,6 +92,7 @@ var oauthTemplates = map[string]OAuthServiceConfig{
 	"twitter": {
 		AuthURL:  "https://twitter.com/i/oauth2/authorize",
 		TokenURL: "https://api.twitter.com/2/oauth2/token",
+		PKCE:     true,
 	},
 }
 
@@ -372,6 +377,18 @@ func generateState() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// generatePKCE returns a code_verifier and its S256 code_challenge.
+func generatePKCE() (verifier, challenge string, err error) {
+	b := make([]byte, 32)
+	if _, err = io.ReadFull(rand.Reader, b); err != nil {
+		return
+	}
+	verifier = base64.RawURLEncoding.EncodeToString(b)
+	sum := sha256.Sum256([]byte(verifier))
+	challenge = base64.RawURLEncoding.EncodeToString(sum[:])
+	return
+}
+
 // handleAuthorize starts an OAuth authorization flow — redirects the user to the provider.
 func (m *OAuthManager) handleAuthorize(w http.ResponseWriter, r *http.Request, serviceName string) {
 	svcCfg, err := m.resolveServiceConfig(serviceName)
@@ -386,9 +403,22 @@ func (m *OAuthManager) handleAuthorize(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 
+	// Generate PKCE verifier/challenge if required.
+	var codeVerifier string
+	if svcCfg.PKCE {
+		var challenge string
+		var pkceErr error
+		codeVerifier, challenge, pkceErr = generatePKCE()
+		if pkceErr != nil {
+			http.Error(w, `{"error":"pkce generation failed"}`, http.StatusInternalServerError)
+			return
+		}
+		_ = challenge // used below
+	}
+
 	m.mu.Lock()
 	m.cleanExpiredStates()
-	m.states[state] = oauthState{service: serviceName, createdAt: time.Now()}
+	m.states[state] = oauthState{service: serviceName, createdAt: time.Now(), codeVerifier: codeVerifier}
 	m.mu.Unlock()
 
 	// Build redirect URL.
@@ -409,6 +439,11 @@ func (m *OAuthManager) handleAuthorize(w http.ResponseWriter, r *http.Request, s
 	}
 	if len(svcCfg.Scopes) > 0 {
 		params.Set("scope", strings.Join(svcCfg.Scopes, " "))
+	}
+	if svcCfg.PKCE {
+		sum := sha256.Sum256([]byte(codeVerifier))
+		params.Set("code_challenge", base64.RawURLEncoding.EncodeToString(sum[:]))
+		params.Set("code_challenge_method", "S256")
 	}
 	for k, v := range svcCfg.ExtraParams {
 		params.Set(k, v)
@@ -486,6 +521,9 @@ func (m *OAuthManager) handleCallback(w http.ResponseWriter, r *http.Request, se
 		"client_id":     {svcCfg.ClientID},
 		"client_secret": {svcCfg.ClientSecret},
 	}
+	if st.codeVerifier != "" {
+		data.Set("code_verifier", st.codeVerifier)
+	}
 
 	req, err := http.NewRequest("POST", svcCfg.TokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
@@ -494,6 +532,10 @@ func (m *OAuthManager) handleCallback(w http.ResponseWriter, r *http.Request, se
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
+	// Twitter (and some providers) require client credentials via HTTP Basic Auth.
+	if svcCfg.ClientSecret != "" {
+		req.SetBasicAuth(svcCfg.ClientID, svcCfg.ClientSecret)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -590,6 +632,7 @@ func (m *OAuthManager) resolveServiceConfig(name string) (*OAuthServiceConfig, e
 	if hasTmpl {
 		result.AuthURL = tmpl.AuthURL
 		result.TokenURL = tmpl.TokenURL
+		result.PKCE = tmpl.PKCE
 		if tmpl.ExtraParams != nil {
 			result.ExtraParams = make(map[string]string)
 			for k, v := range tmpl.ExtraParams {

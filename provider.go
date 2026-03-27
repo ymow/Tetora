@@ -52,6 +52,12 @@ type ProviderRequest struct {
 	// Tools for agentic loop (passed to provider).
 	Tools []ToolDef
 
+	// DisallowedTools lists Claude Code built-in tool names to suppress via --disallowedTools.
+	// Populated by dispatch when Tetora native tools supersede Claude Code built-ins.
+	// TODO(#tool-passthrough): remove once ClaudeProvider implements ExecuteWithTools
+	// and exposes Tetora tools as MCP, making suppression unnecessary.
+	DisallowedTools []string
+
 	// Optional event channel for SSE streaming.
 	// When set, provider publishes output_chunk events as output is generated.
 	EventCh chan<- SSEEvent `json:"-"`

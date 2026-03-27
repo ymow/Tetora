@@ -377,6 +377,17 @@ func buildClaudeArgs(req ProviderRequest, streaming bool) []string {
 		args = append(args, "--mcp-config", req.MCPPath)
 	}
 
+	// Suppress Claude Code built-in tools that Tetora native tools supersede.
+	// This prevents the agent from asking for WebSearch permission when
+	// tweet_search / xiaoqiao-search skills are the intended path.
+	//
+	// TODO(#tool-passthrough): once ClaudeProvider implements ExecuteWithTools
+	// with proper MCP passthrough, Tetora tools will be callable directly and
+	// this suppression list can be removed.
+	if len(req.DisallowedTools) > 0 {
+		args = append(args, "--disallowedTools", strings.Join(req.DisallowedTools, ","))
+	}
+
 	// Prompt is NOT appended as a positional arg; it is piped via stdin
 	// in Execute() to avoid OS ARG_MAX limits and shell escaping issues.
 	return args
