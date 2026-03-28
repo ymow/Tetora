@@ -295,11 +295,17 @@ func (wm *WorktreeManager) Merge(repoDir, wtDir, commitMsg string) (diffSummary 
 	diffSummary, _ = wm.diffStatUnlocked(wtDir, targetBranch, branch)
 
 	// Merge branch into target on the main repo (not the worktree).
-	if out, err := exec.Command("git", "-C", repoDir,
+	if out, mergeErr := exec.Command("git", "-C", repoDir,
 		"merge", "--no-ff", branch, "-m",
-		fmt.Sprintf("Merge %s into %s", branch, targetBranch)).CombinedOutput(); err != nil {
-		return diffSummary, fmt.Errorf("worktree: merge failed: %s: %w",
-			strings.TrimSpace(string(out)), err)
+		fmt.Sprintf("Merge %s into %s", branch, targetBranch)).CombinedOutput(); mergeErr != nil {
+		origErr := fmt.Errorf("worktree: merge failed: %s: %w",
+			strings.TrimSpace(string(out)), mergeErr)
+		if resolved, resolveErr := tryAutoResolveMetaConflict(repoDir); resolved {
+			log.Info("worktree: auto-resolved .tetora-branch conflict", "branch", branch, "task", taskID)
+		} else {
+			_ = resolveErr
+			return diffSummary, origErr
+		}
 	}
 
 	log.Info("worktree: merged", "branch", branch, "into", targetBranch, "task", taskID)
@@ -425,10 +431,59 @@ func (wm *WorktreeManager) MergeBranchOnly(repoDir, wtDir string) (diffSummary s
 	if out, mergeErr := exec.Command("git", "-C", repoDir,
 		"merge", "--no-ff", branch, "-m",
 		fmt.Sprintf("Merge %s into %s", branch, targetBranch)).CombinedOutput(); mergeErr != nil {
-		return diffSummary, fmt.Errorf("worktree: merge failed: %s: %w",
+		origErr := fmt.Errorf("worktree: merge failed: %s: %w",
 			strings.TrimSpace(string(out)), mergeErr)
+		if resolved, resolveErr := tryAutoResolveMetaConflict(repoDir); resolved {
+			log.Info("worktree: auto-resolved .tetora-branch conflict (branch-only)", "branch", branch, "task", taskID)
+		} else {
+			_ = resolveErr
+			return diffSummary, origErr
+		}
 	}
 
 	log.Info("worktree: merged (branch-only)", "branch", branch, "into", targetBranch, "task", taskID)
 	return diffSummary, nil
+}
+
+// tryAutoResolveMetaConflict checks if the only merge conflict is .tetora-branch
+// and resolves it by keeping ours (the target branch version).
+// Returns (true, nil) if resolved, (false, err) if conflicts involve other files.
+func tryAutoResolveMetaConflict(repoDir string) (resolved bool, err error) {
+	out, err := exec.Command("git", "-C", repoDir,
+		"diff", "--name-only", "--diff-filter=U").Output()
+	if err != nil {
+		return false, fmt.Errorf("worktree: failed to list conflicted files: %w", err)
+	}
+
+	conflicted := strings.Fields(strings.TrimSpace(string(out)))
+	if len(conflicted) != 1 || conflicted[0] != branchMetaFile {
+		// More than one conflict, or not the meta file — abort and report.
+		abortOut, abortErr := exec.Command("git", "-C", repoDir, "merge", "--abort").CombinedOutput()
+		if abortErr != nil {
+			return false, fmt.Errorf("worktree: merge --abort failed: %s: %w",
+				strings.TrimSpace(string(abortOut)), abortErr)
+		}
+		if len(conflicted) == 0 {
+			return false, fmt.Errorf("worktree: merge conflict with no conflicted files listed")
+		}
+		return false, fmt.Errorf("worktree: unresolvable conflicts in: %s", strings.Join(conflicted, ", "))
+	}
+
+	// Only .tetora-branch is conflicted — resolve by keeping ours.
+	if out, err := exec.Command("git", "-C", repoDir,
+		"checkout", "--ours", branchMetaFile).CombinedOutput(); err != nil {
+		return false, fmt.Errorf("worktree: checkout --ours %s failed: %s: %w",
+			branchMetaFile, strings.TrimSpace(string(out)), err)
+	}
+	if out, err := exec.Command("git", "-C", repoDir,
+		"add", branchMetaFile).CombinedOutput(); err != nil {
+		return false, fmt.Errorf("worktree: git add %s failed: %s: %w",
+			branchMetaFile, strings.TrimSpace(string(out)), err)
+	}
+	if out, err := exec.Command("git", "-C", repoDir,
+		"commit", "--no-edit").CombinedOutput(); err != nil {
+		return false, fmt.Errorf("worktree: commit after meta resolve failed: %s: %w",
+			strings.TrimSpace(string(out)), err)
+	}
+	return true, nil
 }
