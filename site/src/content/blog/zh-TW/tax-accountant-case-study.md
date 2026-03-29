@@ -5,6 +5,7 @@ date: "2026-03-18"
 tag: case-study
 readTime: "約 8 分鐘"
 excerpt: "日本稅務師畠山謙人用 Claude Code 一人服務 60 家公司。他花數月搭建的系統，Tetora 開箱即用。"
+description: "日本稅務師畠山謙人用 Claude Code 一人服務 60 家公司。他花數月搭建的系統，Tetora 開箱即用。"
 ---
 
 日本公認會計師畠山謙人最近在 X 上發了一篇長文，引起超過 200 萬次瀏覽。

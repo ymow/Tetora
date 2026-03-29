@@ -5,6 +5,7 @@ date: "2026-03-18"
 tag: release
 readTime: "~5 min"
 excerpt: "256 files consolidated to a lean core. New Workflow Engine with DAG support and Template Marketplace."
+description: "256 files consolidated to a lean core. New Workflow Engine with DAG support and Template Marketplace."
 ---
 
 Tetora v2.1.0 is a significant release. Two themes define this version: **a major codebase restructure** and **new features shipping**.

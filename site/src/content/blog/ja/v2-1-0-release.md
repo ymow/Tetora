@@ -5,6 +5,7 @@ date: "2026-03-18"
 tag: release
 readTime: "約 5 分"
 excerpt: "256 ファイルをスリムなコアに統合。DAG サポートの新 Workflow Engine と Template Marketplace。"
+description: "256 ファイルをスリムなコアに統合。DAG サポートの新 Workflow Engine と Template Marketplace。"
 ---
 
 Tetora v2.1.0 は大型アップデートです。このバージョンの核心テーマは 2 つ：**コードアーキテクチャの大整理**と**新機能の実装**です。

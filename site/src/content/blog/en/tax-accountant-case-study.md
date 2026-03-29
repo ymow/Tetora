@@ -5,6 +5,7 @@ date: "2026-03-18"
 tag: case-study
 readTime: "~8 min"
 excerpt: "Japanese CPA Kento Hatakeyama serves 60 companies solo with Claude Code. The system he spent months building maps perfectly to Tetora's out-of-the-box features."
+description: "Japanese CPA Kento Hatakeyama serves 60 companies solo with Claude Code. The system he spent months building maps perfectly to Tetora's out-of-the-box features."
 ---
 
 Japanese CPA and tax accountant Kento Hatakeyama recently published a long post on X that garnered over 2 million views.

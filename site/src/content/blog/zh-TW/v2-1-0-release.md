@@ -5,6 +5,7 @@ date: "2026-03-18"
 tag: release
 readTime: "約 5 分鐘"
 excerpt: "256 個檔案整合為精簡核心。新 Workflow Engine 支援 DAG 與 Template Marketplace。"
+description: "256 個檔案整合為精簡核心。新 Workflow Engine 支援 DAG 與 Template Marketplace。"
 ---
 
 Tetora v2.1.0 是一次重大更新。這個版本的核心主題有兩個：**程式碼架構大整理**與**新功能落地**。
