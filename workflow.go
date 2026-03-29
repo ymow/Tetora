@@ -2394,6 +2394,11 @@ func (e *workflowExecutor) runHumanStep(ctx context.Context, step *WorkflowStep,
 			result.Error = fmt.Sprintf("human gate rejected: %s", existing.Response)
 			log.Info("human gate already rejected, skipping", "step", step.ID, "key", hgKey)
 			return
+		case "cancelled":
+			result.Status = "cancelled"
+			result.Error = "human gate cancelled by operator"
+			log.Info("human gate already cancelled, skipping", "step", step.ID, "key", hgKey)
+			return
 		case "timeout":
 			// Previous timeout — reset for retry.
 			resetHumanGate(callbackMgr.DBPath(), hgKey)
@@ -2494,6 +2499,29 @@ func (e *workflowExecutor) runHumanStep(ctx context.Context, step *WorkflowStep,
 			if subtype == "approval" {
 				body.Decision = cbResult.Body // e.g. "approved" or "rejected"
 			}
+		}
+
+		// Cancel — stop the step without completing.
+		if body.Decision == "cancelled" {
+			cancelHumanGate(callbackMgr.DBPath(), hgKey)
+			result.Status = "cancelled"
+			result.Error = "human gate cancelled by operator"
+
+			e.publishEvent("human_gate_responded", map[string]any{
+				"runId":       e.run.ID,
+				"stepId":      step.ID,
+				"hgKey":       hgKey,
+				"decision":    "cancelled",
+				"cancelledBy": body.RespondedBy,
+			})
+
+			e.mu.Lock()
+			e.run.Status = "running"
+			e.mu.Unlock()
+			checkpointRun(e)
+
+			log.Info("human gate cancelled", "step", step.ID, "key", hgKey, "cancelledBy", body.RespondedBy)
+			return
 		}
 
 		// Record completion in DB — use rejectHumanGate for approval rejections so

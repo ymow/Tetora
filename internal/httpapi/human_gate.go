@@ -28,6 +28,9 @@ type HumanGateDeps struct {
 	// RespondHumanGate delivers a response to a gate. Returns an error if
 	// the gate does not exist or is not in "waiting" status.
 	RespondHumanGate func(key, action, response, respondedBy string) error
+
+	// CancelHumanGate cancels a waiting gate. Returns an error on failure.
+	CancelHumanGate func(key, reason, cancelledBy string) error
 }
 
 // RegisterHumanGateRoutes registers the human gate REST endpoints:
@@ -76,6 +79,42 @@ func RegisterHumanGateRoutes(mux *http.ServeMux, d HumanGateDeps) {
 
 		if key == "" {
 			http.Error(w, `{"error":"gate key required"}`, http.StatusBadRequest)
+			return
+		}
+
+		// POST /api/human-gates/{key}/cancel
+		if subaction == "cancel" {
+			if r.Method != http.MethodPost {
+				http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+				return
+			}
+
+			var body struct {
+				Reason      string `json:"reason"`
+				CancelledBy string `json:"cancelledBy"`
+			}
+			// Body is optional for cancel.
+			json.NewDecoder(r.Body).Decode(&body)
+
+			gate := d.QueryHumanGateByKey(key)
+			if gate == nil {
+				http.Error(w, `{"error":"gate not found"}`, http.StatusNotFound)
+				return
+			}
+			if status, _ := gate["status"].(string); status != "waiting" {
+				http.Error(w, fmt.Sprintf(`{"error":"gate already %s"}`, status), http.StatusBadRequest)
+				return
+			}
+
+			if err := d.CancelHumanGate(key, body.Reason, body.CancelledBy); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+				return
+			}
+
+			audit.Log(d.HistoryDB(), "human_gate.cancel", "http",
+				fmt.Sprintf("key=%s cancelledBy=%s reason=%s", key, body.CancelledBy, body.Reason),
+				httputil.ClientIP(r))
+			json.NewEncoder(w).Encode(map[string]string{"status": "cancelled", "key": key})
 			return
 		}
 

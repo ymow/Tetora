@@ -1921,6 +1921,23 @@ func startHTTPServer(s *Server) *http.Server {
 			}
 			return nil
 		},
+		CancelHumanGate: func(key, reason, cancelledBy string) error {
+			if callbackMgr == nil {
+				cancelHumanGate(cfg.HistoryDB, key)
+				return nil
+			}
+			bodyJSON, _ := json.Marshal(map[string]string{
+				"decision":    "cancelled",
+				"response":    reason,
+				"respondedBy": cancelledBy,
+			})
+			dr := callbackMgr.Deliver(key, CallbackResult{Body: string(bodyJSON)})
+			if dr == DeliverNoEntry {
+				// Workflow not currently waiting — write DB directly.
+				cancelHumanGate(cfg.HistoryDB, key)
+			}
+			return nil
+		},
 	})
 	httpapi.RegisterAgentRoleRoutes(mux, httpapi.AgentRoleDeps{
 		ListArchetypes: func() []httpapi.ArchetypeInfo {

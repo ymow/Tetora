@@ -631,9 +631,10 @@ function openWfRun(runId) {
       renderWfDAG(runObj, wfDef);
       renderWfStepList(data);
       renderWfCostBar(data);
+      renderHumanGateCards(data.humanGates || []);
 
-      // Subscribe to SSE if running
-      if (runObj.status === 'running') {
+      // Subscribe to SSE if running or waiting
+      if (runObj.status === 'running' || runObj.status === 'waiting') {
         subscribeWfSSE(runId);
       } else if (wfSSE) {
         wfSSE.close();
@@ -675,7 +676,7 @@ function renderWfStepList(data) {
 
   var html = '<div style="font-size:13px;font-weight:600;margin-bottom:8px">Step Results</div>';
   steps.forEach(function(sr) {
-    var statusCls = sr.status === 'success' ? 'badge-ok' : (sr.status === 'error' || sr.status === 'timeout') ? 'badge-err' : sr.status === 'waiting' ? 'badge-warn' : sr.status === 'running' ? 'badge-warn' : '';
+    var statusCls = sr.status === 'success' ? 'badge-ok' : (sr.status === 'error' || sr.status === 'timeout') ? 'badge-err' : (sr.status === 'waiting' || sr.status === 'waiting_human' || sr.status === 'running') ? 'badge-warn' : '';
     var dur = sr.durationMs ? formatDuration(sr.durationMs) : '-';
     // Show live elapsed time for running steps.
     if (sr.status === 'running' && sr.startedAt && !sr.durationMs) {
@@ -735,12 +736,114 @@ function renderWfStepList(data) {
         html += '</div>';
       }
     }
+    // Human gate info for waiting_human steps
+    if (sr.status === 'waiting_human') {
+      var humanGates = data.humanGates || [];
+      var hg = humanGates.find(function(g) { return (g.step_id || g.stepId) === sr.stepId && g.status === 'waiting'; });
+      if (hg) {
+        html += '<div style="margin-top:8px;padding:8px;background:var(--bg);border:1px solid #fbbf24;border-radius:4px">';
+        html += '<div style="font-size:11px;color:#fbbf24;margin-bottom:4px">Waiting for human ' + esc(hg.subtype || 'approval') + '</div>';
+        if (hg.prompt) html += '<div style="font-size:11px;margin-bottom:4px">' + esc(hg.prompt) + '</div>';
+        if (hg.assignee) html += '<div style="font-size:11px;color:var(--muted)">Assignee: ' + esc(hg.assignee) + '</div>';
+        html += '<div style="font-size:11px;color:var(--muted);margin-top:4px">Key: <code>' + esc(hg.key || '') + '</code></div>';
+        html += '</div>';
+      }
+    }
     html += '</div>';
     html += '</div>';
   });
 
   container.innerHTML = html;
 }
+
+// Human Gate card helpers
+
+function getOrCreateHumanGateContainer() {
+  var container = document.getElementById('wf-human-gates');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'wf-human-gates';
+    container.style.cssText = 'margin-top:12px';
+    var dagSection = document.getElementById('wf-dag-section');
+    if (dagSection) dagSection.appendChild(container);
+  }
+  return container;
+}
+
+function renderHumanGateCards(humanGates) {
+  var container = getOrCreateHumanGateContainer();
+  var pending = humanGates.filter(function(hg) { return hg.status === 'waiting'; });
+  if (pending.length === 0) { container.innerHTML = ''; return; }
+
+  var html = '<div style="font-size:13px;font-weight:600;margin-bottom:8px;color:#fbbf24">Pending Approvals</div>';
+  pending.forEach(function(hg) {
+    html += buildHumanGateCardHtml(hg);
+  });
+  container.innerHTML = html;
+}
+
+function buildHumanGateCardHtml(hg) {
+  var key = hg.hgKey || hg.key || '';
+  var stepId = hg.step_id || hg.stepId || '';
+  var subtype = hg.subtype || 'approval';
+  var prompt = hg.prompt || '';
+  var assignee = hg.assignee || '';
+  return '<div id="hg-card-' + escAttr(key) + '" style="background:var(--surface);border:1px solid #fbbf24;border-radius:6px;padding:10px;margin-bottom:6px">' +
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">' +
+    '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#fbbf24;animation:pulse 1.5s infinite"></span>' +
+    '<strong style="font-size:12px">' + esc(stepId) + '</strong>' +
+    '<span class="badge badge-warn" style="font-size:10px">' + esc(subtype) + '</span>' +
+    '</div>' +
+    (prompt ? '<div style="font-size:12px;margin-bottom:4px">' + esc(prompt) + '</div>' : '') +
+    (assignee ? '<div style="font-size:11px;color:var(--muted)">Assignee: ' + esc(assignee) + '</div>' : '') +
+    '<div style="font-size:11px;color:var(--muted);margin-top:4px">Key: <code>' + esc(key) + '</code></div>' +
+    '<div style="margin-top:6px;text-align:right">' +
+    '<button class="gate-cancel-btn" data-key="' + escAttr(key) + '" style="font-size:11px;padding:2px 8px;border:1px solid #ef4444;background:transparent;color:#ef4444;border-radius:4px;cursor:pointer">Cancel</button>' +
+    '</div>' +
+    '</div>';
+}
+
+function addHumanGateCard(data) {
+  var container = getOrCreateHumanGateContainer();
+  var key = data.hgKey || '';
+  if (document.getElementById('hg-card-' + key)) return; // already exists
+  if (!container.querySelector('[style*="Pending Approvals"]')) {
+    container.innerHTML = '<div style="font-size:13px;font-weight:600;margin-bottom:8px;color:#fbbf24">Pending Approvals</div>';
+  }
+  var div = document.createElement('div');
+  div.innerHTML = buildHumanGateCardHtml({
+    hgKey: data.hgKey, stepId: data.stepId, subtype: data.subtype,
+    prompt: data.prompt, assignee: data.assignee
+  });
+  container.appendChild(div.firstChild);
+}
+
+function removeHumanGateCard(hgKey) {
+  var card = document.getElementById('hg-card-' + hgKey);
+  if (card) card.remove();
+  var container = document.getElementById('wf-human-gates');
+  if (container && !container.querySelector('[id^="hg-card-"]')) {
+    container.innerHTML = '';
+  }
+}
+
+// Event delegation for human gate cancel buttons.
+document.addEventListener('click', function(e) {
+  if (!e.target.classList.contains('gate-cancel-btn')) return;
+  var key = e.target.dataset.key;
+  if (!key) return;
+  if (!confirm('Cancel gate ' + key + '?')) return;
+  e.target.disabled = true;
+  e.target.textContent = 'Cancelling...';
+  fetch('/api/human-gates/' + encodeURIComponent(key) + '/cancel', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cancelledBy: 'dashboard'})
+  }).then(function(res) {
+    if (res.ok) { removeHumanGateCard(key); }
+    else { e.target.disabled = false; e.target.textContent = 'Cancel'; }
+  }).catch(function() { e.target.disabled = false; e.target.textContent = 'Cancel'; });
+});
 
 function toggleStepDetail(el) {
   var detail = el.querySelector('.step-detail');
@@ -1140,6 +1243,16 @@ function subscribeWfSSE(runId) {
         updateWfNodeStatus(ev.data.stepId, 'waiting');
         updateWfStepRow(ev.data.stepId, 'waiting');
       }
+      if (ev.type === 'human_gate_waiting' && ev.data) {
+        updateWfNodeStatus(ev.data.stepId, 'waiting');
+        updateWfStepRow(ev.data.stepId, 'waiting');
+        addHumanGateCard(ev.data);
+      }
+      if (ev.type === 'human_gate_responded' && ev.data) {
+        updateWfNodeStatus(ev.data.stepId, 'running');
+        updateWfStepRow(ev.data.stepId, 'running');
+        removeHumanGateCard(ev.data.hgKey);
+      }
       if (ev.type === 'output_chunk' && ev.data && ev.data.chunk) {
         appendWfStepOutput(ev);
       }
@@ -1178,7 +1291,7 @@ function updateWfStepRow(stepId, status) {
     if (status === 'running') {
       indicator.style.background = '#fbbf24';
       indicator.style.display = 'inline-block';
-    } else if (status === 'waiting') {
+    } else if (status === 'waiting' || status === 'waiting_human') {
       indicator.style.background = '#a78bfa';
       indicator.style.display = 'inline-block';
     } else {
