@@ -809,25 +809,27 @@ func CleanupExpiredCallbacks(dbPath string) {
 
 // HumanGateRecord represents a human gate entry in the DB.
 type HumanGateRecord struct {
-	Key         string
-	RunID       string
-	StepID      string
-	Subtype     string // "approval", "action", "input"
-	Prompt      string
-	Assignee    string
-	Status      string // "waiting", "completed", "timeout", "rejected"
-	Decision    string // approval: "approved" / "rejected"
-	Response    string // input: human's text response
-	RespondedBy string // identity of the human who responded (audit trail)
-	TimeoutAt   string
-	CreatedAt   string
-	CompletedAt string
+	Key          string
+	RunID        string
+	StepID       string
+	WorkflowName string // name of the workflow that created this gate
+	Subtype      string // "approval", "action", "input"
+	Prompt       string
+	Assignee     string
+	Status       string // "waiting", "completed", "timeout", "rejected"
+	Decision     string // approval: "approved" / "rejected"
+	Response     string // input: human's text response
+	RespondedBy  string // identity of the human who responded (audit trail)
+	TimeoutAt    string
+	CreatedAt    string
+	CompletedAt  string
 }
 
 const HumanGateTableSQL = `CREATE TABLE IF NOT EXISTS workflow_human_gates (
 	key TEXT PRIMARY KEY,
 	run_id TEXT NOT NULL,
 	step_id TEXT NOT NULL,
+	workflow_name TEXT NOT NULL DEFAULT '',
 	subtype TEXT NOT NULL,
 	prompt TEXT,
 	assignee TEXT,
@@ -851,20 +853,26 @@ func InitHumanGateTable(dbPath string) {
 			log.Warn("workflow_human_gates migration failed", "error", err)
 		}
 	}
+	// Migration: add workflow_name column if missing.
+	if err := db.Exec(dbPath, `ALTER TABLE workflow_human_gates ADD COLUMN workflow_name TEXT NOT NULL DEFAULT '';`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") && !strings.Contains(err.Error(), "no such table") {
+			log.Warn("workflow_human_gates migration (workflow_name) failed", "error", err)
+		}
+	}
 	if _, err := db.Query(dbPath, HumanGateTableSQL); err != nil {
 		log.Warn("init workflow_human_gates table failed", "error", err)
 	}
 }
 
 // RecordHumanGate inserts a new human gate record.
-func RecordHumanGate(dbPath, key, runID, stepID, subtype, prompt, assignee, timeoutAt string) {
+func RecordHumanGate(dbPath, key, runID, stepID, workflowName, subtype, prompt, assignee, timeoutAt string) {
 	if dbPath == "" {
 		return
 	}
 	sql := fmt.Sprintf(
-		`INSERT OR REPLACE INTO workflow_human_gates (key, run_id, step_id, subtype, prompt, assignee, status, timeout_at, created_at)
-		 VALUES ('%s','%s','%s','%s','%s','%s','waiting','%s',datetime('now'))`,
-		db.Escape(key), db.Escape(runID), db.Escape(stepID),
+		`INSERT OR REPLACE INTO workflow_human_gates (key, run_id, step_id, workflow_name, subtype, prompt, assignee, status, timeout_at, created_at)
+		 VALUES ('%s','%s','%s','%s','%s','%s','%s','waiting','%s',datetime('now'))`,
+		db.Escape(key), db.Escape(runID), db.Escape(stepID), db.Escape(workflowName),
 		db.Escape(subtype), db.Escape(prompt), db.Escape(assignee),
 		db.Escape(timeoutAt),
 	)
@@ -879,7 +887,7 @@ func QueryHumanGate(dbPath, key string) *HumanGateRecord {
 		return nil
 	}
 	sql := fmt.Sprintf(
-		`SELECT key, run_id, step_id, subtype, prompt, assignee, status, COALESCE(decision,'') as decision, COALESCE(response,'') as response, COALESCE(responded_by,'') as responded_by, COALESCE(timeout_at,'') as timeout_at, created_at, COALESCE(completed_at,'') as completed_at
+		`SELECT key, run_id, step_id, COALESCE(workflow_name,'') as workflow_name, subtype, prompt, assignee, status, COALESCE(decision,'') as decision, COALESCE(response,'') as response, COALESCE(responded_by,'') as responded_by, COALESCE(timeout_at,'') as timeout_at, created_at, COALESCE(completed_at,'') as completed_at
 		 FROM workflow_human_gates WHERE key='%s' LIMIT 1`,
 		db.Escape(key),
 	)
@@ -896,7 +904,7 @@ func QueryPendingHumanGatesByRun(dbPath, runID string) []*HumanGateRecord {
 		return nil
 	}
 	sql := fmt.Sprintf(
-		`SELECT key, run_id, step_id, subtype, prompt, assignee, status, COALESCE(decision,'') as decision, COALESCE(response,'') as response, COALESCE(responded_by,'') as responded_by, COALESCE(timeout_at,'') as timeout_at, created_at, COALESCE(completed_at,'') as completed_at
+		`SELECT key, run_id, step_id, COALESCE(workflow_name,'') as workflow_name, subtype, prompt, assignee, status, COALESCE(decision,'') as decision, COALESCE(response,'') as response, COALESCE(responded_by,'') as responded_by, COALESCE(timeout_at,'') as timeout_at, created_at, COALESCE(completed_at,'') as completed_at
 		 FROM workflow_human_gates WHERE run_id='%s' AND status='waiting'`,
 		db.Escape(runID),
 	)
@@ -909,6 +917,52 @@ func QueryPendingHumanGatesByRun(dbPath, runID string) []*HumanGateRecord {
 		records = append(records, parseHumanGateRecord(row))
 	}
 	return records
+}
+
+// QueryAllPendingHumanGates returns all human gates matching the given status (e.g. "waiting").
+// Pass an empty status to return all records regardless of status.
+func QueryAllPendingHumanGates(dbPath, status string) []*HumanGateRecord {
+	if dbPath == "" {
+		return nil
+	}
+	var where string
+	if status != "" {
+		where = fmt.Sprintf(" WHERE status='%s'", db.Escape(status))
+	}
+	sql := fmt.Sprintf(
+		`SELECT key, run_id, step_id, COALESCE(workflow_name,'') as workflow_name, subtype, prompt, assignee, status, COALESCE(decision,'') as decision, COALESCE(response,'') as response, COALESCE(responded_by,'') as responded_by, COALESCE(timeout_at,'') as timeout_at, created_at, COALESCE(completed_at,'') as completed_at
+		 FROM workflow_human_gates%s ORDER BY created_at DESC`,
+		where,
+	)
+	rows, err := db.Query(dbPath, sql)
+	if err != nil {
+		return nil
+	}
+	var records []*HumanGateRecord
+	for _, row := range rows {
+		records = append(records, parseHumanGateRecord(row))
+	}
+	return records
+}
+
+// CountPendingHumanGates returns the number of human gates with status='waiting'.
+func CountPendingHumanGates(dbPath string) int {
+	if dbPath == "" {
+		return 0
+	}
+	rows, err := db.Query(dbPath, `SELECT COUNT(*) as count FROM workflow_human_gates WHERE status='waiting'`)
+	if err != nil || len(rows) == 0 {
+		return 0
+	}
+	switch v := rows[0]["count"].(type) {
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		n, _ := strconv.Atoi(fmt.Sprintf("%v", rows[0]["count"]))
+		return n
+	}
 }
 
 // CompleteHumanGate marks a human gate as completed with decision and response.
@@ -1002,16 +1056,17 @@ func UpdateHumanGateRunID(dbPath, key, newRunID string) {
 
 func parseHumanGateRecord(row map[string]any) *HumanGateRecord {
 	return &HumanGateRecord{
-		Key:         fmt.Sprintf("%v", row["key"]),
-		RunID:       fmt.Sprintf("%v", row["run_id"]),
-		StepID:      fmt.Sprintf("%v", row["step_id"]),
-		Subtype:     fmt.Sprintf("%v", row["subtype"]),
-		Prompt:      fmt.Sprintf("%v", row["prompt"]),
-		Assignee:    fmt.Sprintf("%v", row["assignee"]),
-		Status:      fmt.Sprintf("%v", row["status"]),
-		Decision:    fmt.Sprintf("%v", row["decision"]),
-		Response:    fmt.Sprintf("%v", row["response"]),
-		RespondedBy: fmt.Sprintf("%v", row["responded_by"]),
+		Key:          fmt.Sprintf("%v", row["key"]),
+		RunID:        fmt.Sprintf("%v", row["run_id"]),
+		StepID:       fmt.Sprintf("%v", row["step_id"]),
+		WorkflowName: fmt.Sprintf("%v", row["workflow_name"]),
+		Subtype:      fmt.Sprintf("%v", row["subtype"]),
+		Prompt:       fmt.Sprintf("%v", row["prompt"]),
+		Assignee:     fmt.Sprintf("%v", row["assignee"]),
+		Status:       fmt.Sprintf("%v", row["status"]),
+		Decision:     fmt.Sprintf("%v", row["decision"]),
+		Response:     fmt.Sprintf("%v", row["response"]),
+		RespondedBy:  fmt.Sprintf("%v", row["responded_by"]),
 		TimeoutAt:   fmt.Sprintf("%v", row["timeout_at"]),
 		CreatedAt:   fmt.Sprintf("%v", row["created_at"]),
 		CompletedAt: fmt.Sprintf("%v", row["completed_at"]),

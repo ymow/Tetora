@@ -1936,13 +1936,17 @@ func cleanupExpiredCallbacks(dbPath string) { iwf.CleanupExpiredCallbacks(dbPath
 type HumanGateRecord = iwf.HumanGateRecord
 
 func initHumanGateTable(dbPath string)   { iwf.InitHumanGateTable(dbPath) }
-func recordHumanGate(dbPath, key, runID, stepID, subtype, prompt, assignee, timeoutAt string) {
-	iwf.RecordHumanGate(dbPath, key, runID, stepID, subtype, prompt, assignee, timeoutAt)
+func recordHumanGate(dbPath, key, runID, stepID, workflowName, subtype, prompt, assignee, timeoutAt string) {
+	iwf.RecordHumanGate(dbPath, key, runID, stepID, workflowName, subtype, prompt, assignee, timeoutAt)
 }
 func queryHumanGate(dbPath, key string) *HumanGateRecord       { return iwf.QueryHumanGate(dbPath, key) }
 func queryPendingHumanGatesByRun(dbPath, runID string) []*HumanGateRecord {
 	return iwf.QueryPendingHumanGatesByRun(dbPath, runID)
 }
+func queryAllPendingHumanGates(dbPath, status string) []*HumanGateRecord {
+	return iwf.QueryAllPendingHumanGates(dbPath, status)
+}
+func countPendingHumanGates(dbPath string) int { return iwf.CountPendingHumanGates(dbPath) }
 func completeHumanGate(dbPath, key, decision, response, respondedBy string) {
 	iwf.CompleteHumanGate(dbPath, key, decision, response, respondedBy)
 }
@@ -2428,7 +2432,7 @@ func (e *workflowExecutor) runHumanStep(ctx context.Context, step *WorkflowStep,
 
 	// Write DB record (skip if already waiting from resume).
 	if existing == nil || existing.Status != "waiting" {
-		recordHumanGate(callbackMgr.DBPath(), hgKey, e.run.ID, step.ID, subtype, prompt, assignee,
+		recordHumanGate(callbackMgr.DBPath(), hgKey, e.run.ID, step.ID, e.run.WorkflowName, subtype, prompt, assignee,
 			timeoutAt.UTC().Format("2006-01-02 15:04:05"))
 	}
 
