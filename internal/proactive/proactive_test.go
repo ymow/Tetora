@@ -2,6 +2,9 @@ package proactive
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,6 +96,73 @@ func TestThresholdExplicitCooldown(t *testing.T) {
 			t.Error("rule should be in cooldown but CheckCooldown returned false")
 		}
 	}
+}
+
+// TestSaveReportTimestamp verifies that saveReport embeds a "triggered:" timestamp
+// in both the dated file and the -latest.md file, so agents reading the file can
+// determine when the alert fired without relying on filesystem mtime.
+func TestSaveReportTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{}
+	cfg.WorkspaceDir = dir
+	e := New(cfg, nil, nil, nil, Deps{})
+
+	before := time.Now().Truncate(time.Second)
+	e.saveReport("cost-alert", "⚠️ cost exceeded $15")
+	after := time.Now().Add(time.Second)
+
+	// latest file must exist
+	latestPath := filepath.Join(dir, "reports", "cost-alert-latest.md")
+	data, err := os.ReadFile(latestPath)
+	if err != nil {
+		t.Fatalf("latest file missing: %v", err)
+	}
+	content := string(data)
+
+	// must start with "triggered: " line
+	if !strings.HasPrefix(content, "triggered: ") {
+		t.Fatalf("expected content to start with 'triggered: ', got: %q", content[:min(50, len(content))])
+	}
+
+	// parse and validate the embedded timestamp
+	firstLine := strings.SplitN(content, "\n", 2)[0]
+	tsStr := strings.TrimPrefix(firstLine, "triggered: ")
+	ts, err := time.Parse(time.RFC3339, tsStr)
+	if err != nil {
+		t.Fatalf("timestamp parse failed: %v (got %q)", err, tsStr)
+	}
+	if ts.Before(before) || ts.After(after) {
+		t.Errorf("timestamp %v out of expected range [%v, %v]", ts, before, after)
+	}
+
+	// original alert message must still be present
+	if !strings.Contains(content, "cost exceeded $15") {
+		t.Errorf("original message missing from report content")
+	}
+
+	// dated file must also contain the timestamp
+	dateDir := filepath.Join(dir, "reports", time.Now().Format("2006-01-02"))
+	entries, err := os.ReadDir(dateDir)
+	if err != nil {
+		t.Fatalf("date dir missing: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected at least one dated file")
+	}
+	datedData, err := os.ReadFile(filepath.Join(dateDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("dated file read failed: %v", err)
+	}
+	if !strings.HasPrefix(string(datedData), "triggered: ") {
+		t.Errorf("dated file missing timestamp header")
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // TestHeartbeatCooldownSetToInterval verifies that a heartbeat rule without an
