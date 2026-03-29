@@ -1921,6 +1921,9 @@ func startHTTPServer(s *Server) *http.Server {
 			}
 			return nil
 		},
+		RetryHumanGate: func(key string, overrideVars map[string]string) (string, error) {
+			return retryFromHumanGate(context.Background(), cfg, key, overrideVars, s.state, s.sem, s.childSem)
+		},
 		CancelHumanGate: func(key, reason, cancelledBy string) error {
 			if callbackMgr == nil {
 				cancelHumanGate(cfg.HistoryDB, key)

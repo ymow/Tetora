@@ -1071,7 +1071,7 @@ func ResetHumanGate(dbPath, key string) {
 		return
 	}
 	sql := fmt.Sprintf(
-		`UPDATE workflow_human_gates SET status='waiting', decision='', response='', completed_at=''
+		`UPDATE workflow_human_gates SET status='waiting', decision='', response='', completed_at='', timeout_at=''
 		 WHERE key='%s'`,
 		db.Escape(key),
 	)

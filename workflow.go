@@ -2639,6 +2639,17 @@ func (e *workflowExecutor) runHumanStep(ctx context.Context, step *WorkflowStep,
 		notifyDiscordHumanGateTimeout(e.cfg, subtype, e.run.WorkflowName, step.ID, step.HumanOnTimeout, timeout.String())
 		log.Warn("human gate timeout", "step", step.ID, "key", hgKey, "timeout", timeout.String())
 
+		// Discord notification: gate timed out.
+		if bot, ok := e.cfg.Runtime.DiscordBot.(*DiscordBot); ok {
+			onTimeout := step.HumanOnTimeout
+			if onTimeout == "" {
+				onTimeout = "stop"
+			}
+			msg := fmt.Sprintf("⏱️ **Human Gate Timeout** | workflow: `%s` | step: `%s` | action: `%s`",
+				e.run.WorkflowName, step.ID, onTimeout)
+			bot.sendNotify(msg)
+		}
+
 	case <-ctx.Done():
 		// Mark gate as cancelled in DB so recovery skips it on restart.
 		cancelHumanGate(callbackMgr.DBPath(), hgKey)
