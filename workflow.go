@@ -1930,7 +1930,8 @@ func queryStreamingCallbacks(dbPath, key string) []CallbackResult {
 	return iwf.QueryStreamingCallbacks(dbPath, key)
 }
 
-func cleanupExpiredCallbacks(dbPath string) { iwf.CleanupExpiredCallbacks(dbPath) }
+func cleanupExpiredCallbacks(dbPath string)     { iwf.CleanupExpiredCallbacks(dbPath) }
+func cleanupExpiredHumanGates(dbPath string)    { iwf.CleanupExpiredHumanGates(dbPath) }
 
 // --- Human gate DB wrappers ---
 
