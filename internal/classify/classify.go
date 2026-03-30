@@ -113,15 +113,39 @@ var complexKeywordsJA = []string{
 	"認証", "暗号化", "関数", "設計",
 }
 
+// Tool-intent keywords: short messages containing these need Standard (tools available).
+// Used for chat sources like Discord where search requests are naturally brief.
+var toolIntentKeywordsZH = []string{
+	"搜尋", "搜索", "查詢", "查一下", "找一下", "找找", "查查",
+	"新聞", "情報", "最新", "趨勢", "分析", "報告",
+	"x.com", "twitter", "推特", "研究", "論文",
+}
+
+var toolIntentKeywordsEN = []string{
+	"search", "find", "look up", "lookup", "query", "research",
+	"news", "latest", "trending", "analyze", "report", "intel",
+}
+
 // Classify determines the complexity of a user request based on
-// the prompt text and the message source (e.g. "discord", "cron").
 func Classify(prompt string, source string) Complexity {
 	srcLower := strings.ToLower(strings.TrimSpace(source))
 	runeLen := utf8.RuneCountInString(prompt)
 
-	// Source-based overrides: complex sources always yield complex.
-	if ComplexSources[srcLower] {
+	// Source-based overrides: cron and workflow MUST always be Complex
+	// to ensure enough context injection and session limits.
+	if srcLower == "cron" || srcLower == "workflow" || ComplexSources[srcLower] {
 		return Complex
+	}
+
+	// Short chat messages from chat-like sources are simple.
+	// Exception: messages with tool-intent keywords get Standard even if short,
+	// so agents can use search/fetch tools for naturally brief requests like "查AI新聞".
+	if runeLen < 100 && chatSources[srcLower] {
+		if containsAnySubstring(prompt, toolIntentKeywordsZH) ||
+			containsAnyComplexWord(strings.ToLower(prompt), toolIntentKeywordsEN) {
+			return Standard
+		}
+		return Simple
 	}
 
 	// Very long prompts are complex regardless of content.
@@ -155,8 +179,19 @@ func Classify(prompt string, source string) Complexity {
 	}
 
 	// Short chat messages from chat-like sources are simple.
+<<<<<<< Updated upstream:internal/classify/classify.go
 	if runeLen < 100 && ChatSources[srcLower] {
 		return Simple
+=======
+	// Exception: messages with tool-intent keywords get Standard even if short,
+	// so agents can use search/fetch tools for naturally brief requests like "查AI新聞".
+	if runeLen < 100 && chatSources[srcLower] {
+		if containsAnySubstring(prompt, toolIntentKeywordsZH) ||
+			containsAnyComplexWord(promptLower, toolIntentKeywordsEN) {
+			return ComplexityStandard
+		}
+		return ComplexitySimple
+>>>>>>> Stashed changes:classify.go
 	}
 
 	return Standard
