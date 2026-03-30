@@ -14,6 +14,7 @@ import (
 // Using json.Marshal prevents injection when msg contains special characters.
 func writeJSONError(w http.ResponseWriter, code int, msg string) {
 	b, _ := json.Marshal(map[string]string{"error": msg})
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	w.Write(b) //nolint:errcheck
 }
@@ -52,7 +53,7 @@ func RegisterHumanGateRoutes(mux *http.ServeMux, d HumanGateDeps) {
 	mux.HandleFunc("/api/human-gates", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != http.MethodGet {
-			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			writeJSONError(w, http.StatusMethodNotAllowed, "GET only")
 			return
 		}
 		status := r.URL.Query().Get("status")
@@ -86,14 +87,14 @@ func RegisterHumanGateRoutes(mux *http.ServeMux, d HumanGateDeps) {
 		}
 
 		if key == "" {
-			http.Error(w, `{"error":"gate key required"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "gate key required")
 			return
 		}
 
 		// POST /api/human-gates/{key}/cancel
 		if subaction == "cancel" {
 			if r.Method != http.MethodPost {
-				http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+				writeJSONError(w, http.StatusMethodNotAllowed, "POST only")
 				return
 			}
 
@@ -106,7 +107,7 @@ func RegisterHumanGateRoutes(mux *http.ServeMux, d HumanGateDeps) {
 
 			gate := d.QueryHumanGateByKey(key)
 			if gate == nil {
-				http.Error(w, `{"error":"gate not found"}`, http.StatusNotFound)
+				writeJSONError(w, http.StatusNotFound, "gate not found")
 				return
 			}
 			if status, _ := gate["status"].(string); status != "waiting" {
@@ -129,7 +130,7 @@ func RegisterHumanGateRoutes(mux *http.ServeMux, d HumanGateDeps) {
 		// POST /api/human-gates/{key}/respond
 		if subaction == "respond" {
 			if r.Method != http.MethodPost {
-				http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+				writeJSONError(w, http.StatusMethodNotAllowed, "POST only")
 				return
 			}
 
@@ -143,7 +144,7 @@ func RegisterHumanGateRoutes(mux *http.ServeMux, d HumanGateDeps) {
 				return
 			}
 			if body.Action == "" {
-				http.Error(w, `{"error":"action is required"}`, http.StatusBadRequest)
+				writeJSONError(w, http.StatusBadRequest, "action is required")
 				return
 			}
 
@@ -172,12 +173,12 @@ func RegisterHumanGateRoutes(mux *http.ServeMux, d HumanGateDeps) {
 
 		// GET /api/human-gates/{key}
 		if r.Method != http.MethodGet {
-			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			writeJSONError(w, http.StatusMethodNotAllowed, "GET only")
 			return
 		}
 		gate := d.QueryHumanGateByKey(key)
 		if gate == nil {
-			http.Error(w, `{"error":"gate not found"}`, http.StatusNotFound)
+			writeJSONError(w, http.StatusNotFound, "gate not found")
 			return
 		}
 		json.NewEncoder(w).Encode(gate)
