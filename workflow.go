@@ -2615,6 +2615,16 @@ func resolveHumanAssigneeChannel(assigneeMap map[string]string, assignee, fallba
 	return fallback
 }
 
+// humanGateDashboardURL builds the URL to the human-gates dashboard panel.
+// Uses cfg.Discord.DashboardBaseURL if set; otherwise falls back to http://localhost<listenAddr>.
+func humanGateDashboardURL(cfg *Config) string {
+	base := cfg.Discord.DashboardBaseURL
+	if base == "" {
+		base = "http://localhost" + cfg.ListenAddr
+	}
+	return strings.TrimRight(base, "/") + "/dashboard#human-gates-panel"
+}
+
 // notifyDiscordHumanGateWaiting sends a Discord embed when a human gate starts waiting.
 func notifyDiscordHumanGateWaiting(cfg *Config, subtype, prompt, assignee, workflowName, stepID, hgKey, timeoutStr string) {
 	bot, ok := cfg.Runtime.DiscordBot.(*DiscordBot)
@@ -2644,8 +2654,10 @@ func notifyDiscordHumanGateWaiting(cfg *Config, subtype, prompt, assignee, workf
 		promptSnippet = "(no prompt)"
 	}
 
+	dashboardURL := humanGateDashboardURL(cfg)
 	embed := discord.Embed{
 		Title:       title,
+		URL:         dashboardURL,
 		Description: promptSnippet,
 		Color:       0xFAA61A, // yellow-orange
 		Fields: []discord.EmbedField{
@@ -2663,6 +2675,7 @@ func notifyDiscordHumanGateWaiting(cfg *Config, subtype, prompt, assignee, workf
 	if hgKey != "" {
 		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Gate Key", Value: "`" + hgKey + "`", Inline: false})
 	}
+	embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Dashboard", Value: dashboardURL, Inline: false})
 
 	bot.sendEmbed(ch, embed)
 }

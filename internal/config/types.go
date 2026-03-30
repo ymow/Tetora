@@ -742,6 +742,10 @@ type DiscordBotConfig struct {
 	// channel IDs. When a human gate fires, the notification is routed to the
 	// mapped channel. Falls back to the default notify channel if no mapping found.
 	HumanAssigneeMap  map[string]string              `json:"humanAssigneeMap,omitempty"`
+	// DashboardBaseURL is the public base URL of the Tetora dashboard (e.g.
+	// "https://tetora.example.com"). Used to build the dashboard link in human
+	// gate Discord notifications. If empty, falls back to http://localhost<listenAddr>.
+	DashboardBaseURL  string                         `json:"dashboardBaseURL,omitempty"`
 }
 
 type DiscordRouteConfig struct {
