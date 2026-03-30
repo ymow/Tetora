@@ -789,7 +789,7 @@ func CleanupExpiredCallbacks(dbPath string) {
 	// Mark expired waiting callbacks as timeout.
 	sql := `UPDATE workflow_callbacks SET status='timeout'
 		WHERE status='waiting' AND timeout_at != '' AND timeout_at < datetime('now')`
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("cleanup expired callbacks failed", "error", err)
 	}
 
@@ -798,8 +798,32 @@ func CleanupExpiredCallbacks(dbPath string) {
 		SELECT key FROM workflow_callbacks WHERE status IN ('completed','delivered','timeout')
 		AND created_at < datetime('now', '-7 days')
 	)`
-	if _, err := db.Query(dbPath, sql2); err != nil {
+	if err := db.Exec(dbPath, sql2); err != nil {
 		log.Warn("cleanup old streaming records failed", "error", err)
+	}
+
+	// Mark expired waiting human gates as timeout.
+	sql3 := `UPDATE workflow_human_gates SET status='timeout', completed_at=datetime('now')
+		WHERE status='waiting' AND timeout_at != '' AND timeout_at < datetime('now')`
+	if err := db.Exec(dbPath, sql3); err != nil {
+		log.Warn("cleanup expired human gates failed", "error", err)
+	}
+
+	// Delete old completed/rejected/timeout gate history.
+	CleanupExpiredHumanGates(dbPath)
+}
+
+// CleanupExpiredHumanGates deletes completed, rejected, and timeout human gate
+// records whose completed_at is older than 30 days. Waiting records are never deleted.
+func CleanupExpiredHumanGates(dbPath string) {
+	if dbPath == "" {
+		return
+	}
+	sql := `DELETE FROM workflow_human_gates
+		WHERE status IN ('completed', 'rejected', 'timeout')
+		AND completed_at != '' AND completed_at < datetime('now', '-30 days')`
+	if err := db.Exec(dbPath, sql); err != nil {
+		log.Warn("cleanup expired human gates history failed", "error", err)
 	}
 }
 

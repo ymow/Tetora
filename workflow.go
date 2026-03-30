@@ -14,6 +14,7 @@ import (
 
 	dtypes "tetora/internal/dispatch"
 	"tetora/internal/db"
+	discord "tetora/internal/discord"
 	"tetora/internal/log"
 	"tetora/internal/version"
 	iwf "tetora/internal/workflow"
@@ -1975,7 +1976,8 @@ func queryStreamingCallbacks(dbPath, key string) []CallbackResult {
 	return iwf.QueryStreamingCallbacks(dbPath, key)
 }
 
-func cleanupExpiredCallbacks(dbPath string) { iwf.CleanupExpiredCallbacks(dbPath) }
+func cleanupExpiredCallbacks(dbPath string)     { iwf.CleanupExpiredCallbacks(dbPath) }
+func cleanupExpiredHumanGates(dbPath string)    { iwf.CleanupExpiredHumanGates(dbPath) }
 
 // --- Human gate DB wrappers ---
 
@@ -2521,6 +2523,11 @@ func (e *workflowExecutor) runHumanStep(ctx context.Context, step *WorkflowStep,
 
 	log.Info("human gate waiting", "step", step.ID, "key", hgKey, "subtype", subtype, "assignee", assignee, "timeout", timeout.String())
 
+	// Notify Discord that a gate is waiting (only on first activation, not on resume).
+	if existing == nil || existing.Status != "waiting" {
+		notifyDiscordHumanGateWaiting(e.cfg, subtype, prompt, assignee, e.run.WorkflowName, step.ID, hgKey, timeout.String())
+	}
+
 	// Wait for human response via callback channel.
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -2617,6 +2624,7 @@ func (e *workflowExecutor) runHumanStep(ctx context.Context, step *WorkflowStep,
 		e.mu.Unlock()
 		checkpointRun(e)
 
+		notifyDiscordHumanGateTimeout(e.cfg, subtype, e.run.WorkflowName, step.ID, step.HumanOnTimeout, timeout.String())
 		log.Warn("human gate timeout", "step", step.ID, "key", hgKey, "timeout", timeout.String())
 
 	case <-ctx.Done():
@@ -2683,6 +2691,117 @@ func applyHumanGateTimeout(step *WorkflowStep, result *StepRunResult, timeout ti
 		result.Status = "timeout"
 		result.Error = fmt.Sprintf("human gate timeout after %s", timeout)
 	}
+}
+
+// =============================================================================
+// Human Gate — Discord notifications
+// =============================================================================
+
+// resolveHumanAssigneeChannel returns the Discord channel ID to notify for a given assignee.
+// It first checks assigneeMap for an explicit mapping; if not found, returns fallback.
+func resolveHumanAssigneeChannel(assigneeMap map[string]string, assignee, fallback string) string {
+	if assignee != "" && len(assigneeMap) > 0 {
+		if ch, ok := assigneeMap[assignee]; ok && ch != "" {
+			return ch
+		}
+	}
+	return fallback
+}
+
+// humanGateDashboardURL builds the URL to the human-gates dashboard panel.
+// Uses cfg.Discord.DashboardBaseURL if set; otherwise falls back to http://localhost<listenAddr>.
+func humanGateDashboardURL(cfg *Config) string {
+	base := cfg.Discord.DashboardBaseURL
+	if base == "" {
+		base = "http://localhost" + cfg.ListenAddr
+	}
+	return strings.TrimRight(base, "/") + "/dashboard#human-gates-panel"
+}
+
+// notifyDiscordHumanGateWaiting sends a Discord embed when a human gate starts waiting.
+func notifyDiscordHumanGateWaiting(cfg *Config, subtype, prompt, assignee, workflowName, stepID, hgKey, timeoutStr string) {
+	bot, ok := cfg.Runtime.DiscordBot.(*DiscordBot)
+	if !ok || bot == nil {
+		return
+	}
+	ch := resolveHumanAssigneeChannel(cfg.Discord.HumanAssigneeMap, assignee, bot.notifyChannelID())
+	if ch == "" {
+		return
+	}
+
+	title := "⏳ Human Gate Waiting"
+	switch subtype {
+	case "approval":
+		title = "⏳ Approval Required"
+	case "input":
+		title = "⏳ Human Input Required"
+	case "action":
+		title = "⏳ Human Action Required"
+	}
+
+	promptSnippet := prompt
+	if len(promptSnippet) > 300 {
+		promptSnippet = promptSnippet[:297] + "..."
+	}
+	if promptSnippet == "" {
+		promptSnippet = "(no prompt)"
+	}
+
+	dashboardURL := humanGateDashboardURL(cfg)
+	embed := discord.Embed{
+		Title:       title,
+		URL:         dashboardURL,
+		Description: promptSnippet,
+		Color:       0xFAA61A, // yellow-orange
+		Fields: []discord.EmbedField{
+			{Name: "Workflow", Value: workflowName, Inline: true},
+			{Name: "Step", Value: stepID, Inline: true},
+			{Name: "Type", Value: subtype, Inline: true},
+		},
+	}
+	if assignee != "" {
+		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Assignee", Value: assignee, Inline: true})
+	}
+	if timeoutStr != "" {
+		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Timeout", Value: timeoutStr, Inline: true})
+	}
+	if hgKey != "" {
+		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Gate Key", Value: "`" + hgKey + "`", Inline: false})
+	}
+	embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Dashboard", Value: dashboardURL, Inline: false})
+
+	bot.sendEmbed(ch, embed)
+}
+
+// notifyDiscordHumanGateTimeout sends a Discord embed when a human gate times out.
+func notifyDiscordHumanGateTimeout(cfg *Config, subtype, workflowName, stepID, onTimeout, timeoutStr string) {
+	bot, ok := cfg.Runtime.DiscordBot.(*DiscordBot)
+	if !ok || bot == nil {
+		return
+	}
+	ch := bot.notifyChannelID()
+	if ch == "" {
+		return
+	}
+
+	behavior := onTimeout
+	if behavior == "" {
+		behavior = "stop"
+	}
+
+	embed := discord.Embed{
+		Title:       "⏰ Human Gate Timeout",
+		Description: fmt.Sprintf("Gate timed out after %s → **%s**", timeoutStr, behavior),
+		Color:       0xED4245, // red
+		Fields: []discord.EmbedField{
+			{Name: "Workflow", Value: workflowName, Inline: true},
+			{Name: "Step", Value: stepID, Inline: true},
+			{Name: "Type", Value: subtype, Inline: true},
+			{Name: "On Timeout", Value: behavior, Inline: true},
+		},
+	}
+
+	bot.sendEmbed(ch, embed)
 }
 
 // =============================================================================
