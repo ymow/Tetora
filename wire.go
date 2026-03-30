@@ -1755,6 +1755,7 @@ type TTSOptions = voice.TTSOptions
 type OpenAISTTProvider = voice.OpenAISTTProvider
 type OpenAITTSProvider = voice.OpenAITTSProvider
 type ElevenLabsTTSProvider = voice.ElevenLabsTTSProvider
+type GroqSTTProvider = voice.GroqSTTProvider
 type VoiceEngine = voice.VoiceEngine
 
 func newVoiceEngine(cfg *Config) *VoiceEngine {
