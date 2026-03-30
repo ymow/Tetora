@@ -573,10 +573,10 @@ func InitCallbackTable(dbPath string) {
 	if dbPath == "" {
 		return
 	}
-	if _, err := db.Query(dbPath, CallbackTableSQL); err != nil {
+	if err := db.Exec(dbPath, CallbackTableSQL); err != nil {
 		log.Warn("init workflow_callbacks table failed", "error", err)
 	}
-	if _, err := db.Query(dbPath, CallbackStreamTableSQL); err != nil {
+	if err := db.Exec(dbPath, CallbackStreamTableSQL); err != nil {
 		log.Warn("init workflow_callback_stream table failed", "error", err)
 	}
 }
@@ -593,7 +593,7 @@ func RecordPendingCallback(dbPath, key, runID, stepID, mode, authMode, url, body
 		db.Escape(mode), db.Escape(authMode),
 		db.Escape(url), db.Escape(body), db.Escape(timeoutAt),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("record pending callback failed", "error", err, "key", key)
 	}
 }
@@ -662,7 +662,7 @@ func MarkPostSent(dbPath, key string) {
 		`UPDATE workflow_callbacks SET post_sent=1 WHERE key='%s'`,
 		db.Escape(key),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("mark post sent failed", "error", err, "key", key)
 	}
 }
@@ -678,7 +678,7 @@ func MarkCallbackDelivered(dbPath, key string, seq int, result CallbackResult) {
 		seq, db.Escape(result.Body), result.Status, db.Escape(result.ContentType),
 		db.Escape(key),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("mark callback delivered failed", "error", err, "key", key)
 	}
 }
@@ -692,7 +692,7 @@ func UpdateCallbackRunID(dbPath, key, newRunID string) {
 		`UPDATE workflow_callbacks SET run_id='%s' WHERE key='%s'`,
 		db.Escape(newRunID), db.Escape(key),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("update callback run_id failed", "error", err, "key", key)
 	}
 }
@@ -706,7 +706,7 @@ func ResetCallbackRecord(dbPath, key string) {
 		`UPDATE workflow_callbacks SET status='waiting', post_sent=0, seq=0, result_body=NULL, delivered_at=NULL WHERE key='%s'`,
 		db.Escape(key),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("reset callback record failed", "error", err, "key", key)
 	}
 }
@@ -736,7 +736,7 @@ func ClearPendingCallback(dbPath, key string) {
 		`UPDATE workflow_callbacks SET status='completed' WHERE key='%s'`,
 		db.Escape(key),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("clear pending callback failed", "error", err, "key", key)
 	}
 }
@@ -752,7 +752,7 @@ func AppendStreamingCallback(dbPath, key string, seq int, result CallbackResult)
 		db.Escape(key), seq, db.Escape(result.Body),
 		db.Escape(result.ContentType), db.Escape(result.RecvAt),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("append streaming callback failed", "error", err, "key", key, "seq", seq)
 	}
 }
@@ -899,7 +899,7 @@ func InitHumanGateTable(dbPath string) {
 			log.Warn("workflow_human_gates migration (context) failed", "error", err)
 		}
 	}
-	if _, err := db.Query(dbPath, HumanGateTableSQL); err != nil {
+	if err := db.Exec(dbPath, HumanGateTableSQL); err != nil {
 		log.Warn("init workflow_human_gates table failed", "error", err)
 	}
 }
@@ -916,7 +916,7 @@ func RecordHumanGate(dbPath, key, runID, stepID, workflowName, subtype, prompt, 
 		db.Escape(subtype), db.Escape(prompt), db.Escape(assignee),
 		db.Escape(timeoutAt), db.Escape(options), db.Escape(context),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("record human gate failed", "error", err, "key", key)
 	}
 }
@@ -1015,7 +1015,7 @@ func CompleteHumanGate(dbPath, key, decision, response, respondedBy string) {
 		 WHERE key='%s' AND status='waiting'`,
 		db.Escape(decision), db.Escape(response), db.Escape(respondedBy), db.Escape(key),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("complete human gate failed", "error", err, "key", key)
 	}
 }
@@ -1030,7 +1030,7 @@ func RejectHumanGate(dbPath, key, reason, respondedBy string) {
 		 WHERE key='%s' AND status='waiting'`,
 		db.Escape(reason), db.Escape(respondedBy), db.Escape(key),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("reject human gate failed", "error", err, "key", key)
 	}
 }
@@ -1045,7 +1045,7 @@ func TimeoutHumanGate(dbPath, key string) {
 		 WHERE key='%s' AND status='waiting'`,
 		db.Escape(key),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("timeout human gate failed", "error", err, "key", key)
 	}
 }
@@ -1060,7 +1060,7 @@ func CancelHumanGate(dbPath, key string) {
 		 WHERE key='%s' AND status='waiting'`,
 		db.Escape(key),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("cancel human gate failed", "error", err, "key", key)
 	}
 }
@@ -1075,7 +1075,7 @@ func ResetHumanGate(dbPath, key string) {
 		 WHERE key='%s'`,
 		db.Escape(key),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("reset human gate failed", "error", err, "key", key)
 	}
 }
@@ -1089,7 +1089,7 @@ func UpdateHumanGateRunID(dbPath, key, newRunID string) {
 		`UPDATE workflow_human_gates SET run_id='%s' WHERE key='%s'`,
 		db.Escape(newRunID), db.Escape(key),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("update human gate run_id failed", "error", err, "key", key)
 	}
 }
@@ -1152,7 +1152,7 @@ func InitTriggerRunsTable(dbPath string) {
 			log.Warn("workflow_trigger_runs migration failed", "error", err)
 		}
 	}
-	if _, err := db.Query(dbPath, TriggerRunsTableSQL); err != nil {
+	if err := db.Exec(dbPath, TriggerRunsTableSQL); err != nil {
 		log.Warn("init workflow_trigger_runs table failed", "error", err)
 	}
 }
@@ -1173,7 +1173,7 @@ func RecordTriggerRun(dbPath, triggerName, workflowName, runID, status, startedA
 		db.Escape(finishedAt),
 		db.Escape(errMsg),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("record trigger run failed", "error", err)
 	}
 }
