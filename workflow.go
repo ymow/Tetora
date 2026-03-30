@@ -2460,7 +2460,7 @@ func (e *workflowExecutor) runHumanStep(ctx context.Context, step *WorkflowStep,
 
 	// Notify Discord that a gate is waiting (only on first activation, not on resume).
 	if existing == nil || existing.Status != "waiting" {
-		notifyDiscordHumanGateWaiting(e.cfg, subtype, prompt, assignee, e.run.WorkflowName, step.ID, timeout.String())
+		notifyDiscordHumanGateWaiting(e.cfg, subtype, prompt, assignee, e.run.WorkflowName, step.ID, hgKey, timeout.String())
 	}
 
 	// Wait for human response via callback channel.
@@ -2604,13 +2604,24 @@ func applyHumanGateTimeout(step *WorkflowStep, result *StepRunResult, timeout ti
 // Human Gate — Discord notifications
 // =============================================================================
 
+// resolveHumanAssigneeChannel returns the Discord channel ID to notify for a given assignee.
+// It first checks assigneeMap for an explicit mapping; if not found, returns fallback.
+func resolveHumanAssigneeChannel(assigneeMap map[string]string, assignee, fallback string) string {
+	if assignee != "" && len(assigneeMap) > 0 {
+		if ch, ok := assigneeMap[assignee]; ok && ch != "" {
+			return ch
+		}
+	}
+	return fallback
+}
+
 // notifyDiscordHumanGateWaiting sends a Discord embed when a human gate starts waiting.
-func notifyDiscordHumanGateWaiting(cfg *Config, subtype, prompt, assignee, workflowName, stepID, timeoutStr string) {
+func notifyDiscordHumanGateWaiting(cfg *Config, subtype, prompt, assignee, workflowName, stepID, hgKey, timeoutStr string) {
 	bot, ok := cfg.Runtime.DiscordBot.(*DiscordBot)
 	if !ok || bot == nil {
 		return
 	}
-	ch := bot.notifyChannelID()
+	ch := resolveHumanAssigneeChannel(cfg.Discord.HumanAssigneeMap, assignee, bot.notifyChannelID())
 	if ch == "" {
 		return
 	}
@@ -2648,6 +2659,9 @@ func notifyDiscordHumanGateWaiting(cfg *Config, subtype, prompt, assignee, workf
 	}
 	if timeoutStr != "" {
 		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Timeout", Value: timeoutStr, Inline: true})
+	}
+	if hgKey != "" {
+		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Gate Key", Value: "`" + hgKey + "`", Inline: false})
 	}
 
 	bot.sendEmbed(ch, embed)

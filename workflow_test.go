@@ -3655,3 +3655,51 @@ func TestHumanGateRespondedBy(t *testing.T) {
 }
 
 // TODO: TestIsValidWorkflowName removed — isValidWorkflowName is internal-only
+
+func TestResolveHumanAssigneeChannel(t *testing.T) {
+	t.Run("Given mapping exists for assignee, Then returns mapped channel", func(t *testing.T) {
+		m := map[string]string{"takuma": "ch-111"}
+		got := resolveHumanAssigneeChannel(m, "takuma", "ch-default")
+		if got != "ch-111" {
+			t.Errorf("got %q, want %q", got, "ch-111")
+		}
+	})
+
+	t.Run("Given no mapping for assignee, Then returns fallback", func(t *testing.T) {
+		m := map[string]string{"alice": "ch-alice"}
+		got := resolveHumanAssigneeChannel(m, "takuma", "ch-default")
+		if got != "ch-default" {
+			t.Errorf("got %q, want %q", got, "ch-default")
+		}
+	})
+
+	t.Run("Given nil map, Then returns fallback", func(t *testing.T) {
+		got := resolveHumanAssigneeChannel(nil, "takuma", "ch-default")
+		if got != "ch-default" {
+			t.Errorf("got %q, want %q", got, "ch-default")
+		}
+	})
+
+	t.Run("Given empty assignee, Then returns fallback", func(t *testing.T) {
+		m := map[string]string{"takuma": "ch-111"}
+		got := resolveHumanAssigneeChannel(m, "", "ch-default")
+		if got != "ch-default" {
+			t.Errorf("got %q, want %q", got, "ch-default")
+		}
+	})
+
+	t.Run("Given mapping with empty channel value, Then returns fallback", func(t *testing.T) {
+		m := map[string]string{"takuma": ""}
+		got := resolveHumanAssigneeChannel(m, "takuma", "ch-default")
+		if got != "ch-default" {
+			t.Errorf("got %q, want %q", got, "ch-default")
+		}
+	})
+
+	t.Run("Given empty fallback and no mapping, Then returns empty string", func(t *testing.T) {
+		got := resolveHumanAssigneeChannel(nil, "takuma", "")
+		if got != "" {
+			t.Errorf("got %q, want empty string", got)
+		}
+	})
+}
