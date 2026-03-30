@@ -2170,7 +2170,7 @@ func toolOAuthAuthorize(ctx context.Context, cfg *Config, input json.RawMessage)
 	if redirectURL == "" {
 		base := cfg.OAuth.RedirectBase
 		if base == "" {
-			base = "http://localhost" + cfg.ListenAddr
+			base = "http://" + cfg.ListenAddr
 		}
 		redirectURL = base + "/api/oauth/" + args.Service + "/callback"
 	}
@@ -2189,7 +2189,7 @@ func toolOAuthAuthorize(ctx context.Context, cfg *Config, input json.RawMessage)
 
 	authorizeURL := fmt.Sprintf("%s/api/oauth/%s/authorize", strings.TrimRight(cfg.OAuth.RedirectBase, "/"), args.Service)
 	if cfg.OAuth.RedirectBase == "" {
-		authorizeURL = fmt.Sprintf("http://localhost%s/api/oauth/%s/authorize", cfg.ListenAddr, args.Service)
+		authorizeURL = fmt.Sprintf("http://%s/api/oauth/%s/authorize", cfg.ListenAddr, args.Service)
 	}
 
 	return fmt.Sprintf("To connect %s, visit this URL:\n%s\n\nThe authorization flow will handle CSRF protection and token exchange automatically.", args.Service, authorizeURL), nil
