@@ -972,7 +972,10 @@ func (e *workflowExecutor) runDispatchStep(ctx context.Context, step *WorkflowSt
 	})
 
 	// Enable streaming when broker is available.
-	task.SSEBroker = e.broker
+	// Only assign when non-nil to avoid typed-nil interface trap.
+	if e.broker != nil {
+		task.SSEBroker = e.broker
+	}
 	task.WorkflowRunID = e.run.ID
 
 	// Execute using runSingleTask (respects semaphore).
@@ -1259,7 +1262,10 @@ func (e *workflowExecutor) runHandoffStep(ctx context.Context, step *WorkflowSte
 	updateHandoffStatus(e.cfg.HistoryDB, handoffID, "active")
 
 	// Enable streaming when broker is available.
-	task.SSEBroker = e.broker
+	// Only assign when non-nil to avoid typed-nil interface trap.
+	if e.broker != nil {
+		task.SSEBroker = e.broker
+	}
 	task.WorkflowRunID = e.run.ID
 
 	// Execute.
@@ -2561,6 +2567,7 @@ func buildStepTask(s *WorkflowStep, wCtx *WorkflowContext, workflowName string) 
 		Timeout:        resolveTemplate(s.Timeout, wCtx),
 		Budget:         s.Budget,
 		PermissionMode: resolveTemplate(s.PermissionMode, wCtx),
+		AllowDangerous: s.AllowDangerous,
 		Source:         "workflow:" + workflowName,
 	}
 }
