@@ -58,6 +58,9 @@ func TestInferProviderFromModelWithPref(t *testing.T) {
 		{"gpt-4o", "anthropic", "codex", true},
 		{"gemini-2.5-pro", "anthropic", "google", true},
 		{"llama-3.3-70b-versatile", "claude-code", "groq", true},
+		// Aliases must be exact match — not prefix
+		{"opustest", "", "", false},
+		{"haiku-custom-v2", "", "", false},
 		// Unknown models
 		{"dolphin-mistral", "", "", false},
 		{"phi-3", "anthropic", "", false},

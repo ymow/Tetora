@@ -152,7 +152,7 @@ func InferProviderFromModelWithPref(model, claudeProvider string) (presetName st
 	}
 	// Also check Anthropic short aliases: "sonnet", "opus", "haiku"
 	for _, alias := range []string{"sonnet", "opus", "haiku"} {
-		if strings.HasPrefix(lower, alias) {
+		if lower == alias {
 			return claudeProvider, true
 		}
 	}
