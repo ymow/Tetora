@@ -4125,7 +4125,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 
 				case "cloud":
 					// Not on a local provider? Skip.
-					if ac.Provider != "ollama" && ac.Provider != "lmstudio" {
+					if !provider.IsLocalProvider(ac.Provider) {
 						continue
 					}
 					// Restore cloud model.

@@ -31,8 +31,7 @@ func (p *CodexProvider) Execute(ctx context.Context, req Request) (*Result, erro
 	cmd.Dir = req.Workdir
 	cmd.Env = os.Environ()
 	// Close stdin so codex doesn't hang on "Reading additional input from stdin...".
-	devNull, _ := os.Open(os.DevNull)
-	if devNull != nil {
+	if devNull, err := os.Open(os.DevNull); err == nil {
 		cmd.Stdin = devNull
 		defer devNull.Close()
 	}

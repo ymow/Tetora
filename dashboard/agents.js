@@ -210,9 +210,12 @@ function onModelSelectChange() {
 // --- Quick-Switch (Agent Card) ---
 var _quickSwitchOpen = null;
 
-function openQuickSwitch(agentName, model, providerName, event) {
+function openQuickSwitch(el, event) {
   event.stopPropagation();
   closeQuickSwitch();
+  var agentName = el.dataset.agent;
+  var model = el.dataset.model;
+  var providerName = el.dataset.prov;
 
   var anchor = event.target;
   var rect = anchor.getBoundingClientRect();
@@ -401,7 +404,7 @@ async function refreshAgents() {
         : (prov ? '<span style="display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;background:var(--blue);color:#fff;margin-left:6px">CLOUD</span>' : '');
 
       html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:12px">';
-      html += '<div><span style="color:var(--muted)">Model: </span><span class="model-quickswitch" style="cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px" onclick="openQuickSwitch(\'' + esc(r.name) + '\',\'' + esc(model) + '\',\'' + esc(prov) + '\',event)">' + esc(model) + ' ▾</span>' + provBadge + '</div>';
+      html += '<div><span style="color:var(--muted)">Model: </span><span class="model-quickswitch" style="cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px" data-agent="' + esc(r.name) + '" data-model="' + esc(model) + '" data-prov="' + esc(prov) + '" onclick="openQuickSwitch(this,event)">' + esc(model) + ' ▾</span>' + provBadge + '</div>';
       html += '<div><span style="color:var(--muted)">Mode: </span>' + esc(r.permissionMode || 'default') + '</div>';
       if (desc) html += '<div style="grid-column:1/-1"><span style="color:var(--muted)">Description: </span>' + desc + '</div>';
       html += '</div>';

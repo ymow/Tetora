@@ -1077,7 +1077,7 @@ func (db *DiscordBot) cmdCloud(msg discord.Message, args string) {
 			pinned++
 			continue
 		}
-		if ac.Provider != "ollama" && ac.Provider != "lmstudio" {
+		if !provider.IsLocalProvider(ac.Provider) {
 			continue // already on cloud
 		}
 		if ac.CloudModel != "" {
