@@ -214,23 +214,23 @@ func TestCleanupExpiredHumanGates(t *testing.T) {
 	}
 
 	// Insert records: some old, some recent, one still waiting.
-	RecordHumanGate(dbPath, "old-completed", "r1", "s1", "wf", "approval", "p", "a", "2020-01-01 00:00:00")
+	RecordHumanGate(dbPath, "old-completed", "r1", "s1", "wf", "approval", "p", "a", "2020-01-01 00:00:00", "", "")
 	CompleteHumanGate(dbPath, "old-completed", "approved", "", "alice")
 	setCompletedAt("old-completed", 31)
 
-	RecordHumanGate(dbPath, "old-rejected", "r2", "s1", "wf", "approval", "p", "a", "2020-01-01 00:00:00")
+	RecordHumanGate(dbPath, "old-rejected", "r2", "s1", "wf", "approval", "p", "a", "2020-01-01 00:00:00", "", "")
 	RejectHumanGate(dbPath, "old-rejected", "", "bob")
 	setCompletedAt("old-rejected", 31)
 
-	RecordHumanGate(dbPath, "old-timeout", "r3", "s1", "wf", "approval", "p", "a", "2020-01-01 00:00:00")
+	RecordHumanGate(dbPath, "old-timeout", "r3", "s1", "wf", "approval", "p", "a", "2020-01-01 00:00:00", "", "")
 	TimeoutHumanGate(dbPath, "old-timeout")
 	setCompletedAt("old-timeout", 31)
 
-	RecordHumanGate(dbPath, "recent-completed", "r4", "s1", "wf", "approval", "p", "a", "2099-01-01 00:00:00")
+	RecordHumanGate(dbPath, "recent-completed", "r4", "s1", "wf", "approval", "p", "a", "2099-01-01 00:00:00", "", "")
 	CompleteHumanGate(dbPath, "recent-completed", "approved", "", "charlie")
 	setCompletedAt("recent-completed", 1)
 
-	RecordHumanGate(dbPath, "still-waiting", "r5", "s1", "wf", "approval", "p", "a", "2099-01-01 00:00:00")
+	RecordHumanGate(dbPath, "still-waiting", "r5", "s1", "wf", "approval", "p", "a", "2099-01-01 00:00:00", "", "")
 
 	t.Run("Given 3 old completed/rejected/timeout gates, When cleanup runs, Then they are deleted", func(t *testing.T) {
 		CleanupExpiredHumanGates(dbPath)
