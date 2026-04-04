@@ -25,6 +25,7 @@ type AgentConfig struct {
 	ToolProfile       string          `json:"toolProfile,omitempty"`
 	Workspace         WorkspaceConfig `json:"workspace,omitempty"`
 	Portrait              string          `json:"portrait,omitempty"`
+	VoicePreset           string          `json:"voicePreset,omitempty"` // e.g. "alice", "carter", "maya"
 	DangerousOpsWhitelist []string        `json:"dangerousOpsWhitelist,omitempty"` // patterns allowed for this agent
 }
 
@@ -386,13 +387,20 @@ type STTConfig struct {
 }
 
 type TTSConfig struct {
-	Enabled  bool   `json:"enabled,omitempty"`
-	Provider string `json:"provider,omitempty"`
-	Model    string `json:"model,omitempty"`
+	Enabled   bool     `json:"enabled,omitempty"`
+	Provider  string   `json:"provider,omitempty"`
+	Providers []string `json:"providers,omitempty"` // fallback chain
+	Model     string   `json:"model,omitempty"`
+	Endpoint  string   `json:"endpoint,omitempty"`
+	APIKey    string   `json:"apiKey,omitempty"`
+	FalAPIKey string   `json:"falApiKey,omitempty"`
+	Voice     string   `json:"voice,omitempty"`
+	Format    string   `json:"format,omitempty"`
+	VibeVoice VibeVoiceConfig `json:"vibevoice,omitempty"`
+}
+
+type VibeVoiceConfig struct {
 	Endpoint string `json:"endpoint,omitempty"`
-	APIKey   string `json:"apiKey,omitempty"`
-	Voice    string `json:"voice,omitempty"`
-	Format   string `json:"format,omitempty"`
 }
 
 type VoiceWakeConfig struct {

@@ -123,6 +123,9 @@ func ResolveSecrets(cfg *Config) {
 	if cfg.Voice.TTS.APIKey != "" {
 		cfg.Voice.TTS.APIKey = ResolveEnvRef(cfg.Voice.TTS.APIKey, "voice.tts.apiKey")
 	}
+	if cfg.Voice.TTS.FalAPIKey != "" {
+		cfg.Voice.TTS.FalAPIKey = ResolveEnvRef(cfg.Voice.TTS.FalAPIKey, "voice.tts.falApiKey")
+	}
 	if cfg.WhatsApp.AccessToken != "" {
 		cfg.WhatsApp.AccessToken = ResolveEnvRef(cfg.WhatsApp.AccessToken, "whatsapp.accessToken")
 	}

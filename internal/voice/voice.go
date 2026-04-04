@@ -36,13 +36,21 @@ type STTConfig struct {
 
 // TTSConfig configures text-to-speech.
 type TTSConfig struct {
-	Enabled  bool   `json:"enabled,omitempty"`
-	Provider string `json:"provider,omitempty"` // "openai", "elevenlabs"
-	Model    string `json:"model,omitempty"`
-	Endpoint string `json:"endpoint,omitempty"`
-	APIKey   string `json:"apiKey,omitempty"` // supports $ENV_VAR
-	Voice    string `json:"voice,omitempty"`
-	Format   string `json:"format,omitempty"` // "mp3", "opus"
+	Enabled   bool     `json:"enabled,omitempty"`
+	Provider  string   `json:"provider,omitempty"`  // legacy single provider: "openai", "elevenlabs"
+	Providers []string `json:"providers,omitempty"` // fallback chain: ["vibevoice-local", "fal", "openai"]
+	Model     string   `json:"model,omitempty"`
+	Endpoint  string   `json:"endpoint,omitempty"`
+	APIKey    string   `json:"apiKey,omitempty"`    // supports $ENV_VAR
+	FalAPIKey string   `json:"falApiKey,omitempty"` // $FAL_KEY
+	Voice     string   `json:"voice,omitempty"`
+	Format    string   `json:"format,omitempty"` // "mp3", "opus"
+	VibeVoice VibeVoiceConfig `json:"vibevoice,omitempty"`
+}
+
+// VibeVoiceConfig configures the local VibeVoice TTS endpoint.
+type VibeVoiceConfig struct {
+	Endpoint string `json:"endpoint,omitempty"` // default: http://localhost:8880
 }
 
 // VoiceWakeConfig configures wake word detection.
@@ -347,6 +355,182 @@ func (p *ElevenLabsTTSProvider) Synthesize(ctx context.Context, text string, opt
 	return resp.Body, nil
 }
 
+// --- VibeVoice Local TTS Provider ---
+
+// VibeVoiceLocalTTSProvider implements TTS via a local VibeVoice server
+// exposing an OpenAI-compatible /v1/audio/speech endpoint.
+type VibeVoiceLocalTTSProvider struct {
+	Endpoint string // default: http://localhost:8880
+}
+
+func (p *VibeVoiceLocalTTSProvider) Name() string {
+	return "vibevoice-local"
+}
+
+func (p *VibeVoiceLocalTTSProvider) endpoint() string {
+	if p.Endpoint != "" {
+		return p.Endpoint
+	}
+	return "http://localhost:8880"
+}
+
+func (p *VibeVoiceLocalTTSProvider) Synthesize(ctx context.Context, text string, opts TTSOptions) (io.ReadCloser, error) {
+	voice := opts.Voice
+	if voice == "" {
+		voice = "alloy"
+	}
+	format := opts.Format
+	if format == "" {
+		format = "mp3"
+	}
+	speed := opts.Speed
+	if speed <= 0 {
+		speed = 1.0
+	}
+
+	reqBody := map[string]any{
+		"model":           "vibevoice",
+		"input":           text,
+		"voice":           voice,
+		"response_format": format,
+		"speed":           speed,
+	}
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	endpoint := p.endpoint() + "/v1/audio/speech"
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("vibevoice-local http request: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("vibevoice-local api error: status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	return resp.Body, nil
+}
+
+// Healthy checks if the local VibeVoice server is reachable.
+func (p *VibeVoiceLocalTTSProvider) Healthy(ctx context.Context) bool {
+	ctx2, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx2, "GET", p.endpoint()+"/health", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode < 500
+}
+
+// --- Fal TTS Provider ---
+
+// FalTTSProvider implements TTS using fal.ai's vibevoice model.
+type FalTTSProvider struct {
+	APIKey  string
+	AuditFn func(action, source, detail string) // injected audit callback (avoids import cycle)
+}
+
+func (p *FalTTSProvider) Name() string {
+	return "fal-tts"
+}
+
+func (p *FalTTSProvider) Synthesize(ctx context.Context, text string, opts TTSOptions) (io.ReadCloser, error) {
+	if p.APIKey == "" {
+		return nil, fmt.Errorf("fal tts: apiKey not configured")
+	}
+
+	voice := opts.Voice
+	if voice == "" {
+		voice = "alloy"
+	}
+
+	reqBody := map[string]any{
+		"text":  text,
+		"voice": voice,
+	}
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	endpoint := "https://fal.run/fal-ai/vibevoice"
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Key "+p.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fal tts http request: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("fal tts api error: status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	// Log estimated cost: ~$0.04/min, estimate 150 chars/sec speech rate.
+	if p.AuditFn != nil {
+		charCount := len(text)
+		estDurationSec := float64(charCount) / 15.0 // ~15 chars per second of speech
+		costUSD := (estDurationSec / 60.0) * 0.04
+		detail := fmt.Sprintf(`{"provider":"fal","text_chars":%d,"est_duration_sec":%.1f,"cost_usd":%.4f}`, charCount, estDurationSec, costUSD)
+		p.AuditFn("voice.tts.cost", "fal-tts", detail)
+	}
+
+	return resp.Body, nil
+}
+
+// --- Fallback TTS Provider ---
+
+// FallbackTTSProvider tries providers in order, returning the first success.
+type FallbackTTSProvider struct {
+	Providers []TTSProvider
+}
+
+func (f *FallbackTTSProvider) Name() string {
+	if len(f.Providers) > 0 {
+		return "fallback(" + f.Providers[0].Name() + "+...)"
+	}
+	return "fallback(empty)"
+}
+
+func (f *FallbackTTSProvider) Synthesize(ctx context.Context, text string, opts TTSOptions) (io.ReadCloser, error) {
+	var lastErr error
+	for _, p := range f.Providers {
+		rc, err := p.Synthesize(ctx, text, opts)
+		if err == nil {
+			return rc, nil
+		}
+		tlog.Warn("tts provider failed, trying next", "provider", p.Name(), "error", err)
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("all tts providers failed, last error: %w", lastErr)
+	}
+	return nil, fmt.Errorf("no tts providers configured")
+}
+
 // --- Voice Engine (Coordinator) ---
 
 // VoiceEngine coordinates STT and TTS providers.
@@ -357,7 +541,7 @@ type VoiceEngine struct {
 }
 
 // NewVoiceEngine initializes the voice engine from VoiceConfig.
-func NewVoiceEngine(cfg VoiceConfig) *VoiceEngine {
+func NewVoiceEngine(cfg VoiceConfig, auditFn func(action, source, detail string)) *VoiceEngine {
 	ve := &VoiceEngine{Cfg: cfg}
 
 	// Initialize STT provider.
@@ -383,42 +567,87 @@ func NewVoiceEngine(cfg VoiceConfig) *VoiceEngine {
 		}
 	}
 
-	// Initialize TTS provider.
+	// Initialize TTS provider(s).
 	if cfg.TTS.Enabled {
-		provider := cfg.TTS.Provider
-		if provider == "" {
-			provider = "openai"
+		providers := cfg.TTS.Providers
+		// Backward compat: if Providers is empty, use legacy single Provider field.
+		if len(providers) == 0 && cfg.TTS.Provider != "" {
+			providers = []string{cfg.TTS.Provider}
 		}
-		switch provider {
-		case "openai":
-			apiKey := cfg.TTS.APIKey
-			if apiKey == "" {
-				tlog.Warn("voice tts enabled but no apiKey configured")
+		if len(providers) == 0 {
+			providers = []string{"openai"}
+		}
+
+		var chain []TTSProvider
+		for _, name := range providers {
+			p := buildTTSProvider(name, cfg, auditFn)
+			if p == nil {
+				tlog.Warn("unknown tts provider, skipping", "provider", name)
+				continue
 			}
-			ve.TTS = &OpenAITTSProvider{
-				Endpoint: cfg.TTS.Endpoint,
-				APIKey:   apiKey,
-				Model:    cfg.TTS.Model,
-				Voice:    cfg.TTS.Voice,
+			// Health-check local providers asynchronously.
+			if lp, ok := p.(*VibeVoiceLocalTTSProvider); ok {
+				if !lp.Healthy(context.Background()) {
+					tlog.Warn("vibevoice-local not reachable, removed from chain", "endpoint", lp.endpoint())
+					continue
+				}
 			}
-			tlog.Info("voice tts initialized", "provider", provider, "model", cfg.TTS.Model, "voice", cfg.TTS.Voice)
-		case "elevenlabs":
-			apiKey := cfg.TTS.APIKey
-			if apiKey == "" {
-				tlog.Warn("voice tts enabled but no apiKey configured")
-			}
-			ve.TTS = &ElevenLabsTTSProvider{
-				APIKey:  apiKey,
-				VoiceID: cfg.TTS.Voice,
-				Model:   cfg.TTS.Model,
-			}
-			tlog.Info("voice tts initialized", "provider", provider, "model", cfg.TTS.Model, "voice", cfg.TTS.Voice)
-		default:
-			tlog.Warn("unknown tts provider", "provider", provider)
+			chain = append(chain, p)
+			tlog.Info("voice tts provider added", "provider", name)
+		}
+
+		if len(chain) == 1 {
+			ve.TTS = chain[0]
+		} else if len(chain) > 1 {
+			ve.TTS = &FallbackTTSProvider{Providers: chain}
+		} else {
+			tlog.Warn("voice tts enabled but no providers available")
 		}
 	}
 
 	return ve
+}
+
+// buildTTSProvider creates a single TTS provider by name.
+func buildTTSProvider(name string, cfg VoiceConfig, auditFn func(action, source, detail string)) TTSProvider {
+	switch name {
+	case "vibevoice-local":
+		return &VibeVoiceLocalTTSProvider{
+			Endpoint: cfg.TTS.VibeVoice.Endpoint,
+		}
+	case "fal":
+		if cfg.TTS.FalAPIKey == "" {
+			tlog.Warn("fal tts provider requested but falApiKey not configured")
+			return nil
+		}
+		return &FalTTSProvider{
+			APIKey:  cfg.TTS.FalAPIKey,
+			AuditFn: auditFn,
+		}
+	case "openai":
+		apiKey := cfg.TTS.APIKey
+		if apiKey == "" {
+			tlog.Warn("voice tts enabled but no apiKey configured")
+		}
+		return &OpenAITTSProvider{
+			Endpoint: cfg.TTS.Endpoint,
+			APIKey:   apiKey,
+			Model:    cfg.TTS.Model,
+			Voice:    cfg.TTS.Voice,
+		}
+	case "elevenlabs":
+		apiKey := cfg.TTS.APIKey
+		if apiKey == "" {
+			tlog.Warn("voice tts enabled but no apiKey configured")
+		}
+		return &ElevenLabsTTSProvider{
+			APIKey:  apiKey,
+			VoiceID: cfg.TTS.Voice,
+			Model:   cfg.TTS.Model,
+		}
+	default:
+		return nil
+	}
 }
 
 // Transcribe delegates to the configured STT provider.

@@ -1758,6 +1758,10 @@ type ElevenLabsTTSProvider = voice.ElevenLabsTTSProvider
 type VoiceEngine = voice.VoiceEngine
 
 func newVoiceEngine(cfg *Config) *VoiceEngine {
+	dbPath := cfg.HistoryDB
+	auditFn := func(action, source, detail string) {
+		audit.Log(dbPath, action, source, detail, "")
+	}
 	return voice.NewVoiceEngine(voice.VoiceConfig{
 		STT: voice.STTConfig{
 			Enabled:  cfg.Voice.STT.Enabled,
@@ -1768,13 +1772,18 @@ func newVoiceEngine(cfg *Config) *VoiceEngine {
 			Language: cfg.Voice.STT.Language,
 		},
 		TTS: voice.TTSConfig{
-			Enabled:  cfg.Voice.TTS.Enabled,
-			Provider: cfg.Voice.TTS.Provider,
-			Model:    cfg.Voice.TTS.Model,
-			Endpoint: cfg.Voice.TTS.Endpoint,
-			APIKey:   cfg.Voice.TTS.APIKey,
-			Voice:    cfg.Voice.TTS.Voice,
-			Format:   cfg.Voice.TTS.Format,
+			Enabled:   cfg.Voice.TTS.Enabled,
+			Provider:  cfg.Voice.TTS.Provider,
+			Providers: cfg.Voice.TTS.Providers,
+			Model:     cfg.Voice.TTS.Model,
+			Endpoint:  cfg.Voice.TTS.Endpoint,
+			APIKey:    cfg.Voice.TTS.APIKey,
+			FalAPIKey: cfg.Voice.TTS.FalAPIKey,
+			Voice:     cfg.Voice.TTS.Voice,
+			Format:    cfg.Voice.TTS.Format,
+			VibeVoice: voice.VibeVoiceConfig{
+				Endpoint: cfg.Voice.TTS.VibeVoice.Endpoint,
+			},
 		},
 		Wake: voice.VoiceWakeConfig{
 			Enabled:   cfg.Voice.Wake.Enabled,
@@ -1788,7 +1797,7 @@ func newVoiceEngine(cfg *Config) *VoiceEngine {
 			APIKey:   cfg.Voice.Realtime.APIKey,
 			Voice:    cfg.Voice.Realtime.Voice,
 		},
-	})
+	}, auditFn)
 }
 
 var _ interface {
