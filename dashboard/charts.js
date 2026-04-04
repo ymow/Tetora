@@ -875,7 +875,7 @@ document.addEventListener('click', function(e) {
     body: JSON.stringify({})
   }).then(function(res) {
     if (res.ok) { removeHumanGateCard(key); }
-    else { res.json().then(function(d) { alert('Retry failed: ' + (d.error || 'unknown')); }).catch(function(){}); e.target.disabled = false; e.target.textContent = 'Retry'; }
+    else { res.json().then(function(d) { alert('Retry failed: ' + (d.error || 'unknown')); e.target.disabled = false; e.target.textContent = 'Retry'; }).catch(function(){ e.target.disabled = false; e.target.textContent = 'Retry'; }); }
   }).catch(function() { e.target.disabled = false; e.target.textContent = 'Retry'; });
 });
 
