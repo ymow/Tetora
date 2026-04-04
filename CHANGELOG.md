@@ -2,6 +2,55 @@
 
 ---
 
+## [v2.2.3] - 2026-04-04
+
+### Added
+- **Model switching UX**: Discord `!model pick` interactive picker (Agent → Provider → Model), `!local`/`!cloud` bulk toggle, `!mode` summary with buttons
+- **Dashboard model picker**: Provider bar + model dropdown in agent editor, quick-switch on agent cards, Cloud/Local badges, global inference mode toggle
+- **Inference mode API**: `POST/GET /api/inference-mode` for cloud/local/mixed switching with atomic batch config write
+- **Claude provider preference**: `claudeProvider` config field — choose between `claude-code` (CLI) and `anthropic` (API) per installation
+- **Per-model history tracking**: `provider` column in history DB, `byModel` stats grouped by model + provider
+- **Human gate reject recovery**: Retry API + dashboard UI for rejected human gates
+- **Human gate cancel**: Cancel API + dashboard button
+- **Human gate Discord notifications**: Timeout/waiting/assignee notifications with dashboard links
+- **Human gate schema unification**: `action` (canonical) + `decision` (legacy compat) API fields
+- **VibeVoice TTS**: Local VibeVoice + fal.ai cloud TTS providers with fallback chain
+- **Skill AllowedTools**: Per-skill tool restrictions via `allowedTools` field in SkillConfig
+- **Learned skill extraction**: Auto-extract skills from session history with pending review display
+- **Discord commands docs**: Full reference at `docs/discord-commands.md` + README section
+- **Blog**: v2.2 release notes (en/zh-TW/ja), Auto-Dispatch tips
+- **CLI**: `tetora project add` and `tetora guide` commands
+- **Config**: `config.local.json` deep-merge override support
+- **Privacy policy**: tetora.dev/privacy page
+
+### Fixed
+- **Codex CLI v0.118+**: Support new JSONL format (`item.completed` events), close stdin to prevent hang
+- **Claude CLI permissions**: Add `--dangerously-skip-permissions` when `bypassPermissions` is set (enables Bash commands like `gh`)
+- **Local model cost**: Ollama/LM Studio endpoints automatically report $0 cost
+- **Provider inference**: Dynamic model matching for Ollama (e.g. `dolphin-mistral` matches `dolphin-mistral:latest`), exact match for Claude aliases
+- **Auto-new-session**: Automatically archive Discord session when provider changes
+- **workspace package**: Add missing `internal/workspace/` (was imported but never committed)
+- **resumeWorkflow**: Fix missing `extraVars` parameter at 3 call sites
+- **Data race**: Hold mutex during `checkpointRun` JSON marshal in workflow DAG
+- **TestSpendingForecast**: Avoid month boundary crossing when day-of-month < 5
+- **Session resume**: Retry with new session when resume fails with `error_during_execution`
+- **launchd**: Fix plist PATH and make reload race condition
+- **Codex quota**: Detect quota/usage-limit errors from stdout and stderr
+- **OAuth**: Fix redirect URL construction
+- **Security**: Harden config/data file permissions (0644 → 0600)
+- **Dispatch**: Dedup guard + execution guard to prevent infinite retry loops
+- **Worktree**: Auto-resolve `.tetora-branch` conflict on merge
+
+### Changed
+- **IsLocalProvider / IsLocalEndpoint helpers**: Replace magic string checks across codebase
+- **TruncateStr consolidation**: Unified into `internal/text` package with rune-aware truncation
+- **History SQL**: Migrate write operations from `db.Query` to `db.Exec` for write mutex consistency
+- **Human gate**: Replace `http.Error` with `writeJSONError` for consistent JSON responses
+- **Provider presets**: Add `gpt-5.4`, `gpt-5.3` to OpenAI/Codex presets
+- **OpenAIProvider**: Cache `IsLocal` at construction instead of per-request URL check
+
+---
+
 ## [v2.2.2] - 2026-03-27
 
 ### Added
