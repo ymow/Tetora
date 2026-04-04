@@ -13031,9 +13031,14 @@ func TestSpendingForecast(t *testing.T) {
 	cleanup := setupTestGlobals(t, dbPath, cfg)
 	defer cleanup()
 
-	// Insert expenses for this month.
+	// Insert expenses for this month (use only dates within the current month).
 	now := time.Now().UTC()
-	for i := 0; i < 5; i++ {
+	day := now.Day()
+	count := 5
+	if day < count {
+		count = day // avoid crossing into previous month
+	}
+	for i := 0; i < count; i++ {
 		date := now.AddDate(0, 0, -i).Format("2006-01-02")
 		insertExpense(t, dbPath, 100, "food", "daily food", date)
 	}
@@ -13047,9 +13052,10 @@ func TestSpendingForecast(t *testing.T) {
 	if result["month"] != month {
 		t.Errorf("month: got %v, want %s", result["month"], month)
 	}
+	expectedTotal := float64(count * 100)
 	currentTotal, _ := result["current_total"].(float64)
-	if currentTotal != 500 {
-		t.Errorf("current_total: got %v, want 500", currentTotal)
+	if currentTotal != expectedTotal {
+		t.Errorf("current_total: got %v, want %v", currentTotal, expectedTotal)
 	}
 	dailyRate, _ := result["daily_rate"].(float64)
 	if dailyRate <= 0 {

@@ -2885,6 +2885,8 @@ func recoverPendingWorkflows(cfg *Config, state *dispatchState, sem, childSem ch
 
 // checkpointRun saves current workflow run state to DB.
 func checkpointRun(e *workflowExecutor) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	recordWorkflowRun(e.cfg.HistoryDB, e.run)
 }
 
