@@ -146,6 +146,8 @@ Tetora ships with a built-in web dashboard at `http://localhost:8991/dashboard`.
 | **Insights** | 7-day trend chart, historical task throughput and cost charts |
 | **Engineering Details** | Cost dashboard, cron jobs, sessions, provider health, trust, SLA, version history, routing, memory, and more (collapsible) |
 
+The agent editor includes a **provider-aware model picker** with one-click switching between cloud and local models (Ollama). A global **inference mode toggle** lets you switch all agents between cloud and local with a single button. Each agent card shows a Cloud/Local badge and a quick-switch dropdown.
+
 Multiple themes are available (Glass, Clean, Material, Boardroom, Retro). The Agent World pixel office can be customized with decorations and zoom controls.
 
 ```bash
@@ -171,7 +173,10 @@ Tetora responds to `!` prefix commands in Discord:
 | `!end` | Unlock channel, resume smart dispatch |
 | `!new` | Start new session |
 | `!ask <prompt>` | One-off question |
+| `!cancel` | Cancel all running tasks |
+| `!approve [tool\|reset]` | Manage auto-approved tools |
 | `!status` / `!cost` / `!jobs` | Operations overview |
+| `!help` | Show command reference |
 | `@Tetora <text>` | Smart dispatch to best agent |
 
 **[Full Discord Commands Reference](docs/discord-commands.md)** -- model switching, remote/local toggle, provider config, and more.
@@ -303,7 +308,14 @@ See [`examples/`](examples/) for ready-to-use workflow JSON files.
 | `tetora restore <file>` | Restore from a backup archive |
 | `tetora dashboard` | Open the web dashboard in a browser |
 | `tetora logs` | View daemon logs (`-f` to follow, `--json` for structured output) |
+| `tetora health` | Runtime health (daemon, workers, taskboard, disk) |
+| `tetora drain` | Graceful shutdown: stop new tasks, wait for running agents |
 | `tetora data status` | Show data retention status |
+| `tetora security scan` | Security scanning and baseline |
+| `tetora prompt list` | Manage prompt templates |
+| `tetora project add` | Add a project to the workspace |
+| `tetora guide` | Interactive onboarding guide |
+| `tetora upgrade` | Upgrade to latest version |
 | `tetora service install` | Install as a launchd service (macOS) |
 | `tetora completion <shell>` | Generate shell completions (bash, zsh, fish) |
 | `tetora version` | Show version |
