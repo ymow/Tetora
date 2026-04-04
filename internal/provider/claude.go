@@ -318,12 +318,17 @@ func BuildClaudeArgs(req Request, streaming bool) []string {
 	if streaming {
 		outputFormat = "stream-json"
 	}
+	permMode := cmp.Or(req.PermissionMode, "acceptEdits")
 	args := []string{
 		"--print",
 		"--verbose",
 		"--output-format", outputFormat,
 		"--model", req.Model,
-		"--permission-mode", cmp.Or(req.PermissionMode, "acceptEdits"),
+		"--permission-mode", permMode,
+	}
+	// bypassPermissions needs --dangerously-skip-permissions to also skip Bash confirmations.
+	if permMode == "bypassPermissions" {
+		args = append(args, "--dangerously-skip-permissions")
 	}
 
 	resume := req.Resume
