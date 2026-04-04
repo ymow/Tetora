@@ -1549,7 +1549,7 @@ func startHTTPServer(s *Server) *http.Server {
 		ResumeWorkflow: func(ctx context.Context, runID string) {
 			wfTraceID := trace.IDFromContext(ctx)
 			go func() {
-				run, err := resumeWorkflow(trace.WithID(context.Background(), wfTraceID), cfg, runID, s.state, s.sem, s.childSem)
+				run, err := resumeWorkflow(trace.WithID(context.Background(), wfTraceID), cfg, runID, s.state, s.sem, s.childSem, nil)
 				if err != nil {
 					log.Warn("workflow resume failed", "originalRunID", runID, "error", err)
 				} else {

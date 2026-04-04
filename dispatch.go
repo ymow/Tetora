@@ -3895,7 +3895,7 @@ func (r *rootWorkflowRunner) Execute(ctx context.Context, workflowName string, v
 }
 
 func (r *rootWorkflowRunner) Resume(ctx context.Context, runID string) (taskboard.WorkflowRunResult, error) {
-	run, err := resumeWorkflow(ctx, r.cfg, runID, r.state, r.sem, r.childSem)
+	run, err := resumeWorkflow(ctx, r.cfg, runID, r.state, r.sem, r.childSem, nil)
 	if err != nil {
 		return taskboard.WorkflowRunResult{}, err
 	}

@@ -3740,7 +3740,7 @@ func workflowResumeCmd(runID string) {
 	sem := make(chan struct{}, 5)
 	childSem := make(chan struct{}, 10)
 
-	run, err := resumeWorkflow(context.Background(), cfg, resolvedID, state, sem, childSem)
+	run, err := resumeWorkflow(context.Background(), cfg, resolvedID, state, sem, childSem, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Resume failed: %v\n", err)
 		os.Exit(1)
