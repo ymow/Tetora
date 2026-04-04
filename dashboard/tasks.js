@@ -1680,10 +1680,12 @@ async function renderInlineTaskGates(runId) {
   var container = document.getElementById('td-hg-inline');
   if (!container) return;
   try {
-    var gates = await fetchJSON('/api/human-gates?status=waiting');
-    var runGates = (Array.isArray(gates) ? gates : []).filter(function(g) {
-      return g.runId === runId;
-    });
+    var [waitingGates, rejectedGates] = await Promise.all([
+      fetchJSON('/api/human-gates?status=waiting'),
+      fetchJSON('/api/human-gates?status=rejected')
+    ]);
+    var allGates = (Array.isArray(waitingGates) ? waitingGates : []).concat(Array.isArray(rejectedGates) ? rejectedGates : []);
+    var runGates = allGates.filter(function(g) { return g.runId === runId; });
     if (runGates.length === 0) {
       container.style.display = 'none';
       return;
@@ -1702,10 +1704,15 @@ function buildInlineHgCardHtml(hg) {
   var subtype = hg.subtype || 'approval';
   var prompt = hg.prompt || '';
   var stepId = hg.stepId || '';
+  var status = hg.status || 'waiting';
   var inputId = 'hg-inline-' + escAttr(key) + '-input';
 
   var actionsHtml = '';
-  if (subtype === 'approval') {
+  if (status === 'rejected') {
+    actionsHtml =
+      '<span class="badge badge-err" style="font-size:9px;margin-right:6px">rejected</span>' +
+      '<button class="gate-retry-btn" data-key="' + escAttr(key) + '" style="font-size:11px;padding:2px 8px;border:1px solid #fbbf24;background:transparent;color:#fbbf24;border-radius:4px;cursor:pointer">Retry</button>';
+  } else if (subtype === 'approval') {
     actionsHtml =
       '<textarea class="hg-comment" id="' + inputId + '" placeholder="Comment (optional)..." rows="1" style="font-size:11px;margin-bottom:4px;width:100%;box-sizing:border-box"></textarea>' +
       '<button class="btn btn-primary" style="font-size:11px;padding:2px 8px" onclick="hgInlineApprove(\'' + escAttr(key) + '\')">Approve</button>' +
@@ -1720,10 +1727,11 @@ function buildInlineHgCardHtml(hg) {
       '<button class="btn btn-primary" style="font-size:11px;padding:2px 8px" onclick="hgInlineSubmit(\'' + escAttr(key) + '\')">Submit</button>';
   }
 
+  var badgeCls = status === 'rejected' ? 'badge-err' : 'badge-warn';
   return '<div class="hg-inline-card" id="hg-inline-card-' + escAttr(key) + '">' +
     '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">' +
     '<span style="font-size:11px;font-weight:600">' + esc(stepId) + '</span>' +
-    '<span class="badge badge-warn" style="font-size:9px">' + esc(subtype) + '</span>' +
+    '<span class="badge ' + badgeCls + '" style="font-size:9px">' + esc(subtype) + '</span>' +
     '</div>' +
     (prompt ? '<div style="font-size:12px;margin-bottom:6px;color:var(--text)">' + esc(prompt) + '</div>' : '') +
     actionsHtml +

@@ -31,6 +31,7 @@ func testHumanGateDeps() (httpapi.HumanGateDeps, func(key, action, response, res
 		"gate-1": {Key: "gate-1", RunID: "run-1", StepID: "step-1", WorkflowName: "wf-alpha", Subtype: "approval", Prompt: "Please approve", Status: "waiting"},
 		"gate-2": {Key: "gate-2", RunID: "run-2", StepID: "step-2", WorkflowName: "wf-beta", Subtype: "input", Prompt: "Enter value", Status: "waiting"},
 		"gate-3": {Key: "gate-3", RunID: "run-3", StepID: "step-1", WorkflowName: "wf-gamma", Subtype: "action", Prompt: "Do something", Status: "completed", Action: "done"},
+		"gate-4": {Key: "gate-4", RunID: "run-4", StepID: "step-1", WorkflowName: "wf-delta", Subtype: "approval", Prompt: "Review draft", Status: "rejected", Action: "rejected"},
 	}
 
 	toMap := func(g *gate) map[string]any {
@@ -89,6 +90,18 @@ func testHumanGateDeps() (httpapi.HumanGateDeps, func(key, action, response, res
 			}
 			g.Status = "cancelled"
 			return nil
+		},
+		RetryHumanGate: func(key string, overrideVars map[string]string) (string, error) {
+			g, ok := store[key]
+			if !ok {
+				return "", errors.New("gate not found: " + key)
+			}
+			if g.Status != "rejected" {
+				return "", errors.New("gate " + key + " has status \"" + g.Status + "\", only rejected gates can be retried")
+			}
+			g.Status = "waiting"
+			g.Action = ""
+			return "new-run-" + key, nil
 		},
 	}
 	return deps, func(key, action, response, respondedBy string) {
@@ -332,6 +345,107 @@ func TestHumanGateCancel(t *testing.T) {
 		mux.ServeHTTP(w, req)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+}
+
+func TestHumanGateRetry(t *testing.T) {
+	// AC1: reject → retry → gate re-enters waiting state, returns new run ID.
+	t.Run("Given rejected gate, When retry with no body, Then 200 and status=retrying", func(t *testing.T) {
+		deps, _ := testHumanGateDeps()
+		mux := http.NewServeMux()
+		httpapi.RegisterHumanGateRoutes(mux, deps)
+
+		req := httptest.NewRequest(http.MethodPost, "/api/human-gates/gate-4/retry", bytes.NewReader([]byte(`{}`)))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var result map[string]string
+		if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+			t.Fatalf("decode error: %v", err)
+		}
+		if result["status"] != "retrying" {
+			t.Errorf("expected status=retrying, got %q", result["status"])
+		}
+		if result["key"] != "gate-4" {
+			t.Errorf("expected key=gate-4, got %q", result["key"])
+		}
+		if result["newRunId"] == "" {
+			t.Error("expected non-empty newRunId")
+		}
+	})
+
+	// AC2: retry with override_variables → dep receives the variables.
+	t.Run("Given rejected gate, When retry with override_variables, Then 200 and dep receives vars", func(t *testing.T) {
+		var capturedVars map[string]string
+		deps, _ := testHumanGateDeps()
+		origRetry := deps.RetryHumanGate
+		deps.RetryHumanGate = func(key string, overrideVars map[string]string) (string, error) {
+			capturedVars = overrideVars
+			return origRetry(key, overrideVars)
+		}
+		mux := http.NewServeMux()
+		httpapi.RegisterHumanGateRoutes(mux, deps)
+
+		body, _ := json.Marshal(map[string]any{
+			"override_variables": map[string]string{"draft": "updated content"},
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/human-gates/gate-4/retry", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		if capturedVars["draft"] != "updated content" {
+			t.Errorf("expected override_variables to be forwarded, got %v", capturedVars)
+		}
+	})
+
+	// AC3: non-rejected gate (waiting) → 400 because only rejected gates can be retried.
+	t.Run("Given waiting gate, When retry, Then 400", func(t *testing.T) {
+		deps, _ := testHumanGateDeps()
+		mux := http.NewServeMux()
+		httpapi.RegisterHumanGateRoutes(mux, deps)
+
+		req := httptest.NewRequest(http.MethodPost, "/api/human-gates/gate-1/retry", bytes.NewReader([]byte(`{}`)))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	// AC4: non-existent gate → 400 (dep returns "gate not found").
+	t.Run("Given non-existent gate, When retry, Then 400", func(t *testing.T) {
+		deps, _ := testHumanGateDeps()
+		mux := http.NewServeMux()
+		httpapi.RegisterHumanGateRoutes(mux, deps)
+
+		req := httptest.NewRequest(http.MethodPost, "/api/human-gates/no-such-gate/retry", bytes.NewReader([]byte(`{}`)))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	// Method guard: GET on retry endpoint → 405.
+	t.Run("Given rejected gate, When GET instead of POST, Then 405", func(t *testing.T) {
+		deps, _ := testHumanGateDeps()
+		mux := http.NewServeMux()
+		httpapi.RegisterHumanGateRoutes(mux, deps)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/human-gates/gate-4/retry", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected 405, got %d: %s", w.Code, w.Body.String())
 		}
 	})
 }

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -40,6 +41,10 @@ type HumanGateDeps struct {
 
 	// CancelHumanGate cancels a waiting gate. Returns an error on failure.
 	CancelHumanGate func(key, reason, cancelledBy string) error
+
+	// RetryHumanGate retries a rejected gate by resetting it and resuming the workflow.
+	// Returns the new run ID or an error.
+	RetryHumanGate func(key string, overrideVars map[string]string) (string, error)
 }
 
 // RegisterHumanGateRoutes registers the human gate REST endpoints:
@@ -102,8 +107,11 @@ func RegisterHumanGateRoutes(mux *http.ServeMux, d HumanGateDeps) {
 				Reason      string `json:"reason"`
 				CancelledBy string `json:"cancelledBy"`
 			}
-			// Body is optional for cancel.
-			json.NewDecoder(r.Body).Decode(&body)
+			// Body is optional for cancel; reject malformed JSON.
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+				writeJSONError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+				return
+			}
 
 			gate := d.QueryHumanGateByKey(key)
 			if gate == nil {
@@ -124,6 +132,35 @@ func RegisterHumanGateRoutes(mux *http.ServeMux, d HumanGateDeps) {
 				fmt.Sprintf("key=%s cancelledBy=%s reason=%s", key, body.CancelledBy, body.Reason),
 				httputil.ClientIP(r))
 			json.NewEncoder(w).Encode(map[string]string{"status": "cancelled", "key": key})
+			return
+		}
+
+		// POST /api/human-gates/{key}/retry
+		if subaction == "retry" {
+			if r.Method != http.MethodPost {
+				http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+				return
+			}
+
+			var body struct {
+				OverrideVariables map[string]string `json:"override_variables"`
+			}
+			// Body is optional for retry; reject malformed JSON.
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+				writeJSONError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+				return
+			}
+
+			newRunID, err := d.RetryHumanGate(key, body.OverrideVariables)
+			if err != nil {
+				writeJSONError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+
+			audit.Log(d.HistoryDB(), "human_gate.retry", "http",
+				fmt.Sprintf("key=%s newRunId=%s", key, newRunID),
+				httputil.ClientIP(r))
+			json.NewEncoder(w).Encode(map[string]string{"status": "retrying", "key": key, "newRunId": newRunID})
 			return
 		}
 

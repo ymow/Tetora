@@ -9900,10 +9900,12 @@ async function renderInlineTaskGates(runId) {
   var container = document.getElementById('td-hg-inline');
   if (!container) return;
   try {
-    var gates = await fetchJSON('/api/human-gates?status=waiting');
-    var runGates = (Array.isArray(gates) ? gates : []).filter(function(g) {
-      return g.runId === runId;
-    });
+    var [waitingGates, rejectedGates] = await Promise.all([
+      fetchJSON('/api/human-gates?status=waiting'),
+      fetchJSON('/api/human-gates?status=rejected')
+    ]);
+    var allGates = (Array.isArray(waitingGates) ? waitingGates : []).concat(Array.isArray(rejectedGates) ? rejectedGates : []);
+    var runGates = allGates.filter(function(g) { return g.runId === runId; });
     if (runGates.length === 0) {
       container.style.display = 'none';
       return;
@@ -9922,10 +9924,15 @@ function buildInlineHgCardHtml(hg) {
   var subtype = hg.subtype || 'approval';
   var prompt = hg.prompt || '';
   var stepId = hg.stepId || '';
+  var status = hg.status || 'waiting';
   var inputId = 'hg-inline-' + escAttr(key) + '-input';
 
   var actionsHtml = '';
-  if (subtype === 'approval') {
+  if (status === 'rejected') {
+    actionsHtml =
+      '<span class="badge badge-err" style="font-size:9px;margin-right:6px">rejected</span>' +
+      '<button class="gate-retry-btn" data-key="' + escAttr(key) + '" style="font-size:11px;padding:2px 8px;border:1px solid #fbbf24;background:transparent;color:#fbbf24;border-radius:4px;cursor:pointer">Retry</button>';
+  } else if (subtype === 'approval') {
     actionsHtml =
       '<textarea class="hg-comment" id="' + inputId + '" placeholder="Comment (optional)..." rows="1" style="font-size:11px;margin-bottom:4px;width:100%;box-sizing:border-box"></textarea>' +
       '<button class="btn btn-primary" style="font-size:11px;padding:2px 8px" onclick="hgInlineApprove(\'' + escAttr(key) + '\')">Approve</button>' +
@@ -9940,10 +9947,11 @@ function buildInlineHgCardHtml(hg) {
       '<button class="btn btn-primary" style="font-size:11px;padding:2px 8px" onclick="hgInlineSubmit(\'' + escAttr(key) + '\')">Submit</button>';
   }
 
+  var badgeCls = status === 'rejected' ? 'badge-err' : 'badge-warn';
   return '<div class="hg-inline-card" id="hg-inline-card-' + escAttr(key) + '">' +
     '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">' +
     '<span style="font-size:11px;font-weight:600">' + esc(stepId) + '</span>' +
-    '<span class="badge badge-warn" style="font-size:9px">' + esc(subtype) + '</span>' +
+    '<span class="badge ' + badgeCls + '" style="font-size:9px">' + esc(subtype) + '</span>' +
     '</div>' +
     (prompt ? '<div style="font-size:12px;margin-bottom:6px;color:var(--text)">' + esc(prompt) + '</div>' : '') +
     actionsHtml +
@@ -12125,12 +12133,18 @@ function getOrCreateHumanGateContainer() {
 function renderHumanGateCards(humanGates) {
   var container = getOrCreateHumanGateContainer();
   var pending = humanGates.filter(function(hg) { return hg.status === 'waiting'; });
-  if (pending.length === 0) { container.innerHTML = ''; return; }
+  var rejected = humanGates.filter(function(hg) { return hg.status === 'rejected'; });
+  if (pending.length === 0 && rejected.length === 0) { container.innerHTML = ''; return; }
 
-  var html = '<div style="font-size:13px;font-weight:600;margin-bottom:8px;color:#fbbf24">Pending Approvals</div>';
-  pending.forEach(function(hg) {
-    html += buildHumanGateCardHtml(hg);
-  });
+  var html = '';
+  if (pending.length > 0) {
+    html += '<div style="font-size:13px;font-weight:600;margin-bottom:8px;color:#fbbf24">Pending Approvals</div>';
+    pending.forEach(function(hg) { html += buildHumanGateCardHtml(hg); });
+  }
+  if (rejected.length > 0) {
+    html += '<div style="font-size:13px;font-weight:600;margin:12px 0 8px;color:#ef4444">Rejected Gates</div>';
+    rejected.forEach(function(hg) { html += buildHumanGateCardHtml(hg); });
+  }
   container.innerHTML = html;
 }
 
@@ -12140,18 +12154,28 @@ function buildHumanGateCardHtml(hg) {
   var subtype = hg.subtype || 'approval';
   var prompt = hg.prompt || '';
   var assignee = hg.assignee || '';
-  return '<div id="hg-card-' + escAttr(key) + '" style="background:var(--surface);border:1px solid #fbbf24;border-radius:6px;padding:10px;margin-bottom:6px">' +
+  var status = hg.status || 'waiting';
+  var isRejected = status === 'rejected';
+  var borderColor = isRejected ? '#ef4444' : '#fbbf24';
+  var dotColor = isRejected ? '#ef4444' : '#fbbf24';
+  var dotAnim = isRejected ? '' : 'animation:pulse 1.5s infinite;';
+  var buttons = '';
+  if (isRejected) {
+    buttons = '<button class="gate-retry-btn" data-key="' + escAttr(key) + '" style="font-size:11px;padding:2px 8px;border:1px solid #fbbf24;background:transparent;color:#fbbf24;border-radius:4px;cursor:pointer">Retry</button>';
+  } else {
+    buttons = '<button class="gate-cancel-btn" data-key="' + escAttr(key) + '" style="font-size:11px;padding:2px 8px;border:1px solid #ef4444;background:transparent;color:#ef4444;border-radius:4px;cursor:pointer">Cancel</button>';
+  }
+  return '<div id="hg-card-' + escAttr(key) + '" style="background:var(--surface);border:1px solid ' + borderColor + ';border-radius:6px;padding:10px;margin-bottom:6px">' +
     '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">' +
-    '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#fbbf24;animation:pulse 1.5s infinite"></span>' +
+    '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + dotColor + ';' + dotAnim + '"></span>' +
     '<strong style="font-size:12px">' + esc(stepId) + '</strong>' +
-    '<span class="badge badge-warn" style="font-size:10px">' + esc(subtype) + '</span>' +
+    '<span class="badge ' + (isRejected ? 'badge-err' : 'badge-warn') + '" style="font-size:10px">' + esc(subtype) + '</span>' +
+    (isRejected ? '<span class="badge badge-err" style="font-size:10px">rejected</span>' : '') +
     '</div>' +
     (prompt ? '<div style="font-size:12px;margin-bottom:4px">' + esc(prompt) + '</div>' : '') +
     (assignee ? '<div style="font-size:11px;color:var(--muted)">Assignee: ' + esc(assignee) + '</div>' : '') +
     '<div style="font-size:11px;color:var(--muted);margin-top:4px">Key: <code>' + esc(key) + '</code></div>' +
-    '<div style="margin-top:6px;text-align:right">' +
-    '<button class="gate-cancel-btn" data-key="' + escAttr(key) + '" style="font-size:11px;padding:2px 8px;border:1px solid #ef4444;background:transparent;color:#ef4444;border-radius:4px;cursor:pointer">Cancel</button>' +
-    '</div>' +
+    '<div style="margin-top:6px;text-align:right">' + buttons + '</div>' +
     '</div>';
 }
 
@@ -12195,6 +12219,24 @@ document.addEventListener('click', function(e) {
     if (res.ok) { removeHumanGateCard(key); }
     else { e.target.disabled = false; e.target.textContent = 'Cancel'; }
   }).catch(function() { e.target.disabled = false; e.target.textContent = 'Cancel'; });
+});
+
+// Event delegation for human gate retry buttons.
+document.addEventListener('click', function(e) {
+  if (!e.target.classList.contains('gate-retry-btn')) return;
+  var key = e.target.dataset.key;
+  if (!key) return;
+  if (!confirm('Retry rejected gate ' + key + '?')) return;
+  e.target.disabled = true;
+  e.target.textContent = 'Retrying...';
+  fetch('/api/human-gates/' + encodeURIComponent(key) + '/retry', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({})
+  }).then(function(res) {
+    if (res.ok) { removeHumanGateCard(key); }
+    else { res.json().then(function(d) { alert('Retry failed: ' + (d.error || 'unknown')); e.target.disabled = false; e.target.textContent = 'Retry'; }).catch(function(){ e.target.disabled = false; e.target.textContent = 'Retry'; }); }
+  }).catch(function() { e.target.disabled = false; e.target.textContent = 'Retry'; });
 });
 
 function toggleStepDetail(el) {
