@@ -13,9 +13,11 @@ export function getStaticPaths() {
 const { lang } = Astro.params as { lang: Lang };
 const allPosts = await getCollection('blog');
 const langPosts = allPosts.filter(p => p.data.lang === lang);
-const langSlugs = new Set(langPosts.map(p => p.id.replace(`${p.data.lang}/`, '')));
+// Extract slug by stripping lang prefix and .md extension from content collection id.
+const toSlug = (p: any) => p.id.replace(`${p.data.lang}/`, '').replace(/\.mdx?$/, '');
+const langSlugs = new Set(langPosts.map(toSlug));
 const fallbackPosts = lang === 'en' ? [] : allPosts
-  .filter(p => p.data.lang === 'en' && !langSlugs.has(p.id.replace('en/', '')));
+  .filter(p => p.data.lang === 'en' && !langSlugs.has(toSlug(p)));
 const posts = [...langPosts, ...fallbackPosts]
   .sort((a, b) => new Date(b.data.date).getTime() - new Date(a.data.date).getTime());
 
