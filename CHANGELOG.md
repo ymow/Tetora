@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+### Added
+- **Regression guard tests**: Context cancellation timeout tests for DB operations, unit test for dispatchTask prompt construction with task ID validation
+- **Context propagation improvements**: ExecContext/QueryContext for DB calls, QuerySessionByIDCtx method to ensure timeout handling in all goroutines
+- **Site SEO enhancements**: BreadcrumbList structured data, theme-color extraction, OG locale optimization
+- **CI improvements**: Auto-update site version on release, CODEOWNERS for auto-assignment, dashboard drift guard (rebuild + `git diff --exit-code` on every PR)
+
+### Fixed
+- **i18n URL dedup**: Fix duplicate locale prefix in zh-TW blog/tips URLs (e.g. `/zh-TW/blog/zh-tw/slug/`)
+- **Build system**: Extract platform-specific process group handling, syscall usage for Windows cross-compile support
+- **Site versioning**: Update i18n download buttons to v2.2.3, fix release CI workflow
+- **Refactoring**: Extract OG_LOCALE_MAP constant from Base.astro to consts.ts for reusability, preserve task description language (繁體中文) in agent commit messages
+
 ---
 
 ## [v2.2.3] - 2026-04-04
