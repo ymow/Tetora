@@ -42,7 +42,7 @@ const tagLabels: Record<string, Record<string, string>> = {
   <div class="posts">
     {posts.map(post => {
       const postLang = post.data.lang;
-      const slug = post.id.replace(`${postLang}/`, '');
+      const slug = post.id.split('/').slice(1).join('/').replace(/\.mdx?$/, '');
       const href = `/${postLang}/blog/${slug}/`;
       const tagClass = post.data.tag === 'case-study' ? 'tag-case-study' : 'tag-release';
       const tagLabel = tagLabels[post.data.tag]?.[lang] ?? tagLabels[post.data.tag]?.en ?? post.data.tag;

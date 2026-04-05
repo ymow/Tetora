@@ -33,7 +33,7 @@ const tips = [...langTips, ...fallbackTips]
   <div class="posts">
     {tips.map(tip => {
       const tipLang = tip.data.lang;
-      const slug = tip.id.replace(`${tipLang}/`, '');
+      const slug = tip.id.split('/').slice(1).join('/').replace(/\.mdx?$/, '');
       const href = `/${tipLang}/tips/${slug}/`;
       return (
         <div class="card">
