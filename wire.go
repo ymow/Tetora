@@ -10061,6 +10061,10 @@ func querySessionByID(dbPath, id string) (*Session, error) {
 	return session.QuerySessionByID(dbPath, id)
 }
 
+func querySessionByIDCtx(ctx context.Context, dbPath, id string) (*Session, error) {
+	return session.QuerySessionByIDCtx(ctx, dbPath, id)
+}
+
 func querySessionsByPrefix(dbPath, prefix string) ([]Session, error) {
 	return session.QuerySessionsByPrefix(dbPath, prefix)
 }
@@ -10459,7 +10463,7 @@ func recordSessionActivityCtx(ctx context.Context, dbPath string, task Task, res
 			log.Warn("update session stats failed", "session", sessionID, "error", err)
 		}
 
-		existing, _ := querySessionByID(dbPath, sessionID)
+		existing, _ := querySessionByIDCtx(ctx, dbPath, sessionID)
 		if existing == nil || existing.ChannelKey == "" {
 			updateSessionStatusCtx(ctx, dbPath, sessionID, "completed")
 		}

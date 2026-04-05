@@ -452,6 +452,21 @@ func QuerySessionByID(dbPath, id string) (*Session, error) {
 	return &s, nil
 }
 
+func QuerySessionByIDCtx(ctx context.Context, dbPath, id string) (*Session, error) {
+	sql := fmt.Sprintf(
+		`SELECT `+sessionSelectCols()+`
+		 FROM sessions WHERE id = '%s'`, db.Escape(id))
+	rows, err := db.QueryContext(ctx, dbPath, sql)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	s := sessionFromRow(rows[0])
+	return &s, nil
+}
+
 func QuerySessionsByPrefix(dbPath, prefix string) ([]Session, error) {
 	sql := fmt.Sprintf(
 		`SELECT `+sessionSelectCols()+`
