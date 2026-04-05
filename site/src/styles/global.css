@@ -1,7 +1,7 @@
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
   --bg:#0a0a0f;--surface:#12121a;--border:#1e1e2e;
-  --text:#e4e4ef;--muted:#7a7a8e;--accent:#6c5ce7;--accent2:#a29bfe;
+  --text:#e4e4ef;--muted:#7a7a8e;--accent:#6c5ce7;/* keep in sync with ACCENT_COLOR in src/consts.ts */--accent2:#a29bfe;
   --green:#00cec9;--gradient:linear-gradient(135deg,#6c5ce7,#a29bfe,#00cec9);
 }
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;overflow-x:hidden}

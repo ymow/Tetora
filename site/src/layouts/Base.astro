@@ -1,7 +1,12 @@
 ---
 import '../styles/global.css';
-import { SITE } from '../consts';
+import { SITE, ACCENT_COLOR } from '../consts';
 const LOCALES = ['en', 'zh-TW', 'ja', 'ko', 'es', 'fr', 'de', 'th', 'id', 'fil'] as const;
+
+const OG_LOCALE_MAP: Record<string, string> = {
+  en: 'en_US', 'zh-TW': 'zh_TW', ja: 'ja_JP', ko: 'ko_KR',
+  es: 'es_ES', fr: 'fr_FR', de: 'de_DE', th: 'th_TH', id: 'id_ID', fil: 'fil_PH',
+};
 
 interface Props {
   title: string;
@@ -11,7 +16,7 @@ interface Props {
   ogType?: string;
   lang?: string;
   canonicalUrl?: string;
-  jsonLd?: Record<string, unknown>;
+  jsonLd?: Record<string, unknown> | Record<string, unknown>[];
   alternates?: Array<{ lang: string; url: string }>;
 }
 const {
@@ -44,6 +49,7 @@ const alternateUrls = alternatesProp ?? LOCALES.map(loc => ({
   url: loc === 'en' ? `${SITE}${basePath}` : `${SITE}/${loc}${basePath}`,
 }));
 const xDefaultUrl = alternateUrls.find(a => a.lang === 'en')?.url ?? `${SITE}${basePath}`;
+const ogLocale = OG_LOCALE_MAP[lang] ?? lang.replace('-', '_');
 ---
 <!DOCTYPE html>
 <html lang={lang}>
@@ -59,6 +65,9 @@ const xDefaultUrl = alternateUrls.find(a => a.lang === 'en')?.url ?? `${SITE}${b
   <meta property="og:image" content={ogImage} />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content={title} />
+  <meta property="og:locale" content={ogLocale} />
+  <meta name="theme-color" content={ACCENT_COLOR} />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:image" content={ogImage} />
   <link rel="canonical" href={canonicalUrl} />
@@ -68,7 +77,9 @@ const xDefaultUrl = alternateUrls.find(a => a.lang === 'en')?.url ?? `${SITE}${b
   <link rel="alternate" hreflang="x-default" href={xDefaultUrl} />
   <link rel="icon" href="/favicon.png" type="image/png" />
   {jsonLd && (
-    <script type="application/ld+json" set:html={JSON.stringify(jsonLd).replace(/</g, '\\u003c')} />
+    <script type="application/ld+json" set:html={JSON.stringify(
+      Array.isArray(jsonLd) ? { '@context': 'https://schema.org', '@graph': jsonLd.map(({ '@context': _, ...rest }) => rest) } : jsonLd
+    ).replace(/</g, '\\u003c')} />
   )}
   <link rel="preconnect" href="https://www.googletagmanager.com" />
   <script is:inline>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','G-X6YR7HG68N');(window.requestIdleCallback||setTimeout)(function(){var s=document.createElement('script');s.src='https://www.googletagmanager.com/gtag/js?id=G-X6YR7HG68N';s.async=true;document.head.appendChild(s);});</script>

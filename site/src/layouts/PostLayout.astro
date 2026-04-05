@@ -13,25 +13,38 @@ interface Props {
   tag: string;
   slug: string;
   description?: string;
+  updatedDate?: string;
   section?: 'blog' | 'tips';
   alternates?: Array<{ lang: string; url: string }>;
 }
-const { title, lang, date, tag, slug, description, section = 'blog', alternates } = Astro.props;
+const { title, lang, date, tag, slug, description, updatedDate, section = 'blog', alternates } = Astro.props;
 const sectionPath = `/${lang}/${section}/`;
 const sectionLabel = t(lang, section === 'tips' ? 'nav_tips' : 'nav_blog');
 
 const pagePath = `/${lang}/${section}/${slug}/`;
 const canonicalUrl = `${SITE}${pagePath}`;
+const homeUrl = lang === 'en' ? SITE : `${SITE}/${lang}`;
 
-const jsonLd = {
+const articleJsonLd = {
   '@context': 'https://schema.org',
   '@type': 'Article',
   headline: title,
   datePublished: date,
+  dateModified: updatedDate ?? date,
   author: { '@type': 'Organization', name: 'Tetora', url: SITE },
   publisher: { '@type': 'Organization', name: 'Tetora', url: SITE },
   ...(description ? { description } : {}),
 };
+const breadcrumbJsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'BreadcrumbList',
+  itemListElement: [
+    { '@type': 'ListItem', position: 1, name: 'Tetora', item: homeUrl },
+    { '@type': 'ListItem', position: 2, name: sectionLabel, item: `${SITE}${sectionPath}` },
+    { '@type': 'ListItem', position: 3, name: title },
+  ],
+};
+const jsonLd = [articleJsonLd, breadcrumbJsonLd];
 ---
 <Base
   title={`${title} — Tetora Blog`}
