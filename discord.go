@@ -1388,7 +1388,13 @@ func (db *DiscordBot) handleDirectRoute(msg discord.Message, prompt string, agen
 
 func (db *DiscordBot) handleRoute(msg discord.Message, prompt string) {
 	ctx := trace.WithID(context.Background(), trace.NewID("discord"))
-	route := routeTask(ctx, db.cfg, RouteRequest{Prompt: prompt, Source: "discord"})
+	route := routeTask(ctx, db.cfg, RouteRequest{
+		Prompt:    prompt,
+		Source:    "discord",
+		ChannelID: msg.ChannelID,
+		GuildID:   msg.GuildID,
+		UserID:    msg.Author.ID,
+	})
 	log.InfoCtx(ctx, "discord route result", "prompt", truncate(prompt, 60), "agent", route.Agent, "method", route.Method)
 	db.executeRoute(msg, prompt, *route)
 }
@@ -1435,8 +1441,17 @@ func (db *DiscordBot) executeRoute(msg discord.Message, prompt string, route Rou
 	}
 
 	// Channel session.
+	// If an active session exists and the route was NOT from a high-confidence
+	// binding, keep the existing session's agent to avoid constant session churn
+	// caused by non-deterministic LLM routing.
 	chKey := channelSessionKey("discord", msg.ChannelID)
-	sess, err := getOrCreateChannelSession(dbPath, "discord", chKey, route.Agent, "")
+	agent := route.Agent
+	if route.Method != "binding" {
+		if existing, _ := findChannelSession(dbPath, chKey); existing != nil {
+			agent = existing.Agent
+		}
+	}
+	sess, err := getOrCreateChannelSession(dbPath, "discord", chKey, agent, "")
 	if err != nil {
 		log.ErrorCtx(ctx, "discord session error", "error", err)
 	}
