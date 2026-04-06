@@ -1380,7 +1380,7 @@ func (db *DiscordBot) cmdApprove(msg discord.Message, args string) {
 
 // handleDirectRoute dispatches a message directly to a known agent without smart routing.
 func (db *DiscordBot) handleDirectRoute(msg discord.Message, prompt string, agent string) {
-	route := RouteResult{Agent: agent, Method: "default", Confidence: "high"}
+	route := RouteResult{Agent: agent, Method: "explicit", Confidence: "high"}
 	db.executeRoute(msg, prompt, route)
 }
 
@@ -1442,12 +1442,14 @@ func (db *DiscordBot) executeRoute(msg discord.Message, prompt string, route Rou
 
 	// Channel session.
 	// If an active session exists and the route was NOT from a high-confidence
-	// binding, keep the existing session's agent to avoid constant session churn
-	// caused by non-deterministic LLM routing.
+	// binding/explicit, keep the existing session's agent to avoid constant
+	// session churn caused by non-deterministic LLM routing.
 	chKey := channelSessionKey("discord", msg.ChannelID)
 	agent := route.Agent
-	if route.Method != "binding" {
-		if existing, _ := findChannelSession(dbPath, chKey); existing != nil {
+	if route.Method != "binding" && route.Method != "explicit" {
+		if existing, err := findChannelSession(dbPath, chKey); err != nil {
+			log.WarnCtx(ctx, "discord findChannelSession error", "error", err)
+		} else if existing != nil {
 			agent = existing.Agent
 		}
 	}
