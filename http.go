@@ -4279,11 +4279,22 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			name := e.Name()
 			entryPath := filepath.Join(targetDir, name)
 
-			// Resolve symlinks: if entry is a symlink, follow it to determine isDir
+			// Follow symlinks once: use os.Stat for both isDir and metadata.
+			// For non-symlinks, fall back to DirEntry info (no extra syscall).
 			isDir := e.IsDir()
+			var size int64
+			var modTime string
 			if e.Type()&fs.ModeSymlink != 0 {
 				if info, err := os.Stat(entryPath); err == nil {
 					isDir = info.IsDir()
+					size = info.Size()
+					modTime = info.ModTime().Format(time.RFC3339)
+				}
+				// dangling symlink: isDir stays false, entry is silently skipped by ext check
+			} else {
+				if info, err := e.Info(); err == nil {
+					size = info.Size()
+					modTime = info.ModTime().Format(time.RFC3339)
 				}
 			}
 
@@ -4304,14 +4315,6 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 				relPath = filepath.Clean(dirParam) + "/" + name
 			} else {
 				relPath = name
-			}
-
-			var size int64
-			var modTime string
-			// Use os.Stat to follow symlinks for file metadata
-			if info, err := os.Stat(entryPath); err == nil {
-				size = info.Size()
-				modTime = info.ModTime().Format(time.RFC3339)
 			}
 
 			entries = append(entries, wsEntry{
