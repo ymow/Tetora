@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -4276,7 +4277,28 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		entries := make([]wsEntry, 0)
 		for _, e := range dirEntries {
 			name := e.Name()
-			if e.IsDir() {
+			entryPath := filepath.Join(targetDir, name)
+
+			// Follow symlinks once: use os.Stat for both isDir and metadata.
+			// For non-symlinks, fall back to DirEntry info (no extra syscall).
+			isDir := e.IsDir()
+			var size int64
+			var modTime string
+			if e.Type()&fs.ModeSymlink != 0 {
+				if info, err := os.Stat(entryPath); err == nil {
+					isDir = info.IsDir()
+					size = info.Size()
+					modTime = info.ModTime().Format(time.RFC3339)
+				}
+				// dangling symlink: isDir stays false, entry is silently skipped by ext check
+			} else {
+				if info, err := e.Info(); err == nil {
+					size = info.Size()
+					modTime = info.ModTime().Format(time.RFC3339)
+				}
+			}
+
+			if isDir {
 				if skipDirs[name] || strings.HasPrefix(name, ".") {
 					continue
 				}
@@ -4295,17 +4317,10 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 				relPath = name
 			}
 
-			var size int64
-			var modTime string
-			if info, err := e.Info(); err == nil {
-				size = info.Size()
-				modTime = info.ModTime().Format(time.RFC3339)
-			}
-
 			entries = append(entries, wsEntry{
 				Path:    relPath,
 				Name:    name,
-				IsDir:   e.IsDir(),
+				IsDir:   isDir,
 				Size:    size,
 				ModTime: modTime,
 			})
