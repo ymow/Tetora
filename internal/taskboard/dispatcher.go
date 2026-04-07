@@ -442,6 +442,7 @@ func (d *Dispatcher) findRunningWorkflowForTask(taskID string) string {
 func (d *Dispatcher) DoingTaskCountForAgent(agent string) int {
 	tasks, err := d.engine.ListTasks("doing", agent, "")
 	if err != nil {
+		log.Warn("DoingTaskCountForAgent: ListTasks error", "agent", agent, "error", err)
 		return 0
 	}
 	return len(tasks)
