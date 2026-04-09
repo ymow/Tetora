@@ -4884,14 +4884,16 @@ func toolSearchTools(ctx context.Context, cfg *Config, input json.RawMessage) (s
 	type toolResult struct {
 		Name        string  `json:"name"`
 		Description string  `json:"description"`
-		Score       float64 `json:"score,omitempty"`
+		BM25Score   float64 `json:"bm25_score,omitempty"`
+		FinalScore  float64 `json:"final_score,omitempty"`
 	}
 	out := make([]toolResult, 0, len(results))
 	for _, r := range results {
 		out = append(out, toolResult{
 			Name:        r.Tool.Name,
 			Description: r.Tool.Description,
-			Score:       r.Score,
+			BM25Score:   r.BM25Score,
+			FinalScore:  r.FinalScore,
 		})
 	}
 

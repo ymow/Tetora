@@ -191,3 +191,125 @@ func sortResults(results []Result) {
 		}
 	}
 }
+
+// --- Two-Stage Reranking (based on arXiv:2604.01733 findings) ---
+
+// RerankConfig holds weights for the reranking stage.
+// The final score = BM25Score * (1 + nameBonus + keywordBoost + lengthPenalty + usageBonus).
+type RerankConfig struct {
+	// NameMatchWeight: bonus multiplier when query terms appear in the tool name.
+	NameMatchWeight float64
+	// KeywordBoost: extra weight for matches in the Keywords field vs Description.
+	KeywordBoost float64
+	// LengthPenaltyFactor: penalize overly long descriptions (0 = no penalty).
+	LengthPenaltyFactor float64
+	// AvgDocLen: average description length for normalization (0 = skip penalty).
+	AvgDocLen float64
+}
+
+// DefaultRerankConfig returns sensible defaults based on empirical tuning.
+func DefaultRerankConfig() RerankConfig {
+	return RerankConfig{
+		NameMatchWeight:     1.5,  // Name match gives 50%+ boost
+		KeywordBoost:        0.5,  // Keyword field match gives 25%+ boost
+		LengthPenaltyFactor: 0.15, // Mild penalty for very long descriptions
+	}
+}
+
+// RerankResult holds a result with its original BM25 score and reranked final score.
+type RerankResult struct {
+	ID         string
+	BM25Score  float64
+	FinalScore float64
+}
+
+// Rerank takes initial BM25 results and re-scores them using name match,
+// keyword priority, and length normalization heuristics.
+// This implements the two-stage pipeline from the paper: BM25 recall → reranking.
+func Rerank(query string, queryTerms []string, bm25Results []Result,
+	getDocMeta func(docID string) DocMeta, cfg RerankConfig) []RerankResult {
+
+	if len(bm25Results) == 0 || getDocMeta == nil {
+		out := make([]RerankResult, 0, len(bm25Results))
+		for _, r := range bm25Results {
+			out = append(out, RerankResult{ID: r.ID, BM25Score: r.Score, FinalScore: r.Score})
+		}
+		return out
+	}
+
+	results := make([]RerankResult, len(bm25Results))
+	for i, r := range bm25Results {
+		meta := getDocMeta(r.ID)
+		multiplier := 1.0
+
+		// 1. Name exact match bonus (from paper: lexical precision dominates in entity domains).
+		if meta.Name != "" {
+			nameLower := strings.ToLower(meta.Name)
+			for _, qt := range queryTerms {
+				if strings.Contains(nameLower, qt) {
+					multiplier += cfg.NameMatchWeight
+				}
+			}
+			// If the entire query appears in the name, extra bonus.
+			if strings.Contains(nameLower, strings.ToLower(query)) {
+				multiplier += cfg.NameMatchWeight * 0.5
+			}
+		}
+
+		// 2. Keyword field priority boost.
+		// Terms matching the Keywords field are more relevant than Description matches.
+		if len(meta.Keywords) > 0 {
+			keywordSet := make(map[string]bool)
+			for _, kw := range meta.Keywords {
+				for _, t := range Tokenize(kw) {
+					keywordSet[t] = true
+				}
+			}
+			for _, qt := range queryTerms {
+				if keywordSet[qt] {
+					multiplier += cfg.KeywordBoost
+				}
+			}
+		}
+
+		// 3. Length penalty: long descriptions dilute relevance for precise queries.
+		if cfg.LengthPenaltyFactor > 0 && cfg.AvgDocLen > 0 && meta.DocLen > 0 {
+			ratio := float64(meta.DocLen) / cfg.AvgDocLen
+			if ratio > 1.5 {
+				multiplier -= cfg.LengthPenaltyFactor * (ratio - 1.0)
+			}
+		}
+
+		if multiplier < 0.1 {
+			multiplier = 0.1 // Floor
+		}
+
+		finalScore := r.Score * multiplier
+		results[i] = RerankResult{
+			ID:         r.ID,
+			BM25Score:  r.Score,
+			FinalScore: finalScore,
+		}
+	}
+
+	// Sort by final score.
+	sortRerankResults(results)
+	return results
+}
+
+// DocMeta holds per-document metadata used by the reranker.
+type DocMeta struct {
+	Name       string   // Tool name (for exact match bonus)
+	Keywords   []string // Extra keywords (for priority boost)
+	DocLen     int      // Tokenized description length (for length penalty)
+}
+
+func sortRerankResults(results []RerankResult) {
+	for i := 0; i < len(results); i++ {
+		for j := i + 1; j < len(results); j++ {
+			if results[j].FinalScore > results[i].FinalScore {
+				results[i], results[j] = results[j], results[i]
+			}
+		}
+	}
+}

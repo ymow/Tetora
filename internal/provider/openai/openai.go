@@ -63,9 +63,10 @@ type tool struct {
 }
 
 type function struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	Parameters   json.RawMessage `json:"parameters,omitempty"`
+	DeferLoading bool            `json:"defer_loading,omitempty"`
 }
 
 type message struct {
@@ -152,9 +153,10 @@ func (p *Provider) executeInternal(ctx context.Context, req provider.Request) (*
 		tools = append(tools, tool{
 			Type: "function",
 			Function: function{
-				Name:        t.Name,
-				Description: t.Description,
-				Parameters:  t.InputSchema,
+				Name:         t.Name,
+				Description:  t.Description,
+				Parameters:   t.InputSchema,
+				DeferLoading: t.DeferLoading,
 			},
 		})
 	}

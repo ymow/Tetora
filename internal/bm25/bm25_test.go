@@ -132,3 +132,76 @@ func TestBM25ScoreOrdering(t *testing.T) {
 		t.Errorf("expected 'twice' first, got %q (scores: %+v)", results[0].ID, results)
 	}
 }
+
+func TestRerankNameMatch(t *testing.T) {
+	bm25Results := []Result{
+		{ID: "memory_search", Score: 1.0},
+		{ID: "knowledge_search", Score: 1.0},
+	}
+
+	getMeta := func(docID string) DocMeta {
+		if docID == "memory_search" {
+			return DocMeta{Name: "memory_search", Keywords: nil, DocLen: 3}
+		}
+		return DocMeta{Name: "knowledge_search", Keywords: nil, DocLen: 3}
+	}
+
+	cfg := DefaultRerankConfig()
+	results := Rerank("memory", []string{"memory"}, bm25Results, getMeta, cfg)
+
+	if results[0].ID != "memory_search" {
+		t.Errorf("expected memory_search first after reranking, got %q", results[0].ID)
+	}
+	if results[0].FinalScore <= results[0].BM25Score {
+		t.Errorf("memory_search should get name bonus: bm25=%.4f final=%.4f",
+			results[0].BM25Score, results[0].FinalScore)
+	}
+}
+
+func TestRerankKeywordBoost(t *testing.T) {
+	bm25Results := []Result{
+		{ID: "tool_a", Score: 1.0},
+		{ID: "tool_b", Score: 1.0},
+	}
+
+	getMeta := func(docID string) DocMeta {
+		if docID == "tool_a" {
+			return DocMeta{Name: "tool_a", Keywords: []string{"email", "message"}, DocLen: 2}
+		}
+		return DocMeta{Name: "tool_b", Keywords: nil, DocLen: 2}
+	}
+
+	cfg := DefaultRerankConfig()
+	results := Rerank("email", []string{"email"}, bm25Results, getMeta, cfg)
+
+	if results[0].ID != "tool_a" {
+		t.Errorf("expected tool_a first after reranking (keyword boost), got %q", results[0].ID)
+	}
+	if results[0].FinalScore <= results[0].BM25Score {
+		t.Errorf("tool_a should get keyword boost: bm25=%.4f final=%.4f",
+			results[0].BM25Score, results[0].FinalScore)
+	}
+}
+
+func TestRerankEmptyInput(t *testing.T) {
+	results := Rerank("", nil, nil, nil, DefaultRerankConfig())
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for nil input, got %d", len(results))
+	}
+}
+
+func TestRerankPreservesAllResults(t *testing.T) {
+	bm25Results := []Result{
+		{ID: "a", Score: 1.0},
+		{ID: "b", Score: 0.8},
+		{ID: "c", Score: 0.5},
+	}
+	getMeta := func(docID string) DocMeta {
+		return DocMeta{Name: docID, DocLen: 2}
+	}
+
+	results := Rerank("query", []string{"query"}, bm25Results, getMeta, DefaultRerankConfig())
+	if len(results) != 3 {
+		t.Errorf("expected 3 results preserved, got %d", len(results))
+	}
+}

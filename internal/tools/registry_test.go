@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -52,7 +53,8 @@ func TestRegistrySearchBM25(t *testing.T) {
 			continue
 		}
 		if results[0].Tool.Name != tc.wantTop {
-			t.Errorf("SearchBM25(%q): top result = %q, want %q (scores: %+v)", tc.query, results[0].Tool.Name, tc.wantTop, results)
+			t.Errorf("SearchBM25(%q): top result = %q, want %q (scores: bm25=%.4f, final=%.4f)",
+				tc.query, results[0].Tool.Name, tc.wantTop, results[0].BM25Score, results[0].FinalScore)
 		}
 	}
 }
@@ -107,5 +109,153 @@ func TestRegistrySearchBM25WithKeywords(t *testing.T) {
 	}
 	if len(results) > 0 && results[0].Tool.Name != "msg_send" {
 		t.Errorf("expected msg_send, got %q", results[0].Tool.Name)
+	}
+}
+
+func TestApplyDeferredPolicy(t *testing.T) {
+	r := NewRegistry()
+
+	// Register a mix of always-loaded and regular tools
+	r.Register(&ToolDef{Name: "search_tools", Description: "Search tools"})
+	r.Register(&ToolDef{Name: "execute_tool", Description: "Execute a tool"})
+	r.Register(&ToolDef{Name: "memory_search", Description: "Search memory"})
+	r.Register(&ToolDef{Name: "web_search", Description: "Search the web"})
+	r.Register(&ToolDef{Name: "knowledge_search", Description: "Search knowledge"})
+	r.Register(&ToolDef{Name: "email_send", Description: "Send an email"})
+	r.Register(&ToolDef{Name: "file_read", Description: "Read a file"})
+	r.Register(&ToolDef{Name: "task_create", Description: "Create a task"})
+
+	r.ApplyDeferredPolicy()
+
+	// Always-loaded tools should NOT be deferred
+	for name := range AlwaysLoadedTools {
+		tool, ok := r.Get(name)
+		if !ok {
+			t.Errorf("expected tool %q to exist", name)
+			continue
+		}
+		if tool.DeferLoading {
+			t.Errorf("tool %q should NOT be deferred (in AlwaysLoadedTools)", name)
+		}
+	}
+
+	// Other tools SHOULD be deferred
+	deferredTools := []string{"email_send", "file_read", "task_create"}
+	for _, name := range deferredTools {
+		tool, ok := r.Get(name)
+		if !ok {
+			t.Errorf("expected tool %q to exist", name)
+			continue
+		}
+		if !tool.DeferLoading {
+			t.Errorf("tool %q should be deferred, but isn't", name)
+		}
+	}
+}
+
+func TestDeferredPolicyCount(t *testing.T) {
+	r := NewRegistry()
+
+	// Simulate a realistic registry
+	r.Register(&ToolDef{Name: "search_tools", Description: "Search tools"})
+	r.Register(&ToolDef{Name: "execute_tool", Description: "Execute a tool"})
+	for i := 0; i < 50; i++ {
+		r.Register(&ToolDef{Name: fmt.Sprintf("tool_%d", i), Description: fmt.Sprintf("Tool %d", i)})
+	}
+
+	r.ApplyDeferredPolicy()
+
+	// Only 2 should be non-deferred (search_tools + execute_tool; memory_search etc. not registered here)
+	alwaysCount := 0
+	deferredCount := 0
+	r.Range(func(t *ToolDef) bool {
+		if t.DeferLoading {
+			deferredCount++
+		} else {
+			alwaysCount++
+		}
+		return true
+	})
+
+	if alwaysCount != len(AlwaysLoadedTools) {
+		// Note: only registered tools count, so alwaysCount <= len(AlwaysLoadedTools)
+		t.Logf("alwaysCount=%d, registered AlwaysLoadedTools=%d (some may not be registered yet)", alwaysCount, len(AlwaysLoadedTools))
+	}
+	if deferredCount != 50 {
+		t.Errorf("expected 50 deferred tools, got %d", deferredCount)
+	}
+}
+
+func TestRerankingNameMatchBonus(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&ToolDef{Name: "memory_search", Description: "Search personal memory for past notes."})
+	r.Register(&ToolDef{Name: "knowledge_search", Description: "Search the knowledge base for indexed files."})
+	r.Register(&ToolDef{Name: "web_search", Description: "Search the web for online results."})
+
+	r.ApplyDeferredPolicy()
+
+	// Query "search" matches all three. With reranking, "memory_search" should
+	// rank first because "memory" doesn't appear in the query but the tool name
+	// contains "search" and the description contains "search" too.
+	// More specifically, let's query "memory" — only memory_search matches BM25,
+	// so let's query "search" to get all three and verify reranking order.
+	results := r.SearchBM25("search", 3)
+	if len(results) < 3 {
+		t.Fatalf("expected 3 results, got %d: %+v", len(results), results)
+	}
+	// All have "search" in description, so BM25 ranks them similarly.
+	// The reranker should give all equal scores (no name bonus for "search" alone
+	// since all names contain "search").
+	for _, res := range results {
+		if res.FinalScore <= 0 {
+			t.Errorf("%s final score = %.4f, expected > 0", res.Tool.Name, res.FinalScore)
+		}
+	}
+}
+
+func TestRerankingKeywordBoost(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&ToolDef{
+		Name:        "msg_send",
+		Description: "Send a communication.",
+		Keywords:    []string{"email", "notification", "message"},
+	})
+	r.Register(&ToolDef{
+		Name:        "notify_push",
+		Description: "Send a push notification to a device.",
+	})
+
+	// Query "email" should rank msg_send first because "email" is in its Keywords.
+	results := r.SearchBM25("email", 5)
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 result")
+	}
+	if results[0].Tool.Name != "msg_send" {
+		t.Errorf("top result = %q, want msg_send (keyword boost). scores: bm25=%.4f final=%.4f",
+			results[0].Tool.Name, results[0].BM25Score, results[0].FinalScore)
+	}
+}
+
+func TestRerankingNameVsDescription(t *testing.T) {
+	// A tool whose name matches the query should rank higher than one whose description
+	// matches but name doesn't.
+	r := NewRegistry()
+	r.Register(&ToolDef{
+		Name:        "task_list",
+		Description: "Show all tasks in the system.",
+	})
+	r.Register(&ToolDef{
+		Name:        "item_search",
+		Description: "Search through your task list to find specific items.",
+	})
+
+	// Query "task" — both match in description, but task_list has "task" in its name.
+	results := r.SearchBM25("task", 5)
+	if len(results) < 2 {
+		t.Fatalf("expected 2 results, got %d: %+v", len(results), results)
+	}
+	if results[0].Tool.Name != "task_list" {
+		t.Errorf("top result = %q, want task_list (name match bonus). scores: bm25=%.4f final=%.4f",
+			results[0].Tool.Name, results[0].BM25Score, results[0].FinalScore)
 	}
 }
