@@ -1764,6 +1764,17 @@ func (db *DiscordBot) executeRoute(msg discord.Message, prompt string, route Rou
 		db.sendMessage(msg.ChannelID, result.SlotWarning)
 	}
 
+	// FIX: Auto-recover from stale session errors (provider switch or machine migration)
+	if result.Status != "success" && strings.Contains(result.Error, "No saved session found") {
+		log.WarnCtx(ctx, "Auto-cleared stale session ID", "error", result.Error)
+		if sess != nil {
+			// Mark the invalid session as archived to force a fresh start next time
+			_ = updateSessionStatus(dbPath, sess.ID, "archived")
+		}
+		db.sendMessage(msg.ChannelID, "♻️ **System Reset**: Detected environment change (Provider/Migration). Starting new session...")
+		return
+	}
+
 	// Send response embed.
 	db.sendRouteResponse(msg.ChannelID, &route, result, task, outputAlreadySent, msg.ID)
 }
