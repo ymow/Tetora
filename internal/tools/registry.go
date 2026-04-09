@@ -15,13 +15,14 @@ import (
 
 // ToolDef defines a tool that can be called by agents.
 type ToolDef struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
-	Keywords    []string        `json:"-"` // Extra searchable keywords for BM25
-	Handler     Handler         `json:"-"`
-	Builtin     bool            `json:"-"`
-	RequireAuth bool            `json:"requireAuth,omitempty"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	InputSchema  json.RawMessage `json:"input_schema"`
+	Keywords     []string        `json:"-"` // Extra searchable keywords for BM25
+	DeferLoading bool            `json:"-"` // When true, tool is deferred (loaded on-demand via search_tools)
+	Handler      Handler         `json:"-"`
+	Builtin      bool            `json:"-"`
+	RequireAuth  bool            `json:"requireAuth,omitempty"`
 }
 
 // ToolCall is an alias for provider.ToolCall.
@@ -117,12 +118,13 @@ func (r *Registry) ListFiltered(allowed map[string]bool) []*ToolDef {
 
 // SearchResult holds a tool search result with its BM25 score.
 type SearchResult struct {
-	Tool  *ToolDef
-	Score float64
+	Tool        *ToolDef
+	BM25Score   float64
+	FinalScore  float64
 }
 
-// SearchBM25 searches tools using BM25 ranking. Returns results sorted by
-// relevance score. If topN <= 0, returns all matching results.
+// SearchBM25 searches tools using two-stage reranking (BM25 recall → rerank).
+// Returns results sorted by final reranked score. If topN <= 0, returns all matching.
 func (r *Registry) SearchBM25(query string, topN int) []SearchResult {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -132,13 +134,59 @@ func (r *Registry) SearchBM25(query string, topN int) []SearchResult {
 	}
 
 	terms := bm25.Tokenize(query)
-	results := r.bm25Index.Search(terms, topN)
 
-	out := make([]SearchResult, 0, len(results))
-	for _, res := range results {
-		if t, ok := r.tools[res.ID]; ok {
-			out = append(out, SearchResult{Tool: t, Score: res.Score})
+	// Stage 1: BM25 recall with a larger candidate set.
+	recallN := topN * 4
+	if recallN < 20 {
+		recallN = 20
+	}
+	bm25Results := r.bm25Index.Search(terms, recallN)
+	if len(bm25Results) == 0 {
+		return nil
+	}
+
+	// Compute avg description length for length penalty.
+	var totalLen, count int
+	for _, t := range r.tools {
+		descTerms := bm25.Tokenize(t.Description)
+		totalLen += len(descTerms)
+		count++
+	}
+	avgLen := 0.0
+	if count > 0 {
+		avgLen = float64(totalLen) / float64(count)
+	}
+
+	// Stage 2: Rerank with name match, keyword priority, and length penalty.
+	getMeta := func(docID string) bm25.DocMeta {
+		t, ok := r.tools[docID]
+		if !ok {
+			return bm25.DocMeta{}
 		}
+		return bm25.DocMeta{
+			Name:     t.Name,
+			Keywords: t.Keywords,
+			DocLen:   len(bm25.Tokenize(t.Description)),
+		}
+	}
+
+	cfg := bm25.DefaultRerankConfig()
+	cfg.AvgDocLen = avgLen
+	reranked := bm25.Rerank(query, terms, bm25Results, getMeta, cfg)
+
+	out := make([]SearchResult, 0, len(reranked))
+	for _, res := range reranked {
+		if t, ok := r.tools[res.ID]; ok {
+			out = append(out, SearchResult{
+				Tool:       t,
+				BM25Score:  res.BM25Score,
+				FinalScore: res.FinalScore,
+			})
+		}
+	}
+
+	if topN > 0 && topN < len(out) {
+		out = out[:topN]
 	}
 	return out
 }
@@ -217,5 +265,32 @@ func ForComplexity(c classify.Complexity) string {
 		return "standard"
 	default:
 		return "full"
+	}
+}
+
+// --- Deferred Tool Loading ---
+
+// AlwaysLoadedTools are tools that must always be available in the provider
+// request. These are the core discovery/execution tools that enable the agent
+// to find and use any other deferred tool. All other tools are marked with
+// defer_loading=true so the provider loads them on-demand via search.
+var AlwaysLoadedTools = map[string]bool{
+	"search_tools":   true, // BM25 tool discovery
+	"execute_tool":   true, // Execute any tool by name
+	"memory_search":  true, // Memory lookup (frequently used)
+	"web_search":     true, // Web lookup (frequently used)
+	"knowledge_search": true, // Knowledge base lookup
+}
+
+// ApplyDeferredPolicy marks all tools NOT in AlwaysLoadedTools with DeferLoading=true.
+// This should be called after all tools are registered, before starting the agent loop.
+func (r *Registry) ApplyDeferredPolicy() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for name, t := range r.tools {
+		if !AlwaysLoadedTools[name] {
+			t.DeferLoading = true
+		}
 	}
 }

@@ -61,9 +61,10 @@ type contentBlock struct {
 }
 
 type tool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	InputSchema  json.RawMessage `json:"input_schema"`
+	DeferLoading bool            `json:"defer_loading,omitempty"`
 }
 
 type request struct {
@@ -119,9 +120,10 @@ func (p *Provider) executeInternal(ctx context.Context, req provider.Request) (*
 	var tools []tool
 	for _, t := range req.Tools {
 		tools = append(tools, tool{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: t.InputSchema,
+			Name:         t.Name,
+			Description:  t.Description,
+			InputSchema:  t.InputSchema,
+			DeferLoading: t.DeferLoading,
 		})
 	}
 

@@ -136,9 +136,10 @@ type ContentBlock struct {
 // ToolDef defines a tool that can be called by providers.
 // Note: Handler is intentionally omitted — providers only need Name/Description/InputSchema.
 type ToolDef struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	InputSchema  json.RawMessage `json:"input_schema"`
+	DeferLoading bool            `json:"defer_loading,omitempty"` // When true, tool is loaded on-demand via search
 }
 
 // ToolCall represents a tool invocation request from the provider.

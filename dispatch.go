@@ -2522,9 +2522,10 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 	providerTools := make([]provider.ToolDef, len(tools))
 	for i, t := range tools {
 		providerTools[i] = provider.ToolDef{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: t.InputSchema,
+			Name:         t.Name,
+			Description:  t.Description,
+			InputSchema:  t.InputSchema,
+			DeferLoading: t.DeferLoading,
 		}
 	}
 	req.Tools = providerTools
