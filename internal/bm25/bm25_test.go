@@ -205,3 +205,26 @@ func TestRerankPreservesAllResults(t *testing.T) {
 		t.Errorf("expected 3 results preserved, got %d", len(results))
 	}
 }
+
+func TestHeuristicRerankerImplementsInterface(t *testing.T) {
+	// Verify HeuristicReranker satisfies the Reranker interface.
+	var _ Reranker = NewHeuristicReranker(DefaultRerankConfig())
+
+	hr := NewHeuristicReranker(DefaultRerankConfig())
+	bm25Results := []Result{
+		{ID: "search_tools", Score: 1.0},
+		{ID: "memory_search", Score: 1.0},
+	}
+	getMeta := func(docID string) DocMeta {
+		return DocMeta{Name: docID, DocLen: 3}
+	}
+
+	results := hr.Rerank("search", []string{"search"}, bm25Results, getMeta)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	// search_tools should rank first due to name match bonus.
+	if results[0].ID != "search_tools" {
+		t.Errorf("expected search_tools first, got %q", results[0].ID)
+	}
+}
