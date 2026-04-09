@@ -4,8 +4,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 
+	"tetora/internal/bm25"
 	"tetora/internal/classify"
 	"tetora/internal/config"
 	"tetora/internal/provider"
@@ -16,6 +18,7 @@ type ToolDef struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
+	Keywords    []string        `json:"-"` // Extra searchable keywords for BM25
 	Handler     Handler         `json:"-"`
 	Builtin     bool            `json:"-"`
 	RequireAuth bool            `json:"requireAuth,omitempty"`
@@ -36,8 +39,9 @@ type Handler func(ctx context.Context, cfg *config.Config, input json.RawMessage
 
 // Registry manages available tools.
 type Registry struct {
-	mu    sync.RWMutex
-	tools map[string]*ToolDef
+	mu         sync.RWMutex
+	tools      map[string]*ToolDef
+	bm25Index  *bm25.BM25
 }
 
 // NewRegistry creates a new empty tool registry.
@@ -47,11 +51,32 @@ func NewRegistry() *Registry {
 	}
 }
 
-// Register adds a tool to the registry.
+// Register adds a tool to the registry and rebuilds the BM25 index.
 func (r *Registry) Register(tool *ToolDef) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.tools[tool.Name] = tool
+	r.rebuildBM25IndexLocked()
+	r.mu.Unlock()
+}
+
+// rebuildBM25IndexLocked rebuilds the BM25 index from all registered tools.
+// Must be called with r.mu held (write lock).
+func (r *Registry) rebuildBM25IndexLocked() {
+	docs := make([]bm25.Document, 0, len(r.tools))
+	for _, t := range r.tools {
+		// Build searchable text: name + description + keywords
+		var parts []string
+		// Split underscored names into separate terms for better matching
+		nameTerms := strings.ReplaceAll(t.Name, "_", " ")
+		parts = append(parts, nameTerms)
+		parts = append(parts, t.Description)
+		parts = append(parts, strings.Join(t.Keywords, " "))
+		docs = append(docs, bm25.Document{
+			ID:    t.Name,
+			Terms: bm25.Tokenize(strings.Join(parts, " ")),
+		})
+	}
+	r.bm25Index = bm25.New(docs, bm25.DefaultK1, bm25.DefaultB)
 }
 
 // Get retrieves a tool by name.
@@ -88,6 +113,34 @@ func (r *Registry) ListFiltered(allowed map[string]bool) []*ToolDef {
 		}
 	}
 	return result
+}
+
+// SearchResult holds a tool search result with its BM25 score.
+type SearchResult struct {
+	Tool  *ToolDef
+	Score float64
+}
+
+// SearchBM25 searches tools using BM25 ranking. Returns results sorted by
+// relevance score. If topN <= 0, returns all matching results.
+func (r *Registry) SearchBM25(query string, topN int) []SearchResult {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if r.bm25Index == nil {
+		return nil
+	}
+
+	terms := bm25.Tokenize(query)
+	results := r.bm25Index.Search(terms, topN)
+
+	out := make([]SearchResult, 0, len(results))
+	for _, res := range results {
+		if t, ok := r.tools[res.ID]; ok {
+			out = append(out, SearchResult{Tool: t, Score: res.Score})
+		}
+	}
+	return out
 }
 
 // Range calls fn for each tool in the registry. If fn returns false, iteration stops.
