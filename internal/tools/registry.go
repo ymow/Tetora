@@ -44,6 +44,7 @@ type Registry struct {
 	mu         sync.RWMutex
 	tools      map[string]*ToolDef
 	bm25Index  *bm25.BM25
+	reranker   bm25.Reranker
 	usageCount map[string]int // tool name -> call count (for reranking boost)
 }
 
@@ -51,8 +52,16 @@ type Registry struct {
 func NewRegistry() *Registry {
 	return &Registry{
 		tools:      make(map[string]*ToolDef),
+		reranker:   bm25.NewHeuristicReranker(bm25.DefaultRerankConfig()),
 		usageCount: make(map[string]int),
 	}
+}
+
+// SetReranker replaces the default reranker (for using external/neural rerankers).
+func (r *Registry) SetReranker(rk bm25.Reranker) {
+	r.mu.Lock()
+	r.reranker = rk
+	r.mu.Unlock()
 }
 
 // Register adds a tool to the registry and rebuilds the BM25 index.
@@ -165,35 +174,23 @@ func (r *Registry) SearchBM25(query string, topN int) []SearchResult {
 		return nil
 	}
 
-	// Compute avg description length for length penalty.
-	var totalLen, count int
-	for _, t := range r.tools {
-		descTerms := bm25.Tokenize(t.Description)
-		totalLen += len(descTerms)
-		count++
-	}
-	avgLen := 0.0
-	if count > 0 {
-		avgLen = float64(totalLen) / float64(count)
-	}
-
-	// Stage 2: Rerank with name match, keyword priority, and length penalty.
+	// Stage 2: Rerank with pluggable reranker.
 	getMeta := func(docID string) bm25.DocMeta {
 		t, ok := r.tools[docID]
 		if !ok {
 			return bm25.DocMeta{}
 		}
 		return bm25.DocMeta{
-			Name:       t.Name,
-			Keywords:   t.Keywords,
-			DocLen:     len(bm25.Tokenize(t.Description)),
-			UsageCount: r.usageCount[t.Name],
+			Name:              t.Name,
+			Description:       t.Description,
+			ContextualSummary: t.ContextualSummary,
+			Keywords:          t.Keywords,
+			DocLen:            len(bm25.Tokenize(t.Description)),
+			UsageCount:        r.usageCount[t.Name],
 		}
 	}
 
-	cfg := bm25.DefaultRerankConfig()
-	cfg.AvgDocLen = avgLen
-	reranked := bm25.Rerank(query, terms, bm25Results, getMeta, cfg)
+	reranked := r.reranker.Rerank(query, terms, bm25Results, getMeta)
 
 	out := make([]SearchResult, 0, len(reranked))
 	for _, res := range reranked {

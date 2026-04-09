@@ -194,7 +194,20 @@ func sortResults(results []Result) {
 
 // --- Two-Stage Reranking (based on arXiv:2604.01733 findings) ---
 
-// RerankConfig holds weights for the reranking stage.
+// Reranker is a pluggable interface for the second-stage reranking step.
+// Implementations can be heuristic-based, neural (Cohere, BGE), or hybrid.
+type Reranker interface {
+	// Rerank re-scores the given BM25 results and returns them sorted by final score.
+	// query is the original query string, queryTerms are tokenized query terms.
+	// bm25Results are the initial BM25-ranked results.
+	// getMeta provides per-document metadata.
+	Rerank(query string, queryTerms []string, bm25Results []Result,
+		getMeta func(docID string) DocMeta) []RerankResult
+}
+
+// --- Heuristic Reranker (default implementation) ---
+
+// RerankConfig holds weights for the heuristic reranking stage.
 // The final score = BM25Score * (1 + nameBonus + keywordBoost + lengthPenalty + usageBonus).
 type RerankConfig struct {
 	// NameMatchWeight: bonus multiplier when query terms appear in the tool name.
@@ -226,10 +239,31 @@ type RerankResult struct {
 	FinalScore float64
 }
 
-// Rerank takes initial BM25 results and re-scores them using name match,
-// keyword priority, and length normalization heuristics.
-// This implements the two-stage pipeline from the paper: BM25 recall → reranking.
+// HeuristicReranker implements Reranker using name match, keyword priority,
+// length penalty, and usage frequency heuristics.
+type HeuristicReranker struct {
+	Cfg RerankConfig
+}
+
+// NewHeuristicReranker creates a heuristic reranker with the given config.
+func NewHeuristicReranker(cfg RerankConfig) *HeuristicReranker {
+	return &HeuristicReranker{Cfg: cfg}
+}
+
+// Rerank implements the Reranker interface.
+func (hr *HeuristicReranker) Rerank(query string, queryTerms []string, bm25Results []Result,
+	getDocMeta func(docID string) DocMeta) []RerankResult {
+	return rerankImpl(query, queryTerms, bm25Results, getDocMeta, hr.Cfg)
+}
+
+// Rerank is a package-level convenience function using the given config.
 func Rerank(query string, queryTerms []string, bm25Results []Result,
+	getDocMeta func(docID string) DocMeta, cfg RerankConfig) []RerankResult {
+	return rerankImpl(query, queryTerms, bm25Results, getDocMeta, cfg)
+}
+
+// rerankImpl is the shared implementation.
+func rerankImpl(query string, queryTerms []string, bm25Results []Result,
 	getDocMeta func(docID string) DocMeta, cfg RerankConfig) []RerankResult {
 
 	if len(bm25Results) == 0 || getDocMeta == nil {
@@ -309,10 +343,12 @@ func Rerank(query string, queryTerms []string, bm25Results []Result,
 
 // DocMeta holds per-document metadata used by the reranker.
 type DocMeta struct {
-	Name       string   // Tool name (for exact match bonus)
-	Keywords   []string // Extra keywords (for priority boost)
-	DocLen     int      // Tokenized description length (for length penalty)
-	UsageCount int      // How many times this tool has been called (for popularity boost)
+	Name              string   // Tool name (for exact match bonus)
+	Description       string   // Tool description (for external reranker docs)
+	ContextualSummary string   // AI-generated contextual summary
+	Keywords          []string // Extra keywords (for priority boost)
+	DocLen            int      // Tokenized description length (for length penalty)
+	UsageCount        int      // How many times this tool has been called (for popularity boost)
 }
 
 func sortRerankResults(results []RerankResult) {
