@@ -63,10 +63,9 @@ type tool struct {
 }
 
 type function struct {
-	Name         string          `json:"name"`
-	Description  string          `json:"description"`
-	Parameters   json.RawMessage `json:"parameters,omitempty"`
-	DeferLoading bool            `json:"defer_loading,omitempty"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
 }
 
 type message struct {
@@ -150,13 +149,15 @@ func (p *Provider) executeInternal(ctx context.Context, req provider.Request) (*
 
 	var tools []tool
 	for _, t := range req.Tools {
+		if t.DeferLoading {
+			continue // exclude deferred tools from the OpenAI request
+		}
 		tools = append(tools, tool{
 			Type: "function",
 			Function: function{
-				Name:         t.Name,
-				Description:  t.Description,
-				Parameters:   t.InputSchema,
-				DeferLoading: t.DeferLoading,
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  t.InputSchema,
 			},
 		})
 	}
