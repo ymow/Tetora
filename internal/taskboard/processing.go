@@ -357,17 +357,11 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 				d.engine.AddComment(t.ID, "system",
 					fmt.Sprintf("[worktree] Running in isolated worktree: %s", wtDir))
 
-				// Acquire session lock: write this process's PID so concurrent
-				// Create/Prune/Remove calls detect an active session and refuse to
-				// delete the worktree while the agent is running. The release
-				// function is called explicitly before postTaskWorktree (agent has
-				// exited by that point). The outer defer is a safety net.
+				// Create() already wrote the session lock. Capture a release function
+				// so the lock is removed before postTaskWorktree — Remove() refuses to
+				// delete a worktree whose PID is still alive. The outer defer acts as
+				// a safety net for early returns and panics.
 				lockPath := filepath.Join(wtDir, ".tetora-active")
-				if err := os.WriteFile(lockPath,
-					[]byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644); err != nil {
-					log.Warn("worktree: failed to write session lock",
-						"task", t.ID, "path", lockPath, "error", err)
-				}
 				releaseLock = func() { os.Remove(lockPath) } //nolint:errcheck
 			}
 		}
