@@ -325,6 +325,17 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 
 	// Worktree isolation.
 	var worktreeDir string
+	// releaseLock is non-nil when a session lock was acquired for a worktree.
+	// It must be called before postTaskWorktree so Remove() doesn't see a live
+	// PID and refuse the cleanup. The defer below acts as a safety net for
+	// early returns and panics.
+	var releaseLock func()
+	defer func() {
+		if releaseLock != nil {
+			releaseLock()
+		}
+	}()
+
 	if d.engine.config.GitWorktree && projectWorkdir != "" && d.deps.Worktrees != nil {
 		d.cleanStaleLock(projectWorkdir, t.ID)
 
@@ -346,17 +357,18 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 				d.engine.AddComment(t.ID, "system",
 					fmt.Sprintf("[worktree] Running in isolated worktree: %s", wtDir))
 
-				// Acquire session lock: write PID so concurrent Create() calls
-				// detect an active session and wait instead of deleting this dir.
-				sessionLockPath := filepath.Join(wtDir, ".tetora-active")
-				if err := os.WriteFile(sessionLockPath,
+				// Acquire session lock: write this process's PID so concurrent
+				// Create/Prune/Remove calls detect an active session and refuse to
+				// delete the worktree while the agent is running. The release
+				// function is called explicitly before postTaskWorktree (agent has
+				// exited by that point). The outer defer is a safety net.
+				lockPath := filepath.Join(wtDir, ".tetora-active")
+				if err := os.WriteFile(lockPath,
 					[]byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644); err != nil {
 					log.Warn("worktree: failed to write session lock",
-						"task", t.ID, "path", sessionLockPath, "error", err)
+						"task", t.ID, "path", lockPath, "error", err)
 				}
-				// Release lock when dispatch completes (best-effort: forceRemove
-				// handles it if the directory is already gone).
-				defer func() { os.Remove(sessionLockPath) }() //nolint:errcheck
+				releaseLock = func() { os.Remove(lockPath) } //nolint:errcheck
 			}
 		}
 	}
@@ -572,12 +584,18 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 
 	// Determine target status.
 	newStatus := "done"
+	isContextCanceled := strings.Contains(result.Error, "context canceled") || ctx.Err() == context.Canceled
 	switch {
 	case result.Status == "success":
 		// keep "done"
 	case result.Status == "cancelled":
 		newStatus = "failed"
 		d.engine.AddComment(t.ID, "system", "[auto-flag] Task was cancelled (not retryable).")
+	case isContextCanceled:
+		// Daemon shutdown or parent context cancellation — retryable without burning a retry.
+		newStatus = "todo"
+		d.engine.AddComment(t.ID, "system",
+			"[auto-reset] Task interrupted by context cancellation (daemon shutdown or client disconnect). Reset to todo for re-dispatch.")
 	default:
 		newStatus = "failed"
 	}
@@ -769,6 +787,14 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 
 	// Post-task workspace git.
 	d.postTaskWorkspaceGit(t)
+
+	// Release session lock before worktree cleanup. Remove() refuses to delete a
+	// worktree whose lock is still held (the lock PID — this process — is alive),
+	// so the lock must be released here. The agent has already exited at this point.
+	if releaseLock != nil {
+		releaseLock()
+		releaseLock = nil
+	}
 
 	// Post-task worktree merge/cleanup.
 	d.postTaskWorktree(t, projectWorkdir, worktreeDir, newStatus)

@@ -68,6 +68,14 @@ const branchMetaFile = ".tetora-branch"
 // file before removing a worktree to avoid killing a live Bash tool CWD.
 const sessionLockFile = ".tetora-active"
 
+// sessionWaitPollInterval and sessionWaitMaxDuration control how long Create()
+// waits for an active session to finish before proceeding with stale worktree
+// removal. Declared as vars (not consts) so tests can override them.
+var (
+	sessionWaitPollInterval = 5 * time.Second
+	sessionWaitMaxDuration  = 60 * time.Second
+)
+
 // isSessionActive returns true when the worktree at wtDir has an active
 // session lock whose recorded PID is still running. A missing lock file, a
 // zero/invalid PID, or a dead process all return false.
@@ -86,9 +94,9 @@ func isSessionActive(wtDir string) bool {
 
 // AcquireSessionLock writes a session lock file inside wtDir containing the
 // current process PID. Returns a release function that removes the file.
-// The lock prevents Create() from deleting the worktree while a Claude session
-// is active inside it. The release function is idempotent and safe to call if
-// the directory has already been removed by forceRemove.
+// The lock prevents Create() and Remove() from deleting the worktree while a
+// Claude session is active inside it. The release function is idempotent and
+// safe to call if the directory has already been removed by forceRemove.
 func AcquireSessionLock(wtDir string) func() {
 	lockPath := filepath.Join(wtDir, sessionLockFile)
 	data := fmt.Sprintf("%d\n", os.Getpid())
@@ -208,21 +216,17 @@ func (wm *WorktreeManager) Create(repoDir, taskID, branch string) (string, error
 		// worktree. Deleting a worktree while a Claude session has its CWD inside
 		// it causes permanent Bash tool failure for that session.
 		if isSessionActive(wtDir) {
-			const (
-				pollInterval = 5 * time.Second
-				maxWait      = 60 * time.Second
-			)
-			log.Warn("worktree: stale worktree has active session — waiting up to 60s before removal",
-				"path", wtDir)
-			deadline := time.Now().Add(maxWait)
+			log.Warn("worktree: stale worktree has active session — waiting before removal",
+				"path", wtDir, "maxWait", sessionWaitMaxDuration)
+			deadline := time.Now().Add(sessionWaitMaxDuration)
 			for time.Now().Before(deadline) {
-				time.Sleep(pollInterval)
+				time.Sleep(sessionWaitPollInterval)
 				if !isSessionActive(wtDir) {
 					break
 				}
 			}
 			if isSessionActive(wtDir) {
-				return "", fmt.Errorf("worktree: active session still running in %s after %v; refusing to remove", wtDir, maxWait)
+				return "", fmt.Errorf("worktree: active session still running in %s after %v; refusing to remove", wtDir, sessionWaitMaxDuration)
 			}
 			log.Info("worktree: stale session finished, proceeding with worktree removal", "path", wtDir)
 		}
@@ -245,6 +249,16 @@ func (wm *WorktreeManager) Create(repoDir, taskID, branch string) (string, error
 	// Write branch metadata so Remove/Merge can find the branch name.
 	writeBranchMeta(wtDir, branch)
 
+	// Write session lock immediately after creation so that a concurrent Create()
+	// call for the same taskID cannot delete this worktree before the caller has
+	// a chance to write its own lock. The caller is responsible for removing this
+	// file when the session ends (typically via os.Remove in a defer).
+	if err := os.WriteFile(filepath.Join(wtDir, sessionLockFile),
+		[]byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644); err != nil {
+		log.Debug("worktree: failed to write session lock after create",
+			"path", wtDir, "error", err)
+	}
+
 	log.Info("worktree: created", "task", taskID, "path", wtDir, "branch", branch, "base", baseBranch)
 	return wtDir, nil
 }
@@ -254,10 +268,22 @@ func (wm *WorktreeManager) Create(repoDir, taskID, branch string) (string, error
 // 2. force cleanup .git/worktrees metadata
 // 3. rm -rf worktree directory
 // 4. git worktree prune
+//
+// Remove refuses to delete a worktree that still has an active Claude session
+// (i.e. the session lock file is present and its PID is alive). Callers must
+// release the session lock (via the function returned by AcquireSessionLock)
+// before calling Remove, or the call will return an error.
 func (wm *WorktreeManager) Remove(repoDir, wtDir string) error {
 	mu := wm.pathLock(wtDir)
 	mu.Lock()
 	defer mu.Unlock()
+
+	// Guard: refuse to delete a worktree whose session lock is still held.
+	// Removing the CWD of a running Claude session permanently breaks the
+	// session's Bash tool. The caller must release its lock before Remove.
+	if isSessionActive(wtDir) {
+		return fmt.Errorf("worktree: active session in %s; release session lock before Remove", wtDir)
+	}
 
 	branch := resolveBranch(wtDir)
 	wm.forceRemove(repoDir, wtDir, branch)

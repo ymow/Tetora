@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // setupTestRepo initialises a fresh git repo in a temp dir with a single
@@ -154,74 +155,114 @@ func TestIsSessionActive_MalformedContent(t *testing.T) {
 	}
 }
 
-// TestAcquireSessionLock_WritesAndReleases verifies the lock file is created
-// and then removed by the returned release function.
-func TestAcquireSessionLock_WritesAndReleases(t *testing.T) {
-	dir := t.TempDir()
-	release := AcquireSessionLock(dir)
-
-	lockPath := filepath.Join(dir, sessionLockFile)
-	if _, err := os.Stat(lockPath); err != nil {
-		t.Fatalf("lock file not found after AcquireSessionLock: %v", err)
-	}
-	if !isSessionActive(dir) {
-		t.Error("expected isSessionActive=true immediately after AcquireSessionLock")
-	}
-
-	release()
-
-	if _, err := os.Stat(lockPath); err == nil {
-		t.Error("lock file still present after release function was called")
-	}
-	if isSessionActive(dir) {
-		t.Error("expected isSessionActive=false after release function was called")
-	}
-}
-
-// TestCreate_WaitsForActiveSession verifies that Create returns an error (not
-// a panic/data-race) when the stale worktree has an active session that never
-// finishes within the timeout. Because the real 60 s timeout is too long for a
-// test we verify the error message instead.
-func TestCreate_StaleWorktreeWithActiveSession_ReturnsError(t *testing.T) {
+// TestCreate_WaitsForActiveSession verifies that Create() enters the session
+// wait loop when the stale worktree has an active session, waits until the
+// session ends, and then succeeds.
+func TestCreate_StaleWorktreeWithActiveSession_WaitsAndSucceeds(t *testing.T) {
 	repoDir := setupTestRepo(t)
 	baseDir := t.TempDir()
 	wm := NewWorktreeManager(baseDir)
 	taskID := "task-session-lock-test"
 
-	// Pre-create a fake stale worktree directory that looks active.
+	// Override poll intervals so the test runs in milliseconds, not seconds.
+	origPoll := sessionWaitPollInterval
+	origMax := sessionWaitMaxDuration
+	sessionWaitPollInterval = 10 * time.Millisecond
+	sessionWaitMaxDuration = 500 * time.Millisecond
+	t.Cleanup(func() {
+		sessionWaitPollInterval = origPoll
+		sessionWaitMaxDuration = origMax
+	})
+
+	// Pre-create a fake stale worktree directory with an active session lock.
 	staleDir := filepath.Join(baseDir, taskID)
 	if err := os.MkdirAll(staleDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Write our own PID so isSessionActive returns true.
 	lockPath := filepath.Join(staleDir, sessionLockFile)
 	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Create() should detect the active session and fail with a descriptive error
-	// rather than silently deleting the directory. We don't wait for the full
-	// 60 s in tests — just verify the guard is triggered.
-	//
-	// To keep the test fast, we remove the lock file in a background goroutine
-	// after a short delay so Create() exits via the "session finished" path.
+	// Remove the lock only after Create() has entered the wait loop at least once.
+	// Sleeping 2× the poll interval guarantees Create() polls at least once before
+	// the lock disappears, making the test deterministic.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		// Small sleep so Create() enters its wait loop at least once.
-		// (5 s poll interval; we remove before first poll completes.)
+		time.Sleep(sessionWaitPollInterval * 2)
 		_ = os.Remove(lockPath)
 	}()
 
-	// With the lock immediately removed, Create() should succeed after detecting
-	// no active session on first check (lock removed before Create reads it).
 	_, err := wm.Create(repoDir, taskID, "feat/session-lock-test")
 	<-done
-	// Either succeed (lock gone before check) or fail with session error — both
-	// are acceptable. What we must NOT see is a silent rm-rf of an active session.
-	if err != nil && !strings.Contains(err.Error(), "active session") &&
-		!strings.Contains(err.Error(), "git worktree") {
-		t.Errorf("unexpected error: %v", err)
+
+	// Create() must succeed: it detected the active session, waited for it to
+	// finish, then removed the stale worktree and created a fresh one.
+	if err != nil {
+		t.Errorf("expected Create to succeed after session ended, got: %v", err)
+	}
+}
+
+// =============================================================================
+// Section: Remove() active-session guard tests
+// =============================================================================
+
+// TestRemove_ActiveSession_ReturnsError verifies that Remove returns an error
+// (rather than silently deleting) when the worktree has a live session lock.
+func TestRemove_ActiveSession_ReturnsError(t *testing.T) {
+	repoDir := setupTestRepo(t)
+	baseDir := t.TempDir()
+	wm := NewWorktreeManager(baseDir)
+	taskID := "task-remove-active-lock"
+
+	// Create a real worktree so Remove has something to operate on.
+	wtDir, err := wm.Create(repoDir, taskID, "feat/remove-active-lock-test")
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Acquire a live session lock (our own PID).
+	release := AcquireSessionLock(wtDir)
+	defer release()
+
+	// Remove must refuse while the lock is held.
+	if removeErr := wm.Remove(repoDir, wtDir); removeErr == nil {
+		t.Fatal("expected non-nil error from Remove with active session, got nil")
+	} else if !strings.Contains(removeErr.Error(), "active session") {
+		t.Errorf("error = %q, want it to contain \"active session\"", removeErr.Error())
+	}
+
+	// The worktree directory must still exist (not silently deleted).
+	if _, statErr := os.Stat(wtDir); statErr != nil {
+		t.Errorf("worktree directory unexpectedly gone after refused Remove: %v", statErr)
+	}
+}
+
+// TestRemove_AfterLockRelease_Succeeds verifies that Remove succeeds once the
+// session lock has been released by the caller.
+func TestRemove_AfterLockRelease_Succeeds(t *testing.T) {
+	repoDir := setupTestRepo(t)
+	baseDir := t.TempDir()
+	wm := NewWorktreeManager(baseDir)
+	taskID := "task-remove-after-release"
+
+	wtDir, err := wm.Create(repoDir, taskID, "feat/remove-after-release-test")
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	release := AcquireSessionLock(wtDir)
+	release() // release immediately — simulates agent having exited
+
+	// Remove must now succeed without error.
+	if removeErr := wm.Remove(repoDir, wtDir); removeErr != nil {
+		t.Errorf("expected nil error from Remove after lock release, got: %v", removeErr)
+	}
+
+	// Worktree directory should be gone.
+	if _, statErr := os.Stat(wtDir); statErr == nil {
+		t.Error("worktree directory still present after successful Remove")
 	}
 }
 
