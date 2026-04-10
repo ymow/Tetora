@@ -345,6 +345,18 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 				log.Info("worktree: task running in isolation", "task", t.ID, "path", wtDir)
 				d.engine.AddComment(t.ID, "system",
 					fmt.Sprintf("[worktree] Running in isolated worktree: %s", wtDir))
+
+				// Acquire session lock: write PID so concurrent Create() calls
+				// detect an active session and wait instead of deleting this dir.
+				sessionLockPath := filepath.Join(wtDir, ".tetora-active")
+				if err := os.WriteFile(sessionLockPath,
+					[]byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644); err != nil {
+					log.Warn("worktree: failed to write session lock",
+						"task", t.ID, "path", sessionLockPath, "error", err)
+				}
+				// Release lock when dispatch completes (best-effort: forceRemove
+				// handles it if the directory is already gone).
+				defer func() { os.Remove(sessionLockPath) }() //nolint:errcheck
 			}
 		}
 	}

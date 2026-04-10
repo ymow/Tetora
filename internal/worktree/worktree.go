@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"tetora/internal/config"
@@ -60,6 +61,42 @@ func (wm *WorktreeManager) pathLock(path string) *sync.Mutex {
 
 // branchMetaFile is the filename written inside each worktree to record the branch name.
 const branchMetaFile = ".tetora-branch"
+
+// sessionLockFile is written inside an active worktree to signal that a
+// Claude session is currently running there. The file content is the PID of the
+// dispatcher process that owns the session. Create() and Prune() check this
+// file before removing a worktree to avoid killing a live Bash tool CWD.
+const sessionLockFile = ".tetora-active"
+
+// isSessionActive returns true when the worktree at wtDir has an active
+// session lock whose recorded PID is still running. A missing lock file, a
+// zero/invalid PID, or a dead process all return false.
+func isSessionActive(wtDir string) bool {
+	data, err := os.ReadFile(filepath.Join(wtDir, sessionLockFile))
+	if err != nil {
+		return false
+	}
+	var pid int
+	if n, _ := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &pid); n != 1 || pid <= 0 {
+		return false
+	}
+	// syscall.Kill(pid, 0) returns nil only if the process exists and is accessible.
+	return syscall.Kill(pid, 0) == nil
+}
+
+// AcquireSessionLock writes a session lock file inside wtDir containing the
+// current process PID. Returns a release function that removes the file.
+// The lock prevents Create() from deleting the worktree while a Claude session
+// is active inside it. The release function is idempotent and safe to call if
+// the directory has already been removed by forceRemove.
+func AcquireSessionLock(wtDir string) func() {
+	lockPath := filepath.Join(wtDir, sessionLockFile)
+	data := fmt.Sprintf("%d\n", os.Getpid())
+	if err := os.WriteFile(lockPath, []byte(data), 0o644); err != nil {
+		log.Debug("worktree: failed to write session lock", "path", lockPath, "error", err)
+	}
+	return func() { os.Remove(lockPath) } //nolint:errcheck
+}
 
 // BuildBranchName generates a branch name from the configured convention.
 // Template vars: {type}, {agent}, {description}, {taskId}
@@ -167,6 +204,28 @@ func (wm *WorktreeManager) Create(repoDir, taskID, branch string) (string, error
 
 	// Remove stale worktree if directory already exists.
 	if _, err := os.Stat(wtDir); err == nil {
+		// Guard: wait for any active session to finish before removing the stale
+		// worktree. Deleting a worktree while a Claude session has its CWD inside
+		// it causes permanent Bash tool failure for that session.
+		if isSessionActive(wtDir) {
+			const (
+				pollInterval = 5 * time.Second
+				maxWait      = 60 * time.Second
+			)
+			log.Warn("worktree: stale worktree has active session — waiting up to 60s before removal",
+				"path", wtDir)
+			deadline := time.Now().Add(maxWait)
+			for time.Now().Before(deadline) {
+				time.Sleep(pollInterval)
+				if !isSessionActive(wtDir) {
+					break
+				}
+			}
+			if isSessionActive(wtDir) {
+				return "", fmt.Errorf("worktree: active session still running in %s after %v; refusing to remove", wtDir, maxWait)
+			}
+			log.Info("worktree: stale session finished, proceeding with worktree removal", "path", wtDir)
+		}
 		log.Warn("worktree: removing stale worktree", "path", wtDir)
 		oldBranch := resolveBranch(wtDir)
 		wm.forceRemove(repoDir, wtDir, oldBranch)
@@ -378,6 +437,15 @@ func (wm *WorktreeManager) Prune(repoDir string, maxAge time.Duration) (int, err
 	removed := 0
 	for _, info := range infos {
 		if info.CreatedAt.Before(cutoff) {
+			// Skip worktrees with a live session — removing them would permanently
+			// break the session's Bash tool. They will be cleaned up on the next
+			// prune cycle once the session completes.
+			if isSessionActive(info.Path) {
+				log.Warn("worktree: skipping prune — active session detected",
+					"path", info.Path,
+					"age", time.Since(info.CreatedAt).Round(time.Minute))
+				continue
+			}
 			log.Info("worktree: pruning expired", "path", info.Path,
 				"age", time.Since(info.CreatedAt).Round(time.Minute))
 			if err := wm.Remove(repoDir, info.Path); err != nil {
