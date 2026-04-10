@@ -635,7 +635,7 @@ func buildFromParsed(co output, result ParsedResult) ParsedResult {
 		result.TokensIn = co.Usage.totalInputTokens()
 		result.TokensOut = co.Usage.OutputTokens
 	}
-	if co.IsError {
+	if co.IsError && co.Subtype != "success" {
 		result.Status = "error"
 		result.Error = co.Subtype
 		if result.Error == "" {
