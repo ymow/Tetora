@@ -106,6 +106,13 @@ func AcquireSessionLock(wtDir string) func() {
 	return func() { os.Remove(lockPath) } //nolint:errcheck
 }
 
+// AcquireSessionLock implements WorktreeManageable. It is a method wrapper
+// around the package-level AcquireSessionLock so WorktreeManager satisfies
+// the interface without duplicating the implementation.
+func (wm *WorktreeManager) AcquireSessionLock(wtDir string) func() {
+	return AcquireSessionLock(wtDir)
+}
+
 // BuildBranchName generates a branch name from the configured convention.
 // Template vars: {type}, {agent}, {description}, {taskId}
 // Default convention: "{type}/{agent}-{description}"
