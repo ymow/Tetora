@@ -88,7 +88,7 @@ func (c *Client) Post(path string, payload any) {
 		}
 		if resp.StatusCode >= 400 {
 			log.Warn("discord api error", "status", resp.StatusCode, "body", string(b))
-			return // 4xx (except 429) は再試行しない
+			return // 4xx errors (except 429) are not retried
 		}
 		return // success
 	}

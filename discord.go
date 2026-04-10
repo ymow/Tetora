@@ -1799,10 +1799,13 @@ func (db *DiscordBot) sendRouteResponse(channelID string, route *RouteResult, re
 		// Persist full output to disk before sending, so it can be retrieved
 		// even if Discord drops or truncates the message.
 		if result.Status == "success" && strings.TrimSpace(output) != "" && db.cfg.BaseDir != "" {
-			outPath := filepath.Join(db.cfg.BaseDir, "outputs",
-				fmt.Sprintf("%s_%s.txt", task.ID, time.Now().Format("20060102-150405")))
-			if err := os.WriteFile(outPath, []byte(output), 0o644); err != nil {
-				log.Warn("discord: failed to save output file", "task", task.ID, "err", err)
+			outDir := filepath.Join(db.cfg.BaseDir, "outputs")
+			if err := os.MkdirAll(outDir, 0o755); err == nil {
+				outPath := filepath.Join(outDir,
+					fmt.Sprintf("%s_%s.txt", task.ID, time.Now().Format("20060102-150405")))
+				if err := os.WriteFile(outPath, []byte(output), 0o644); err != nil {
+					log.Warn("discord: failed to save output file", "task", task.ID, "err", err)
+				}
 			}
 		}
 
