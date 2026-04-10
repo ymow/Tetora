@@ -24,6 +24,24 @@ type CodexProvider struct {
 func (p *CodexProvider) Name() string { return "codex" }
 
 func (p *CodexProvider) Execute(ctx context.Context, req Request) (*Result, error) {
+	pr, err := p.executeOnce(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	// Retry without --resume if the thread is no longer available (e.g. model rollout
+	// doesn't cover the existing thread ID, or thread has expired).
+	if pr.IsError && req.Resume && req.SessionID != "" &&
+		strings.Contains(pr.Error, "no rollout found") {
+		log.Warn("codex thread resume failed, retrying as new session",
+			"sessionId", req.SessionID, "error", pr.Error)
+		req.Resume = false
+		req.SessionID = ""
+		return p.executeOnce(ctx, req)
+	}
+	return pr, nil
+}
+
+func (p *CodexProvider) executeOnce(ctx context.Context, req Request) (*Result, error) {
 	args := BuildCodexArgs(req, req.OnEvent != nil)
 
 	cmd := exec.CommandContext(ctx, p.BinaryPath, args...)
