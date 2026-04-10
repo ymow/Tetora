@@ -114,7 +114,7 @@ func (er *ExternalReranker) Rerank(query string, queryTerms []string, bm25Result
 		return fallbackResults(bm25Results)
 	}
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MB cap
 	if err != nil {
 		return fallbackResults(bm25Results)
 	}

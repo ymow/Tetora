@@ -6,7 +6,6 @@ package benchmark
 import (
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 
 	"tetora/internal/bm25"
@@ -304,6 +303,3 @@ func CompareRerankers(registry *tools.Registry, suite *Suite, nameA string, rera
 
 	return sb.String()
 }
-
-// _ = sort used below
-var _ = sort.Strings

@@ -6,6 +6,7 @@ package bm25
 
 import (
 	"math"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -183,13 +184,7 @@ type Result struct {
 
 // sortResults sorts results by score in descending order.
 func sortResults(results []Result) {
-	for i := 0; i < len(results); i++ {
-		for j := i + 1; j < len(results); j++ {
-			if results[j].Score > results[i].Score {
-				results[i], results[j] = results[j], results[i]
-			}
-		}
-	}
+	sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
 }
 
 // --- Two-Stage Reranking (based on arXiv:2604.01733 findings) ---
@@ -352,11 +347,5 @@ type DocMeta struct {
 }
 
 func sortRerankResults(results []RerankResult) {
-	for i := 0; i < len(results); i++ {
-		for j := i + 1; j < len(results); j++ {
-			if results[j].FinalScore > results[i].FinalScore {
-				results[i], results[j] = results[j], results[i]
-			}
-		}
-	}
+	sort.Slice(results, func(i, j int) bool { return results[i].FinalScore > results[j].FinalScore })
 }
