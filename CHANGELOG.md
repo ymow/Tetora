@@ -1,16 +1,24 @@
 ## [Unreleased]
 
+---
+
+## [v2.2.4] - 2026-04-12
+
 ### Added
 - **Regression guard tests**: Context cancellation timeout tests for DB operations, unit test for dispatchTask prompt construction with task ID validation
 - **Context propagation improvements**: ExecContext/QueryContext for DB calls, QuerySessionByIDCtx method to ensure timeout handling in all goroutines
 - **Site SEO enhancements**: BreadcrumbList structured data, theme-color extraction, OG locale optimization
 - **CI improvements**: Auto-update site version on release, CODEOWNERS for auto-assignment, dashboard drift guard (rebuild + `git diff --exit-code` on every PR)
+- **Tips**: Model Selection Per Role (en/ja/zh-TW) — Sonnet for drafts, Opus for strategy
+- **Observability**: Warning logs to distinguish CLI silent success vs truly no output in provider streaming
 
 ### Fixed
 - **i18n URL dedup**: Fix duplicate locale prefix in zh-TW blog/tips URLs (e.g. `/zh-TW/blog/zh-tw/slug/`)
 - **Build system**: Extract platform-specific process group handling, syscall usage for Windows cross-compile support
 - **Site versioning**: Update i18n download buttons to v2.2.3, fix release CI workflow
 - **Refactoring**: Extract OG_LOCALE_MAP constant from Base.astro to consts.ts for reusability, preserve task description language (繁體中文) in agent commit messages
+- **Skills cache**: `LoadFileSkills` now caches per-directory with `sync.RWMutex`; invalidated on create/approve/delete
+- **SessionLockFile**: Extracted `.tetora-active` into a shared constant to eliminate duplicate hardcoded strings
 
 ---
 

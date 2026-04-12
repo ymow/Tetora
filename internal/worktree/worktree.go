@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"tetora/internal/config"
@@ -72,22 +71,6 @@ var (
 	sessionWaitPollInterval = 5 * time.Second
 	sessionWaitMaxDuration  = 60 * time.Second
 )
-
-// isSessionActive returns true when the worktree at wtDir has an active
-// session lock whose recorded PID is still running. A missing lock file, a
-// zero/invalid PID, or a dead process all return false.
-func isSessionActive(wtDir string) bool {
-	data, err := os.ReadFile(filepath.Join(wtDir, sessionLockFile))
-	if err != nil {
-		return false
-	}
-	var pid int
-	if n, _ := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &pid); n != 1 || pid <= 0 {
-		return false
-	}
-	// syscall.Kill(pid, 0) returns nil only if the process exists and is accessible.
-	return syscall.Kill(pid, 0) == nil
-}
 
 // AcquireSessionLock writes a session lock file inside wtDir containing the
 // current process PID. Returns a release function that removes the file.
