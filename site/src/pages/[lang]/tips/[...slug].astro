@@ -24,7 +24,7 @@ export async function getStaticPaths() {
 }
 
 const { tip, availableLangs } = Astro.props;
-const { Content } = await render(tip);
+const { Content, headings } = await render(tip);
 const lang = tip.data.lang;
 const slug = tip.id.split('/').slice(1).join('/');
 const alternates = (availableLangs as string[]).map(l => ({
@@ -41,6 +41,7 @@ const alternates = (availableLangs as string[]).map(l => ({
   section="tips"
   description={tip.data.description ?? tip.data.excerpt}
   alternates={alternates}
+  headings={headings}
 >
   <h1>{tip.data.title}</h1>
   <div class="article-meta">{tip.data.date}</div>

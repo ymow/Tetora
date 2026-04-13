@@ -1,0 +1,18 @@
+{
+  "schema_version": "v1",
+  "name_for_human": "Tetora",
+  "name_for_model": "tetora",
+  "description_for_human": "AI agent orchestration platform — deploy multi-agent workflows, schedule tasks with cron, and manage agents via Discord or Dashboard.",
+  "description_for_model": "Tetora is an AI agent orchestration platform. Use this to look up documentation on deploying agents, configuring workflows, scheduling tasks, setting up Discord integration, and managing multi-agent teams. Supports Claude (claude-code CLI and Anthropic API), OpenAI, and local models.",
+  "auth": {
+    "type": "none"
+  },
+  "api": {
+    "type": "openapi",
+    "url": "https://tetora.dev/openapi.json",
+    "is_user_authenticated": false
+  },
+  "logo_url": "https://tetora.dev/tetora-logo.webp",
+  "contact_email": "hi@tetora.dev",
+  "legal_info_url": "https://tetora.dev/privacy"
+}

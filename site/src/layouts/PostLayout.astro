@@ -17,8 +17,9 @@ interface Props {
   section?: 'blog' | 'tips';
   alternates?: Array<{ lang: string; url: string }>;
   image?: string;
+  headings?: Array<{ depth: number; slug: string; text: string }>;
 }
-const { title, lang, date, tag, slug, description, updatedDate, section = 'blog', alternates, image } = Astro.props;
+const { title, lang, date, tag, slug, description, updatedDate, section = 'blog', alternates, image, headings } = Astro.props;
 const sectionPath = `/${lang}/${section}/`;
 const sectionLabel = t(lang, section === 'tips' ? 'nav_tips' : 'nav_blog');
 
@@ -35,6 +36,10 @@ const articleJsonLd = {
   author: { '@type': 'Organization', name: 'Tetora', url: SITE },
   publisher: { '@type': 'Organization', name: 'Tetora', url: SITE },
   ...(description ? { description } : {}),
+  speakable: {
+    '@type': 'SpeakableSpecification',
+    cssSelector: ['h1', 'h2', '.prose p:first-of-type'],
+  },
 };
 const breadcrumbJsonLd = {
   '@context': 'https://schema.org',
@@ -45,7 +50,24 @@ const breadcrumbJsonLd = {
     { '@type': 'ListItem', position: 3, name: title },
   ],
 };
-const jsonLd = [articleJsonLd, breadcrumbJsonLd];
+const h2Headings = headings?.filter(h => h.depth === 2) ?? [];
+const howToJsonLd = section === 'tips' && h2Headings.length > 0
+  ? {
+      '@context': 'https://schema.org',
+      '@type': 'HowTo',
+      name: title,
+      ...(description ? { description } : {}),
+      step: h2Headings.map((h, i) => ({
+        '@type': 'HowToStep',
+        position: i + 1,
+        name: h.text,
+        url: `${canonicalUrl}#${h.slug}`,
+      })),
+    }
+  : null;
+const jsonLd = howToJsonLd
+  ? [articleJsonLd, breadcrumbJsonLd, howToJsonLd]
+  : [articleJsonLd, breadcrumbJsonLd];
 ---
 <Base
   title={`${title} — Tetora Blog`}
