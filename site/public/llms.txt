@@ -1,0 +1,27 @@
+# Tetora
+
+> Tetora is an AI agent orchestration platform. Deploy multi-agent workflows, schedule tasks with cron, manage agents via Discord or Dashboard, and build production-grade automation without infrastructure overhead.
+
+## Docs
+- [Getting Started](https://tetora.dev/docs/configuration): Configuration reference
+- [Workflow Engine](https://tetora.dev/docs/workflow): DAG-based workflow automation
+- [Taskboard](https://tetora.dev/docs/taskboard): Visual task management
+- [MCP Integration](https://tetora.dev/docs/mcp): Model Context Protocol setup
+- [Hooks](https://tetora.dev/docs/hooks): Event-driven hooks
+- [Discord Multitasking](https://tetora.dev/docs/discord-multitasking): Multi-agent Discord setup
+
+## Blog
+- [The OpenClaw Lesson](https://tetora.dev/blog/openclaw-lesson): Why AI agent architecture matters
+- [Why Tetora Uses the Official Claude API](https://tetora.dev/blog/tetora-claude-compliance): Compliance and reliability
+- [Scheduling and Dispatch](https://tetora.dev/blog/scheduling-and-dispatch): From cron to complex workflows
+- [v2.2 Release](https://tetora.dev/blog/v2-2-0-release): Safety by default, multi-tenant dispatch
+- [Tax Accountant Case Study](https://tetora.dev/blog/tax-accountant-case-study): 0 employees, 60 clients
+
+## Tips
+- [Auto-Dispatch Basics](https://tetora.dev/tips/auto-dispatch-basics): Queue tasks for your agents
+- [Model Selection Per Role](https://tetora.dev/tips/model-selection-per-role): Sonnet vs Opus
+- [Creating Your First SOUL File](https://tetora.dev/tips/creating-your-first-soul-file): Agent personality setup
+
+## Optional
+- [Download](https://tetora.dev/download): Install Tetora (macOS/Linux/Windows)
+- [GitHub](https://github.com/TakumaLee/Tetora): Source code and releases

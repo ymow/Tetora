@@ -22,6 +22,7 @@ const blog = defineCollection({
     readTime: z.string(),
     excerpt: z.string(),
     description: z.string().optional(),
+    image: z.string().optional(),
   }),
 });
 
@@ -33,6 +34,7 @@ const tips = defineCollection({
     date: z.string(),
     excerpt: z.string(),
     description: z.string().optional(),
+    image: z.string().optional(),
   }),
 });
 

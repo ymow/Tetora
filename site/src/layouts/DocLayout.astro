@@ -24,8 +24,55 @@ const breadcrumbJsonLd = {
     { '@type': 'ListItem', position: 3, name: title },
   ],
 };
+const faqJsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'FAQPage',
+  mainEntity: [
+    {
+      '@type': 'Question',
+      name: 'What is Tetora?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'Tetora is an AI agent orchestration platform that lets you deploy multi-agent workflows, schedule recurring tasks with cron, and manage agents through Discord or a web dashboard — without writing infrastructure code.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'How does Tetora integrate with Claude?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: "Tetora integrates with Claude through the official claude-code CLI or directly via the Anthropic API using your own API key. It does not use OAuth subscription tokens, making it fully compliant with Anthropic's Terms of Service.",
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'Can Tetora run tasks automatically on a schedule?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'Yes. Tetora includes a built-in cron scheduler. Use `tetora job add --cron "0 21 * * *" "Your task"` to schedule any task. You can also build multi-step Workflow DAGs with conditional branches and Human Gate approval checkpoints.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'Is Tetora open source?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'Yes. Tetora is open source and available on GitHub at https://github.com/TakumaLee/Tetora. It\'s a single binary with zero external dependencies, supporting macOS, Linux, and Windows.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'What is DangerousOpsConfig?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'DangerousOpsConfig is Tetora\'s pattern-based command blocking engine. Before any agent runs a shell command, Tetora checks it against a configurable blocklist (rm -rf, DROP TABLE, git push --force, etc.). Blocked commands are rejected before execution with no side effects.',
+      },
+    },
+  ],
+};
+const docJsonLd = [breadcrumbJsonLd, faqJsonLd];
 ---
-<Base title={`${title} — Tetora Docs`} lang={lang} jsonLd={breadcrumbJsonLd}>
+<Base title={`${title} — Tetora Docs`} lang={lang} jsonLd={docJsonLd}>
   <LanguagePicker currentLang={lang} basePath={`/docs/${slug}/`} />
   <nav style="padding:50px 20px 0;max-width:1100px;margin:0 auto;font-size:13px;color:var(--muted)">
     <a href="/" style="color:var(--muted)">&larr; Tetora</a> / <a href={`/${lang}/docs/`} style="color:var(--muted)">{t(lang, 'nav_docs')}</a> / {title}

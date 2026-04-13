@@ -76,6 +76,37 @@ const ogLocale = OG_LOCALE_MAP[lang] ?? lang.replace('-', '_');
       Array.isArray(jsonLd) ? { '@context': 'https://schema.org', '@graph': jsonLd.map(({ '@context': _, ...rest }) => rest) } : jsonLd
     ).replace(/</g, '\\u003c')} />
   )}
+  <script type="application/ld+json" set:html={JSON.stringify({
+    '@context': 'https://schema.org',
+    '@graph': [
+      {
+        '@type': 'WebSite',
+        '@id': 'https://tetora.dev/#website',
+        'url': 'https://tetora.dev/',
+        'name': 'Tetora',
+        'description': 'AI agent orchestration platform — deploy multi-agent workflows, schedule tasks, and manage agents.',
+        'publisher': { '@id': 'https://tetora.dev/#organization' },
+        'potentialAction': {
+          '@type': 'SearchAction',
+          'target': { '@type': 'EntryPoint', 'urlTemplate': 'https://tetora.dev/search?q={search_term_string}' },
+          'query-input': 'required name=search_term_string',
+        },
+      },
+      {
+        '@type': 'Organization',
+        '@id': 'https://tetora.dev/#organization',
+        'name': 'Tetora',
+        'url': 'https://tetora.dev/',
+        'logo': {
+          '@type': 'ImageObject',
+          'url': 'https://tetora.dev/tetora-logo.webp',
+          'width': 512,
+          'height': 512,
+        },
+        'sameAs': ['https://github.com/TakumaLee/Tetora'],
+      },
+    ],
+  }).replace(/</g, '\\u003c')} />
   <link rel="preconnect" href="https://www.googletagmanager.com" />
   <script is:inline>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','G-X6YR7HG68N');(window.requestIdleCallback||setTimeout)(function(){var s=document.createElement('script');s.src='https://www.googletagmanager.com/gtag/js?id=G-X6YR7HG68N';s.async=true;document.head.appendChild(s);});</script>
 </head>
