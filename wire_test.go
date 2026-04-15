@@ -18234,9 +18234,9 @@ func TestResolveSessionScope_Group(t *testing.T) {
 	if scope.TrustLevel != "observe" {
 		t.Errorf("TrustLevel = %q, want observe", scope.TrustLevel)
 	}
-	// Group should always use minimal tools
-	if scope.ToolProfile != "minimal" {
-		t.Errorf("ToolProfile = %q, want minimal", scope.ToolProfile)
+	// Group caps at standard even if role is "full"
+	if scope.ToolProfile != "standard" {
+		t.Errorf("ToolProfile = %q, want standard", scope.ToolProfile)
 	}
 	// Group should always be sandboxed
 	if !scope.Sandbox {

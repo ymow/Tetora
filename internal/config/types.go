@@ -271,6 +271,8 @@ type ToolProfile struct {
 
 type AgentToolPolicy struct {
 	Profile      string   `json:"profile,omitempty"`
+	GroupProfile string   `json:"groupProfile,omitempty"` // override profile for group chat context
+	DMProfile    string   `json:"dmProfile,omitempty"`    // override profile for DM context
 	Allow        []string `json:"allow,omitempty"`
 	Deny         []string `json:"deny,omitempty"`
 	Sandbox      string   `json:"sandbox,omitempty"`
