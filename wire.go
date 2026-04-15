@@ -4878,24 +4878,26 @@ func toolSearchTools(ctx context.Context, cfg *Config, input json.RawMessage) (s
 		return "[]", nil
 	}
 
-	query := strings.ToLower(args.Query)
-	var results []map[string]string
+	registry := cfg.Runtime.ToolRegistry.(*ToolRegistry)
+	results := registry.SearchBM25(ctx, args.Query, args.Limit)
 
-	for _, t := range cfg.Runtime.ToolRegistry.(*ToolRegistry).List() {
-		nameMatch := strings.Contains(strings.ToLower(t.Name), query)
-		descMatch := strings.Contains(strings.ToLower(t.Description), query)
-		if nameMatch || descMatch {
-			results = append(results, map[string]string{
-				"name":        t.Name,
-				"description": t.Description,
-			})
-			if len(results) >= args.Limit {
-				break
-			}
-		}
+	type toolResult struct {
+		Name        string  `json:"name"`
+		Description string  `json:"description"`
+		BM25Score   float64 `json:"bm25_score,omitempty"`
+		FinalScore  float64 `json:"final_score,omitempty"`
+	}
+	out := make([]toolResult, 0, len(results))
+	for _, r := range results {
+		out = append(out, toolResult{
+			Name:        r.Tool.Name,
+			Description: r.Tool.Description,
+			BM25Score:   r.BM25Score,
+			FinalScore:  r.FinalScore,
+		})
 	}
 
-	b, _ := json.Marshal(results)
+	b, _ := json.Marshal(out)
 	return string(b), nil
 }
 

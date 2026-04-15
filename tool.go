@@ -43,6 +43,7 @@ type ToolRegistry = tools.Registry
 func NewToolRegistry(cfg *Config) *ToolRegistry {
 	r := tools.NewRegistry()
 	registerBuiltins(r, cfg)
+	r.ApplyDeferredPolicy()
 	return r
 }
 

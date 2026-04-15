@@ -4,8 +4,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 
+	"tetora/internal/bm25"
 	"tetora/internal/classify"
 	"tetora/internal/config"
 	"tetora/internal/provider"
@@ -13,12 +15,15 @@ import (
 
 // ToolDef defines a tool that can be called by agents.
 type ToolDef struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
-	Handler     Handler         `json:"-"`
-	Builtin     bool            `json:"-"`
-	RequireAuth bool            `json:"requireAuth,omitempty"`
+	Name              string          `json:"name"`
+	Description       string          `json:"description"`
+	ContextualSummary string          `json:"-"` // AI-generated contextual summary for better retrieval
+	InputSchema       json.RawMessage `json:"input_schema"`
+	Keywords          []string        `json:"-"` // Extra searchable keywords for BM25
+	DeferLoading      bool            `json:"-"` // When true, tool is deferred (loaded on-demand via search_tools)
+	Handler           Handler         `json:"-"`
+	Builtin           bool            `json:"-"`
+	RequireAuth       bool            `json:"requireAuth,omitempty"`
 }
 
 // ToolCall is an alias for provider.ToolCall.
@@ -36,22 +41,59 @@ type Handler func(ctx context.Context, cfg *config.Config, input json.RawMessage
 
 // Registry manages available tools.
 type Registry struct {
-	mu    sync.RWMutex
-	tools map[string]*ToolDef
+	mu         sync.RWMutex
+	tools      map[string]*ToolDef
+	bm25Index  *bm25.BM25
+	reranker   bm25.Reranker
+	usageCount map[string]int // tool name -> call count (for reranking boost)
 }
 
 // NewRegistry creates a new empty tool registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		tools: make(map[string]*ToolDef),
+		tools:      make(map[string]*ToolDef),
+		reranker:   bm25.NewHeuristicReranker(bm25.DefaultRerankConfig()),
+		usageCount: make(map[string]int),
 	}
 }
 
-// Register adds a tool to the registry.
+// SetReranker replaces the default reranker (for using external/neural rerankers).
+func (r *Registry) SetReranker(rk bm25.Reranker) {
+	r.mu.Lock()
+	r.reranker = rk
+	r.mu.Unlock()
+}
+
+// Register adds a tool to the registry and marks the BM25 index as dirty.
+// The index is rebuilt lazily on the next SearchBM25 call.
 func (r *Registry) Register(tool *ToolDef) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.tools[tool.Name] = tool
+	r.bm25Index = nil // mark dirty; rebuilt lazily in SearchBM25
+	r.mu.Unlock()
+}
+
+// rebuildBM25IndexLocked rebuilds the BM25 index from all registered tools.
+// Must be called with r.mu held (write lock).
+func (r *Registry) rebuildBM25IndexLocked() {
+	docs := make([]bm25.Document, 0, len(r.tools))
+	for _, t := range r.tools {
+		// Build searchable text: name + description + contextual summary + keywords
+		var parts []string
+		// Split underscored names into separate terms for better matching
+		nameTerms := strings.ReplaceAll(t.Name, "_", " ")
+		parts = append(parts, nameTerms)
+		parts = append(parts, t.Description)
+		if t.ContextualSummary != "" {
+			parts = append(parts, t.ContextualSummary)
+		}
+		parts = append(parts, strings.Join(t.Keywords, " "))
+		docs = append(docs, bm25.Document{
+			ID:    t.Name,
+			Terms: bm25.Tokenize(strings.Join(parts, " ")),
+		})
+	}
+	r.bm25Index = bm25.New(docs, bm25.DefaultK1, bm25.DefaultB)
 }
 
 // Get retrieves a tool by name.
@@ -88,6 +130,94 @@ func (r *Registry) ListFiltered(allowed map[string]bool) []*ToolDef {
 		}
 	}
 	return result
+}
+
+// RecordUsage increments the call count for a tool (used in reranking bonus).
+func (r *Registry) RecordUsage(name string) {
+	r.mu.Lock()
+	r.usageCount[name]++
+	r.mu.Unlock()
+}
+
+// GetUsage returns the call count for a tool.
+func (r *Registry) GetUsage(name string) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.usageCount[name]
+}
+
+// SearchResult holds a tool search result with its BM25 score.
+type SearchResult struct {
+	Tool        *ToolDef
+	BM25Score   float64
+	FinalScore  float64
+}
+
+// SearchBM25 searches tools using two-stage reranking (BM25 recall → rerank).
+// Returns results sorted by final reranked score. If topN <= 0, returns all matching.
+// ctx is forwarded to the reranker (e.g. for cancelling external HTTP calls).
+func (r *Registry) SearchBM25(ctx context.Context, query string, topN int) []SearchResult {
+	// Lazy index build: check under read lock, then upgrade to write lock if needed.
+	r.mu.RLock()
+	needsBuild := r.bm25Index == nil
+	r.mu.RUnlock()
+
+	if needsBuild {
+		r.mu.Lock()
+		if r.bm25Index == nil { // double-check after acquiring write lock
+			r.rebuildBM25IndexLocked()
+		}
+		r.mu.Unlock()
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	terms := bm25.Tokenize(query)
+
+	// Stage 1: BM25 recall with a larger candidate set.
+	recallN := topN * 4
+	if recallN < 20 {
+		recallN = 20
+	}
+	bm25Results := r.bm25Index.Search(terms, recallN)
+	if len(bm25Results) == 0 {
+		return nil
+	}
+
+	// Stage 2: Rerank with pluggable reranker.
+	getMeta := func(docID string) bm25.DocMeta {
+		t, ok := r.tools[docID]
+		if !ok {
+			return bm25.DocMeta{}
+		}
+		return bm25.DocMeta{
+			Name:              t.Name,
+			Description:       t.Description,
+			ContextualSummary: t.ContextualSummary,
+			Keywords:          t.Keywords,
+			DocLen:            len(bm25.Tokenize(t.Description)),
+			UsageCount:        r.usageCount[t.Name],
+		}
+	}
+
+	reranked := r.reranker.Rerank(ctx, query, terms, bm25Results, getMeta)
+
+	out := make([]SearchResult, 0, len(reranked))
+	for _, res := range reranked {
+		if t, ok := r.tools[res.ID]; ok {
+			out = append(out, SearchResult{
+				Tool:       t,
+				BM25Score:  res.BM25Score,
+				FinalScore: res.FinalScore,
+			})
+		}
+	}
+
+	if topN > 0 && topN < len(out) {
+		out = out[:topN]
+	}
+	return out
 }
 
 // Range calls fn for each tool in the registry. If fn returns false, iteration stops.
@@ -164,5 +294,44 @@ func ForComplexity(c classify.Complexity) string {
 		return "standard"
 	default:
 		return "full"
+	}
+}
+
+// --- Deferred Tool Loading ---
+
+// alwaysLoadedTools are tools that must always be available in the provider
+// request. These are the core discovery/execution tools that enable the agent
+// to find and use any other deferred tool. All other tools are marked with
+// defer_loading=true so the provider loads them on-demand via search.
+var alwaysLoadedTools = map[string]bool{
+	"search_tools":     true, // BM25 tool discovery
+	"execute_tool":     true, // Execute any tool by name
+	"memory_search":    true, // Memory lookup (frequently used)
+	"web_search":       true, // Web lookup (frequently used)
+	"knowledge_search": true, // Knowledge base lookup
+}
+
+// IsAlwaysLoaded reports whether the named tool is in the always-loaded set
+// (i.e. it will never be marked deferred by ApplyDeferredPolicy).
+func IsAlwaysLoaded(name string) bool {
+	return alwaysLoadedTools[name]
+}
+
+// AlwaysLoadedCount returns the number of tools in the always-loaded set.
+// Useful for test assertions without exposing the underlying map.
+func AlwaysLoadedCount() int {
+	return len(alwaysLoadedTools)
+}
+
+// ApplyDeferredPolicy marks all tools NOT in alwaysLoadedTools with DeferLoading=true.
+// This should be called after all tools are registered, before starting the agent loop.
+func (r *Registry) ApplyDeferredPolicy() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for name, t := range r.tools {
+		if !alwaysLoadedTools[name] {
+			t.DeferLoading = true
+		}
 	}
 }

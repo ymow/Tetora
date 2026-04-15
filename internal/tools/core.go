@@ -273,11 +273,11 @@ func RegisterCoreTools(r *Registry, cfg *config.Config, enabled func(string) boo
 	if enabled("search_tools") {
 		r.Register(&ToolDef{
 			Name:        "search_tools",
-			Description: "Search available tools by keyword (name or description). Use when there are many tools and you need to find the right one.",
+			Description: "Search and rank available tools by relevance using BM25 scoring. Use natural language queries like 'send email', 'read file', 'search memory'. Returns ranked results with relevance scores. Use with execute_tool to discover and run tools dynamically.",
 			InputSchema: json.RawMessage(`{
 				"type": "object",
 				"properties": {
-					"query": {"type": "string", "description": "Keyword to search for in tool names and descriptions"},
+					"query": {"type": "string", "description": "Natural language description of what you want to do, e.g. 'search memory', 'send a message', 'create a task'"},
 					"limit": {"type": "number", "description": "Maximum results to return (default 10)"}
 				},
 				"required": ["query"]

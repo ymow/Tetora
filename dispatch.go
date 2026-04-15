@@ -2522,9 +2522,10 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 	providerTools := make([]provider.ToolDef, len(tools))
 	for i, t := range tools {
 		providerTools[i] = provider.ToolDef{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: t.InputSchema,
+			Name:         t.Name,
+			Description:  t.Description,
+			InputSchema:  t.InputSchema,
+			DeferLoading: t.DeferLoading,
 		}
 	}
 	req.Tools = providerTools
@@ -2720,6 +2721,13 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 				tr.Content = truncateToolOutput(output, cfg.Tools.ToolOutputLimit)
 			}
 			toolResults = append(toolResults, tr)
+
+			// Record tool usage for reranking popularity bonus.
+			if cfg.Runtime.ToolRegistry != nil {
+				if reg, ok := cfg.Runtime.ToolRegistry.(*ToolRegistry); ok {
+					reg.RecordUsage(tc.Name)
+				}
+			}
 
 			// P27.3: Send tool status to channel.
 			if cfg.StreamToChannels && task.ChannelNotifier != nil {
