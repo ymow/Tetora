@@ -186,14 +186,19 @@ func KillDaemonProcess() bool {
 
 // RestartLaunchd kills the running daemon, then uses launchctl bootout/bootstrap
 // to restart the service. This is the modern replacement for unload/load.
+//
+// Order matters: bootout must happen BEFORE killing the process. With KeepAlive=true
+// launchd respawns immediately on each kill, so killing first produces an ever-changing
+// PID and leaves the service still bootstrapped, causing bootstrap to fail with I/O error 5.
 func RestartLaunchd(plistPath string) error {
-	KillDaemonProcess()
-
 	uid := fmt.Sprintf("%d", os.Getuid())
 	target := "gui/" + uid
 
-	// bootout (ignore errors — may not be bootstrapped yet)
+	// bootout first so launchd stops respawning on kill
 	exec.Command("launchctl", "bootout", target+"/"+PlistLabel).Run()
+
+	// now kill any lingering process (launchd won't respawn after bootout)
+	KillDaemonProcess()
 
 	// bootstrap
 	out, err := exec.Command("launchctl", "bootstrap", target, plistPath).CombinedOutput()
