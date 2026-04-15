@@ -153,7 +153,10 @@ func ResolveSessionScope(cfg *config.Config, agentName string, sessionType strin
 
 	case "dm": // Direct message - moderate trust
 		scope.TrustLevel = MinTrust(agentConfigTrustLevel(role), "suggest")
-		scope.ToolProfile = role.ToolPolicy.Profile
+		scope.ToolProfile = role.ToolPolicy.DMProfile
+		if scope.ToolProfile == "" {
+			scope.ToolProfile = role.ToolPolicy.Profile
+		}
 		if scope.ToolProfile == "" {
 			scope.ToolProfile = "standard"
 		}
@@ -165,7 +168,14 @@ func ResolveSessionScope(cfg *config.Config, agentName string, sessionType strin
 
 	case "group": // Group chat - least trusted
 		scope.TrustLevel = "observe" // most restrictive
-		scope.ToolProfile = "minimal"
+		// Use groupProfile override if set, then fall back to profile; cap at standard.
+		scope.ToolProfile = role.ToolPolicy.GroupProfile
+		if scope.ToolProfile == "" {
+			scope.ToolProfile = role.ToolPolicy.Profile
+		}
+		if scope.ToolProfile == "" || scope.ToolProfile == "full" {
+			scope.ToolProfile = "standard"
+		}
 		scope.Sandbox = true // always sandboxed
 	}
 

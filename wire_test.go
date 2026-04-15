@@ -18234,13 +18234,95 @@ func TestResolveSessionScope_Group(t *testing.T) {
 	if scope.TrustLevel != "observe" {
 		t.Errorf("TrustLevel = %q, want observe", scope.TrustLevel)
 	}
-	// Group should always use minimal tools
-	if scope.ToolProfile != "minimal" {
-		t.Errorf("ToolProfile = %q, want minimal", scope.ToolProfile)
+	// Group caps at standard even if role is "full"
+	if scope.ToolProfile != "standard" {
+		t.Errorf("ToolProfile = %q, want standard", scope.ToolProfile)
 	}
 	// Group should always be sandboxed
 	if !scope.Sandbox {
 		t.Error("Sandbox = false, want true")
+	}
+}
+
+func TestResolveSessionScope_GroupProfileOverride(t *testing.T) {
+	tests := []struct {
+		name        string
+		policy      AgentToolPolicy
+		wantProfile string
+	}{
+		{
+			name:        "groupProfile minimal passes through",
+			policy:      AgentToolPolicy{GroupProfile: "minimal"},
+			wantProfile: "minimal",
+		},
+		{
+			name:        "groupProfile full capped to standard",
+			policy:      AgentToolPolicy{GroupProfile: "full"},
+			wantProfile: "standard",
+		},
+		{
+			name:        "groupProfile standard passes through",
+			policy:      AgentToolPolicy{GroupProfile: "standard"},
+			wantProfile: "standard",
+		},
+		{
+			name:        "groupProfile takes priority over profile",
+			policy:      AgentToolPolicy{Profile: "minimal", GroupProfile: "standard"},
+			wantProfile: "standard",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Agents: map[string]AgentConfig{
+					"kohaku": {ToolPolicy: tt.policy},
+				},
+			}
+			scope := resolveSessionScope(cfg, "kohaku", "group")
+			if scope.ToolProfile != tt.wantProfile {
+				t.Errorf("ToolProfile = %q, want %q", scope.ToolProfile, tt.wantProfile)
+			}
+			if scope.TrustLevel != "observe" {
+				t.Errorf("TrustLevel = %q, want observe", scope.TrustLevel)
+			}
+		})
+	}
+}
+
+func TestResolveSessionScope_DMProfileOverride(t *testing.T) {
+	tests := []struct {
+		name        string
+		policy      AgentToolPolicy
+		wantProfile string
+	}{
+		{
+			name:        "dmProfile overrides profile",
+			policy:      AgentToolPolicy{Profile: "minimal", DMProfile: "standard"},
+			wantProfile: "standard",
+		},
+		{
+			name:        "falls back to profile when dmProfile unset",
+			policy:      AgentToolPolicy{Profile: "minimal"},
+			wantProfile: "minimal",
+		},
+		{
+			name:        "defaults to standard when both unset",
+			policy:      AgentToolPolicy{},
+			wantProfile: "standard",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Agents: map[string]AgentConfig{
+					"kohaku": {ToolPolicy: tt.policy},
+				},
+			}
+			scope := resolveSessionScope(cfg, "kohaku", "dm")
+			if scope.ToolProfile != tt.wantProfile {
+				t.Errorf("ToolProfile = %q, want %q", scope.ToolProfile, tt.wantProfile)
+			}
+		})
 	}
 }
 
