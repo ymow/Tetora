@@ -424,6 +424,12 @@ func (db *DiscordBot) handleMessage(msg discord.Message) {
 		return
 	}
 
+	// /compact: compact the current session directly without dispatching to an agent.
+	if text == "/compact" {
+		db.cmdCompactSession(msg)
+		return
+	}
+
 	// Terminal bridge: route text to active terminal session (before command handling).
 	if db.terminal != nil && db.terminal.handleTerminalInput(msg.ChannelID, text) {
 		return
@@ -1359,6 +1365,28 @@ func (db *DiscordBot) cmdNewSession(msg discord.Message) {
 	db.sendMessage(msg.ChannelID, "New session started.")
 }
 
+func (db *DiscordBot) cmdCompactSession(msg discord.Message) {
+	dbPath := db.cfg.HistoryDB
+	if dbPath == "" {
+		db.sendMessage(msg.ChannelID, "History DB not configured.")
+		return
+	}
+	chKey := channelSessionKey("discord", msg.ChannelID)
+	sess, err := findChannelSession(dbPath, chKey)
+	if err != nil || sess == nil {
+		db.sendMessage(msg.ChannelID, "No active session to compact.")
+		return
+	}
+	db.sendMessage(msg.ChannelID, "Compacting session...")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := compactSession(ctx, db.cfg, dbPath, sess.ID, false, db.sem, db.childSem); err != nil {
+		db.sendMessage(msg.ChannelID, fmt.Sprintf("Compact failed: %v", err))
+		return
+	}
+	db.sendMessage(msg.ChannelID, "Session compacted.")
+}
+
 func (db *DiscordBot) cmdHelp(msg discord.Message) {
 	db.sendEmbed(msg.ChannelID, discord.Embed{
 		Title:       "Tetora Help",
@@ -1911,10 +1939,10 @@ func (db *DiscordBot) sendRouteResponse(channelID string, route *RouteResult, re
 			}
 		}
 
-		// Send output as plain text messages (split into 2000-char chunks).
-		// For very long outputs, truncate the middle to preserve the conclusion.
+		// Send output as plain text messages (split into 1900-char chunks).
+		// Hard cap at 16000 chars (~8 messages) to prevent Discord flooding.
 		const maxChunk = 1900 // leave room for markdown formatting
-		const maxTotal = 5700 // 3 messages max — Discord rate-limits beyond this
+		const maxTotal = 16000
 		if len(output) > maxTotal {
 			// Keep beginning (context) + end (conclusion), separated by "...".
 			headSize := maxTotal * 2 / 5
