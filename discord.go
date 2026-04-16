@@ -1380,8 +1380,14 @@ func (db *DiscordBot) cmdCompactSession(msg discord.Message) {
 	db.sendMessage(msg.ChannelID, "Compacting session...")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	if err := compactSession(ctx, db.cfg, dbPath, sess.ID, false, db.sem, db.childSem); err != nil {
-		db.sendMessage(msg.ChannelID, fmt.Sprintf("Compact failed: %v", err))
+	var compactErr error
+	if db.cfg.Session.Compaction.Strategy == "fresh-session" {
+		compactErr = compactSessionFresh(ctx, db.cfg, dbPath, sess.ID, chKey, sess.Agent, db.sem, db.childSem)
+	} else {
+		compactErr = compactSession(ctx, db.cfg, dbPath, sess.ID, false, db.sem, db.childSem)
+	}
+	if compactErr != nil {
+		db.sendMessage(msg.ChannelID, fmt.Sprintf("Compact failed: %v", compactErr))
 		return
 	}
 	db.sendMessage(msg.ChannelID, "Session compacted.")
@@ -1637,7 +1643,7 @@ func (db *DiscordBot) executeRoute(msg discord.Message, prompt string, route Rou
 	}
 	// Fresh-session compaction: inject the previous session's summary into the system prompt
 	// so the agent retains context without the large JSONL history causing cache write bloat.
-	if sess != nil && sess.MessageCount <= 1 && db.cfg.Session.Compaction.Strategy == "fresh-session" {
+	if sess != nil && sess.MessageCount <= 3 && db.cfg.Session.Compaction.Strategy == "fresh-session" {
 		memKey := "session_compact_" + sanitizeKey(agent+"_"+chKey)
 		if summary, err := getMemory(db.cfg, agent, memKey); err == nil && summary != "" {
 			task.SystemPrompt += "\n\n## Previous Session Summary\n" + summary

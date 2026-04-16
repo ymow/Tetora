@@ -10236,7 +10236,7 @@ Conversation (%d messages):
 		log.Warn("session count update failed", "session", sessionID, "error", err)
 	}
 
-	log.Info("session compacted", "session", sessionID[:8], "before", len(msgs), "after", newCount, "kept", keep)
+	log.Info("session compacted", "session", sessionID[:min(8, len(sessionID))], "before", len(msgs), "after", newCount, "kept", keep)
 	return nil
 }
 
@@ -10311,10 +10311,14 @@ Conversation (%d messages, %d input-tokens):
 
 	// Persist summary to workspace memory, keyed by agent + channel so the new
 	// session can find it on the next executeRoute call.
-	memKey := "session_compact_" + sanitizeKey(agentName+"_"+chKey)
+	keyPart := chKey
+	if keyPart == "" {
+		keyPart = sessionID
+	}
+	memKey := "session_compact_" + sanitizeKey(agentName+"_"+keyPart)
 	if err := setMemory(cfg, agentName, memKey, summaryText); err != nil {
 		// Non-fatal: proceed with archiving even if memory write fails.
-		log.Warn("compactSessionFresh: memory write failed", "session", sessionID[:8], "error", err)
+		log.Warn("compactSessionFresh: memory write failed", "session", sessionID[:min(8, len(sessionID))], "error", err)
 	}
 
 	// Archive the session. On the next message, getOrCreateChannelSession creates
@@ -10324,7 +10328,7 @@ Conversation (%d messages, %d input-tokens):
 	}
 
 	log.Info("session compacted (fresh-session)",
-		"session", sessionID[:8], "agent", agentName,
+		"session", sessionID[:min(8, len(sessionID))], "agent", agentName,
 		"msgs", len(msgs), "tokens", sess.TotalTokensIn, "memKey", memKey)
 	return nil
 }
