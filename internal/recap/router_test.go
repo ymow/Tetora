@@ -1,6 +1,7 @@
 package recap
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	"tetora/internal/db"
 )
 
+var errDiscordDown = errors.New("discord api unavailable")
+
 // fakeAPI records all API interactions for assertions and controls the
 // thread-id returned by Request.
 type fakeAPI struct {
@@ -18,6 +21,7 @@ type fakeAPI struct {
 	requests     []fakeRequest
 	sends        []fakeSend
 	forceErr     error
+	forceSendErr error
 }
 
 type fakeRequest struct {
@@ -39,8 +43,9 @@ func (f *fakeAPI) Request(method, path string, payload any) ([]byte, error) {
 	return []byte(`{"id":"` + f.nextThreadID + `"}`), nil
 }
 
-func (f *fakeAPI) SendLongMessage(channelID, content string) {
+func (f *fakeAPI) SendLongMessage(channelID, content string) error {
 	f.sends = append(f.sends, fakeSend{channelID, content})
+	return f.forceSendErr
 }
 
 // newTestDB creates a temp sqlite file with the recap schema applied.
@@ -158,6 +163,44 @@ func TestRouter_Deliver_DedupsByUUID(t *testing.T) {
 	}
 	if len(api.sends) != 1 {
 		t.Errorf("expected exactly 1 send (dedup), got %d", len(api.sends))
+	}
+}
+
+func TestRouter_Deliver_SendFails_DoesNotMarkSent(t *testing.T) {
+	dbPath := newTestDB(t)
+	// Pre-existing routing so thread creation isn't attempted.
+	if err := SetRouting(dbPath, Routing{
+		SessionID: "s-fail", ParentChannelID: "ruri-ch",
+		ThreadID: "thread-x", CWD: "/x",
+	}, "2026-04-17T00:00:00Z"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	api := &fakeAPI{forceSendErr: errDiscordDown}
+	r := &Router{
+		Cfg:    config.DiscordRecapConfig{DefaultParentChannel: "default-ch"},
+		API:    api,
+		DBPath: dbPath,
+	}
+	rec := Record{UUID: "u-fail", SessionID: "s-fail", CWD: "/x", Content: "will fail"}
+
+	if err := r.Deliver(rec); err == nil {
+		t.Fatalf("expected Deliver to return error when send fails")
+	}
+	if IsSent(dbPath, "u-fail") {
+		t.Errorf("uuid must NOT be marked sent after send failure (would prevent retry)")
+	}
+
+	// Second Deliver on same uuid should attempt send again.
+	api.forceSendErr = nil
+	if err := r.Deliver(rec); err != nil {
+		t.Fatalf("retry deliver: %v", err)
+	}
+	if !IsSent(dbPath, "u-fail") {
+		t.Errorf("after successful retry, uuid should be marked sent")
+	}
+	if len(api.sends) != 2 {
+		t.Errorf("expected 2 send attempts (failed + retried), got %d", len(api.sends))
 	}
 }
 

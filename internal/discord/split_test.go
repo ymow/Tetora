@@ -13,6 +13,13 @@ func TestSplitForDiscord_ShortContentStaysOneChunk(t *testing.T) {
 	}
 }
 
+func TestSplitForDiscord_EmptyReturnsNil(t *testing.T) {
+	got := splitForDiscord("", 1990)
+	if got != nil {
+		t.Errorf("expected nil for empty input (so SendLongMessage skips empty posts), got %v", got)
+	}
+}
+
 func TestSplitForDiscord_SplitsAtParagraphBoundary(t *testing.T) {
 	para1 := strings.Repeat("a", 900)
 	para2 := strings.Repeat("b", 900)

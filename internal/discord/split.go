@@ -10,6 +10,9 @@ import (
 // Rune boundaries are always respected so multi-byte characters stay intact.
 // Callers typically pass budgetBytes < 2000 to leave room for a `(i/N) ` prefix.
 func splitForDiscord(s string, budgetBytes int) []string {
+	if s == "" {
+		return nil
+	}
 	if len(s) <= budgetBytes || budgetBytes <= 0 {
 		return []string{s}
 	}
