@@ -63,3 +63,12 @@ tasks/todo.md
 
 # Local workflow docs (not for upstream)
 GIT_WORKFLOW.md
+
+# Local project files (client-specific, not for upstream)
+temp_move_project/
+~$*.docx
+~$*.doc
+
+# Client onboarding configs (generated per client)
+config.client*.json
+configs/
