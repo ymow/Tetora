@@ -345,12 +345,13 @@ func main() {
 	// Services are initialized into app fields below, then SyncToGlobals()
 	// backfills global vars for callers that haven't migrated yet.
 	app := &App{Cfg: cfg}
+	globalApp = app
 
 	// Search Infrastructure
 	if s, err := newSearchService(cfg); err == nil {
 		app.Search = s
 	} else {
-		logError("failed to initialize search service", "err", err)
+		log.Error("failed to initialize search service", "error", err)
 	}
 
 	// Initialize hooks event receiver.

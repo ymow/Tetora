@@ -2067,6 +2067,8 @@ type OAuthManager = iOAuth.OAuthManager
 type OAuthToken = iOAuth.OAuthToken
 type OAuthTokenStatus = iOAuth.OAuthTokenStatus
 
+var globalApp *App
+
 var globalOAuthManager *OAuthManager
 
 var oauthTemplates = iOAuth.OAuthTemplates
