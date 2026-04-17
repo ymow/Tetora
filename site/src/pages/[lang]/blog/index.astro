@@ -12,10 +12,14 @@ export function getStaticPaths() {
 
 const { lang } = Astro.params as { lang: Lang };
 const allPosts = await getCollection('blog');
+// Filter by current language. Fallback to English only for posts with no translation.
 const langPosts = allPosts.filter(p => p.data.lang === lang);
-const langSlugs = new Set(langPosts.map(p => p.id.replace(`${p.data.lang}/`, '')));
+// Build a set of base filenames that exist in the current language.
+// Use the same slug extraction as [...slug].astro: split('/').slice(1).join('/')
+const toBaseSlug = (p: any) => p.id.split('/').slice(1).join('/').replace(/\.mdx?$/, '');
+const langSlugs = new Set(langPosts.map(toBaseSlug));
 const fallbackPosts = lang === 'en' ? [] : allPosts
-  .filter(p => p.data.lang === 'en' && !langSlugs.has(p.id.replace('en/', '')));
+  .filter(p => p.data.lang === 'en' && !langSlugs.has(toBaseSlug(p)));
 const posts = [...langPosts, ...fallbackPosts]
   .sort((a, b) => new Date(b.data.date).getTime() - new Date(a.data.date).getTime());
 
@@ -38,7 +42,7 @@ const tagLabels: Record<string, Record<string, string>> = {
   <div class="posts">
     {posts.map(post => {
       const postLang = post.data.lang;
-      const slug = post.id.replace(`${postLang}/`, '');
+      const slug = post.id.split('/').slice(1).join('/').replace(/\.mdx?$/, '');
       const href = `/${postLang}/blog/${slug}/`;
       const tagClass = post.data.tag === 'case-study' ? 'tag-case-study' : 'tag-release';
       const tagLabel = tagLabels[post.data.tag]?.[lang] ?? tagLabels[post.data.tag]?.en ?? post.data.tag;

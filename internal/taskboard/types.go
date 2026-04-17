@@ -19,11 +19,13 @@ type TaskBoard struct {
 	UpdatedAt     string   `json:"updatedAt"`
 	CompletedAt   string   `json:"completedAt"`
 	RetryCount    int      `json:"retryCount"`    // number of auto-retries
+	ExecutionCount int     `json:"executionCount"` // total number of dispatch executions (hard limit guard)
 	CostUSD       float64  `json:"costUsd"`       // cost in USD
 	DurationMs    int64    `json:"durationMs"`    // execution duration in ms
 	SessionID     string   `json:"sessionId"`     // claude session ID
 	WorkflowRunID string   `json:"workflowRunId"` // workflow run ID
-	Workdirs      []string `json:"workdirs"`      // explicit directories this task operates in (for coord region)
+	Workdirs       []string `json:"workdirs"`       // explicit directories this task operates in (for coord region)
+	AllowDangerous bool     `json:"allowDangerous"` // bypass dangerous-ops check when dispatching
 }
 
 // TaskComment is a comment on a task.

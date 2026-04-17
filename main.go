@@ -169,8 +169,17 @@ func main() {
 		case "discord":
 			cli.CmdDiscord(os.Args[2:])
 			return
+		case "project":
+			cli.CmdProject(os.Args[2:])
+			return
+		case "guide":
+			runGuide(os.Args[2:])
+			return
 		case "access":
 			cli.CmdAccess(os.Args[2:])
+			return
+		case "provider":
+			cli.CmdProvider(os.Args[2:])
 			return
 		case "release":
 			cli.CmdRelease(os.Args[2:])
@@ -448,6 +457,8 @@ func main() {
 			}
 			// Init workflow callbacks table (external steps).
 			initCallbackTable(cfg.HistoryDB)
+			// Init human gate table (human steps).
+			initHumanGateTable(cfg.HistoryDB)
 		}
 
 		// --- P23.1: User Profile & Emotional Memory ---
@@ -1136,11 +1147,12 @@ func main() {
 		}
 		srv := startHTTPServer(srvInstance)
 
-		// Recover pending external step workflows.
-		go recoverPendingWorkflows(cfg, state, sem, childSem)
-
-		// Cleanup expired callbacks (timeout marking + old streaming records).
+		// Cleanup expired callbacks/human-gates BEFORE recovery so that recovery only
+		// picks up gates that are genuinely still within their timeout window.
 		cleanupExpiredCallbacks(cfg.HistoryDB)
+
+		// Recover pending external step workflows (gates still within timeout window).
+		go recoverPendingWorkflows(cfg, state, sem, childSem)
 
 		// Cleanup zombie sessions AFTER the HTTP server starts.
 		// Delayed so that if port binding fails (os.Exit in goroutine),
@@ -1880,6 +1892,39 @@ type ProactiveDelivery = config.ProactiveDelivery
 type VoiceWakeConfig = config.VoiceWakeConfig
 type VoiceRealtimeConfig = config.VoiceRealtimeConfig
 
+// deepMergeJSON merges two JSON documents. Values in override take precedence.
+// Objects are merged recursively (key-level); all other types are replaced.
+func deepMergeJSON(baseJSON, overrideJSON []byte) ([]byte, error) {
+	var base, override map[string]any
+	if err := json.Unmarshal(baseJSON, &base); err != nil {
+		return nil, fmt.Errorf("unmarshal base: %w", err)
+	}
+	if err := json.Unmarshal(overrideJSON, &override); err != nil {
+		return nil, fmt.Errorf("unmarshal override: %w", err)
+	}
+	deepMergeMaps(base, override)
+	return json.Marshal(base)
+}
+
+// deepMergeMaps recursively merges src into dst. src values win; nested maps
+// are merged at key level rather than replaced wholesale.
+func deepMergeMaps(dst, src map[string]any) {
+	for k, srcVal := range src {
+		dstVal, exists := dst[k]
+		if !exists {
+			dst[k] = srcVal
+			continue
+		}
+		srcMap, srcOK := srcVal.(map[string]any)
+		dstMap, dstOK := dstVal.(map[string]any)
+		if srcOK && dstOK {
+			deepMergeMaps(dstMap, srcMap)
+		} else {
+			dst[k] = srcVal
+		}
+	}
+}
+
 // --- Config Loading ---
 
 func loadConfig(path string) *Config {
@@ -1888,7 +1933,60 @@ func loadConfig(path string) *Config {
 		log.Error("config load failed", "error", err)
 		os.Exit(1)
 	}
+
+	// Apply environment variable overrides for provider.
+	// This allows automatic provider switching without modifying config files.
+	applyEnvProviderOverride(cfg)
+
 	return cfg
+}
+
+// applyEnvProviderOverride checks TETORA_PROVIDER and TETORA_MODEL environment
+// variables and applies them as active provider overrides if set.
+// This enables automatic preset loading without CLI commands.
+func applyEnvProviderOverride(cfg *Config) {
+	providerName := os.Getenv("TETORA_PROVIDER")
+	if providerName == "" {
+		return
+	}
+
+	model := os.Getenv("TETORA_MODEL")
+	if model == "" {
+		model = "auto"
+	}
+
+	// Initialize active provider store if not present.
+	if cfg.ActiveProviderStore == nil {
+		storePath := filepath.Join(cfg.RuntimeDir, "active-provider.json")
+		if cfg.RuntimeDir == "" {
+			storePath = filepath.Join(filepath.Dir(configPathOrDefault()), "active-provider.json")
+		}
+		cfg.ActiveProviderStore = config.NewActiveProviderStore(storePath)
+	}
+
+	if err := cfg.ActiveProviderStore.Set(providerName, model, "env"); err != nil {
+		log.Warn("failed to set active provider from environment",
+			"provider", providerName,
+			"model", model,
+			"error", err)
+		return
+	}
+
+	log.Info("applied provider override from environment",
+		"provider", providerName,
+		"model", model)
+}
+
+// configPathOrDefault returns the config file path or a sensible default.
+func configPathOrDefault() string {
+	if p := os.Getenv("TETORA_CONFIG"); p != "" {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "config.json"
+	}
+	return filepath.Join(home, ".tetora", "config.json")
 }
 
 // tryLoadConfig loads and validates the config file, returning an error instead
@@ -1922,6 +2020,20 @@ func tryLoadConfig(path string) (*Config, error) {
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	// Load local config override (config.local.json) and deep merge.
+	localPath := strings.TrimSuffix(path, ".json") + ".local.json"
+	if localData, err := os.ReadFile(localPath); err == nil {
+		merged, mergeErr := deepMergeJSON(data, localData)
+		if mergeErr != nil {
+			return nil, fmt.Errorf("merge local config: %w", mergeErr)
+		}
+		cfg = Config{} // reset before re-unmarshal
+		if err := json.Unmarshal(merged, &cfg); err != nil {
+			return nil, fmt.Errorf("parse merged config: %w", err)
+		}
+		log.Info("loaded local config override", "path", localPath)
 	}
 
 	cfg.BaseDir = filepath.Dir(path)
@@ -2075,6 +2187,11 @@ func tryLoadConfig(path string) (*Config, error) {
 		cfg.TLS.KeyFile = filepath.Join(cfg.BaseDir, cfg.TLS.KeyFile)
 	}
 	cfg.TLSEnabled = cfg.TLS.CertFile != "" && cfg.TLS.KeyFile != ""
+
+	// Load .env file before resolving secrets so $ENV_VAR references work.
+	if err := config.LoadDotEnv(filepath.Join(cfg.BaseDir, ".env")); err != nil {
+		log.Warn("failed to load .env file", "error", err)
+	}
 
 	// Resolve $ENV_VAR references in secret fields.
 	config.ResolveSecrets(&cfg)
@@ -2265,7 +2382,7 @@ func updateConfigMCPs(configPath, mcpName string, mcpConfig json.RawMessage) err
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(configPath, append(out, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(configPath, append(out, '\n'), 0o600); err != nil {
 		return err
 	}
 	// Auto-snapshot config version after MCP change.
@@ -2276,22 +2393,34 @@ func updateConfigMCPs(configPath, mcpName string, mcpConfig json.RawMessage) err
 }
 
 
-// updateAgentModel updates an agent's model in config and returns the old model.
-func updateAgentModel(cfg *Config, agentName, model string) (string, error) {
+// modelChangeResult holds the old and new model/provider for display.
+type modelChangeResult struct {
+	OldModel    string
+	OldProvider string
+	NewProvider string // empty if provider was not changed
+}
+
+// updateAgentModel updates an agent's model (and optionally provider) in config.
+func updateAgentModel(cfg *Config, agentName, model, providerName string) (modelChangeResult, error) {
 	ac, ok := cfg.Agents[agentName]
 	if !ok {
-		return "", fmt.Errorf("agent %q not found", agentName)
+		return modelChangeResult{}, fmt.Errorf("agent %q not found", agentName)
 	}
-	old := ac.Model
+	res := modelChangeResult{OldModel: ac.Model, OldProvider: ac.Provider}
 	ac.Model = model
+	if providerName != "" && providerName != ac.Provider {
+		res.NewProvider = providerName
+		ac.Provider = providerName
+	}
 	cfg.Agents[agentName] = ac
 	configPath := findConfigPath()
 	agentJSON, err := json.Marshal(&ac)
 	if err != nil {
-		return "", err
+		return res, err
 	}
-	return old, cli.UpdateConfigAgents(configPath, agentName, agentJSON)
+	return res, cli.UpdateConfigAgents(configPath, agentName, agentJSON)
 }
+
 
 // --- from cli.go ---
 
@@ -3740,7 +3869,7 @@ func workflowResumeCmd(runID string) {
 	sem := make(chan struct{}, 5)
 	childSem := make(chan struct{}, 10)
 
-	run, err := resumeWorkflow(context.Background(), cfg, resolvedID, state, sem, childSem)
+	run, err := resumeWorkflow(context.Background(), cfg, resolvedID, state, sem, childSem, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Resume failed: %v\n", err)
 		os.Exit(1)
@@ -3972,5 +4101,73 @@ func stepSummary(s *WorkflowStep) string {
 		return fmt.Sprintf("%d parallel tasks", len(s.Parallel))
 	default:
 		return st
+	}
+}
+
+func runGuide(args []string) {
+	isJSON := false
+	for _, arg := range args {
+		if arg == "--json" {
+			isJSON = true
+		}
+	}
+
+	guideData := map[string]any{
+		"title": "Tetora — Quick Guide",
+		"sections": []map[string]any{
+			{
+				"name": "Getting Started",
+				"commands": []map[string]any{
+					map[string]any{"cmd": "tetora init", "desc": "Set up Tetora for the first time"},
+					map[string]any{"cmd": "tetora project add", "desc": "Onboard an existing project (analyze + create tasks)"},
+					map[string]any{"cmd": "tetora serve", "desc": "Start the daemon + dashboard"},
+				},
+			},
+			{
+				"name": "Agents",
+				"commands": []map[string]any{
+					map[string]any{"cmd": "tetora agent list", "desc": "List all configured agents"},
+					map[string]any{"cmd": "tetora agent chat <name>", "desc": "Start a chat session with an agent"},
+				},
+			},
+			{
+				"name": "Workflows",
+				"commands": []map[string]any{
+					map[string]any{"cmd": "tetora workflow list", "desc": "List available workflows"},
+					map[string]any{"cmd": "tetora workflow run <name> [--var k=v]", "desc": "Run a workflow"},
+				},
+			},
+			{
+				"name": "Task Board",
+				"commands": []map[string]any{
+					map[string]any{"cmd": "tetora task list", "desc": "List tasks"},
+					map[string]any{"cmd": "tetora task create", "desc": "Create a new task"},
+					map[string]any{"cmd": "tetora task show <id>", "desc": "Show task detail"},
+				},
+			},
+			{
+				"name": "Diagnostics",
+				"commands": []map[string]any{
+					map[string]any{"cmd": "tetora doctor", "desc": "Check configuration health"},
+					map[string]any{"cmd": "tetora status", "desc": "Show daemon status"},
+					map[string]any{"cmd": "tetora guide", "desc": "Show this guide"},
+				},
+			},
+		},
+	}
+
+	if isJSON {
+		json.NewEncoder(os.Stdout).Encode(guideData)
+		return
+	}
+
+	fmt.Println("\033[1mTetora — Quick Guide\033[0m")
+	fmt.Println()
+	for _, s := range guideData["sections"].([]map[string]any) {
+		fmt.Printf("\033[36m%s\033[0m\n", s["name"])
+		for _, c := range s["commands"].([]map[string]any) {
+			fmt.Printf("  %-42s %s\n", c["cmd"].(string), c["desc"].(string))
+		}
+		fmt.Println()
 	}
 }

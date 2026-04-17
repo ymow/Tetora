@@ -13,9 +13,9 @@ export function getStaticPaths() {
 const { lang } = Astro.params as { lang: Lang };
 const allTips = await getCollection('tips');
 const langTips = allTips.filter(p => p.data.lang === lang);
-const langSlugs = new Set(langTips.map(p => p.id.replace(`${p.data.lang}/`, '')));
+const langFiles = new Set(langTips.map(p => p.id.split('/').pop()?.replace(/\.mdx?$/, '') ?? ''));
 const fallbackTips = lang === 'en' ? [] : allTips
-  .filter(p => p.data.lang === 'en' && !langSlugs.has(p.id.replace('en/', '')));
+  .filter(p => p.data.lang === 'en' && !langFiles.has(p.id.split('/').pop()?.replace(/\.mdx?$/, '') ?? ''));
 const tips = [...langTips, ...fallbackTips]
   .sort((a, b) => new Date(b.data.date).getTime() - new Date(a.data.date).getTime());
 ---
@@ -33,7 +33,7 @@ const tips = [...langTips, ...fallbackTips]
   <div class="posts">
     {tips.map(tip => {
       const tipLang = tip.data.lang;
-      const slug = tip.id.replace(`${tipLang}/`, '');
+      const slug = tip.id.split('/').slice(1).join('/').replace(/\.mdx?$/, '');
       const href = `/${tipLang}/tips/${slug}/`;
       return (
         <div class="card">

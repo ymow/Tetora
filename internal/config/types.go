@@ -25,7 +25,12 @@ type AgentConfig struct {
 	ToolProfile       string          `json:"toolProfile,omitempty"`
 	Workspace         WorkspaceConfig `json:"workspace,omitempty"`
 	Portrait              string          `json:"portrait,omitempty"`
+	VoicePreset           string          `json:"voicePreset,omitempty"`           // e.g. "alice", "carter", "maya"
 	DangerousOpsWhitelist []string        `json:"dangerousOpsWhitelist,omitempty"` // patterns allowed for this agent
+	CloudModel            string          `json:"cloudModel,omitempty"`            // preserved cloud model when switching to local
+	LocalModel            string          `json:"localModel,omitempty"`            // preferred local model for this agent
+	PinMode               string          `json:"pinMode,omitempty"`               // "cloud" | "local" | "" (follows global)
+	OutputOnly            bool            `json:"outputOnly,omitempty"`            // if true, use AgentOutputBase as workdir (for doc/report agents)
 }
 
 type ProviderConfig struct {
@@ -267,6 +272,8 @@ type ToolProfile struct {
 
 type AgentToolPolicy struct {
 	Profile      string   `json:"profile,omitempty"`
+	GroupProfile string   `json:"groupProfile,omitempty"` // override profile for group chat context
+	DMProfile    string   `json:"dmProfile,omitempty"`    // override profile for DM context
 	Allow        []string `json:"allow,omitempty"`
 	Deny         []string `json:"deny,omitempty"`
 	Sandbox      string   `json:"sandbox,omitempty"`
@@ -285,11 +292,13 @@ type CircuitBreakerConfig struct {
 // --- Session ---
 
 type SessionConfig struct {
-	ContextMessages int              `json:"contextMessages,omitempty"`
-	CompactAfter    int              `json:"compactAfter,omitempty"`
-	CompactKeep     int              `json:"compactKeep,omitempty"`
-	CompactTokens   int              `json:"compactTokens,omitempty"`
-	Compaction      CompactionConfig `json:"compaction,omitempty"`
+	ContextMessages  int              `json:"contextMessages,omitempty"`
+	CompactAfter     int              `json:"compactAfter,omitempty"`
+	CompactKeep      int              `json:"compactKeep,omitempty"`
+	CompactTokens    int              `json:"compactTokens,omitempty"`
+	MaxContextTokens int              `json:"maxContextTokens,omitempty"`
+	IdleTimeout      string           `json:"idleTimeout,omitempty"`
+	Compaction       CompactionConfig `json:"compaction,omitempty"`
 }
 
 func (c SessionConfig) ContextMessagesOrDefault() int {
@@ -320,6 +329,22 @@ func (c SessionConfig) CompactTokensOrDefault() int {
 	return 200000
 }
 
+func (c SessionConfig) MaxContextTokensOrDefault() int {
+	if c.MaxContextTokens > 0 {
+		return c.MaxContextTokens
+	}
+	return 60000
+}
+
+func (c SessionConfig) IdleTimeoutOrDefault() time.Duration {
+	if c.IdleTimeout != "" {
+		if d, err := time.ParseDuration(c.IdleTimeout); err == nil {
+			return d
+		}
+	}
+	return 90 * time.Minute
+}
+
 type CompactionConfig struct {
 	Enabled     bool    `json:"enabled,omitempty"`
 	MaxMessages int     `json:"maxMessages,omitempty"`
@@ -327,6 +352,15 @@ type CompactionConfig struct {
 	Model       string  `json:"model,omitempty"`
 	MaxCost     float64 `json:"maxCost,omitempty"`
 	Provider    string  `json:"provider,omitempty"`
+	// Strategy controls how compaction works:
+	//   "inline"        (default) — truncate session_messages in place, keep same Claude CLI session
+	//   "fresh-session" — summarize → save to memory → archive session → next msg starts clean JSONL
+	// "fresh-session" eliminates cache write cost accumulation at the expense of losing native --resume context.
+	Strategy string `json:"strategy,omitempty"`
+	// Mode controls whether compaction runs automatically or only notifies:
+	//   ""      / "auto"   (default) — compact automatically when threshold is reached
+	//   "notify"           — send a notification to the user instead of compacting automatically
+	Mode string `json:"mode,omitempty"`
 }
 
 // --- Logging ---
@@ -386,13 +420,20 @@ type STTConfig struct {
 }
 
 type TTSConfig struct {
-	Enabled  bool   `json:"enabled,omitempty"`
-	Provider string `json:"provider,omitempty"`
-	Model    string `json:"model,omitempty"`
+	Enabled   bool     `json:"enabled,omitempty"`
+	Provider  string   `json:"provider,omitempty"`
+	Providers []string `json:"providers,omitempty"` // fallback chain
+	Model     string   `json:"model,omitempty"`
+	Endpoint  string   `json:"endpoint,omitempty"`
+	APIKey    string   `json:"apiKey,omitempty"`
+	FalAPIKey string   `json:"falApiKey,omitempty"`
+	Voice     string   `json:"voice,omitempty"`
+	Format    string   `json:"format,omitempty"`
+	VibeVoice VibeVoiceConfig `json:"vibevoice,omitempty"`
+}
+
+type VibeVoiceConfig struct {
 	Endpoint string `json:"endpoint,omitempty"`
-	APIKey   string `json:"apiKey,omitempty"`
-	Voice    string `json:"voice,omitempty"`
-	Format   string `json:"format,omitempty"`
 }
 
 type VoiceWakeConfig struct {
@@ -738,10 +779,20 @@ type DiscordBotConfig struct {
 	NotifyChannelID   string                         `json:"notifyChannelID,omitempty"`
 	ShowProgress      *bool                          `json:"showProgress,omitempty"`
 	Routes            map[string]DiscordRouteConfig  `json:"routes,omitempty"`
+	// HumanAssigneeMap maps human gate assignee names (e.g. "takuma") to Discord
+	// channel IDs. When a human gate fires, the notification is routed to the
+	// mapped channel. Falls back to the default notify channel if no mapping found.
+	HumanAssigneeMap  map[string]string              `json:"humanAssigneeMap,omitempty"`
+	// DashboardBaseURL is the public base URL of the Tetora dashboard (e.g.
+	// "https://tetora.example.com"). Used to build the dashboard link in human
+	// gate Discord notifications. If empty, falls back to http://localhost<listenAddr>.
+	DashboardBaseURL  string                         `json:"dashboardBaseURL,omitempty"`
 }
 
 type DiscordRouteConfig struct {
-	Agent string `json:"agent"`
+	Agent  string   `json:"agent,omitempty"`
+	Mode   string   `json:"mode,omitempty"`
+	Agents []string `json:"agents,omitempty"`
 }
 
 // UnmarshalJSON implements backward compat: accepts both "role" and "agent".
@@ -1019,6 +1070,7 @@ func (c TrustConfig) PromoteThresholdOrDefault() int {
 type TaskBoardConfig struct {
 	Enabled         bool                    `json:"enabled"`
 	MaxRetries      int                     `json:"maxRetries,omitempty"`
+	MaxExecutions   int                     `json:"maxExecutions,omitempty"`
 	RequireReview   bool                    `json:"requireReview,omitempty"`
 	AutoDispatch    TaskBoardDispatchConfig `json:"autoDispatch,omitempty"`
 	DefaultWorkflow string                  `json:"defaultWorkflow,omitempty"`
@@ -1038,6 +1090,13 @@ func (c TaskBoardConfig) MaxRetriesOrDefault() int {
 	return 3
 }
 
+func (c TaskBoardConfig) MaxExecutionsOrDefault() int {
+	if c.MaxExecutions > 0 {
+		return c.MaxExecutions
+	}
+	return 3
+}
+
 type TaskBoardDispatchConfig struct {
 	Enabled               bool                  `json:"enabled"`
 	Interval              string                `json:"interval,omitempty"`
@@ -1049,11 +1108,19 @@ type TaskBoardDispatchConfig struct {
 	EscalateAssignee      string                `json:"escalateAssignee,omitempty"`
 	StuckThreshold        string                `json:"stuckThreshold,omitempty"`
 	MaxConcurrentTasks    int                   `json:"maxConcurrentTasks,omitempty"`
+	MaxTasksPerAgent      int                   `json:"maxTasksPerAgent,omitempty"`
 	BacklogTriageInterval string                `json:"backlogTriageInterval,omitempty"`
 	ReviewLoop            bool                  `json:"reviewLoop,omitempty"`
 	TriageEnabled         bool                  `json:"triageEnabled,omitempty"`
 	TriageBudget          float64               `json:"triageBudget,omitempty"`
 	WorkflowRouting       WorkflowRoutingConfig `json:"workflowRouting,omitempty"`
+}
+
+func (c TaskBoardDispatchConfig) MaxTasksPerAgentOrDefault() int {
+	if c.MaxTasksPerAgent > 0 {
+		return c.MaxTasksPerAgent
+	}
+	return 1
 }
 
 func (c TaskBoardDispatchConfig) TriageBudgetOrDefault() float64 {

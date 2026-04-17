@@ -8,10 +8,27 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
 // --- P18.4: Self-Improving Skills ---
+
+// skillsFileCache caches the result of LoadFileSkills per skills directory.
+// Invalidated explicitly by any function that mutates the skill store.
+var (
+	skillsCacheMu sync.RWMutex
+	skillsCacheMap = make(map[string][]SkillConfig)
+)
+
+// invalidateSkillsCache removes the cached result for the given config's skills dir.
+// Must be called after any operation that adds, removes, or modifies file-based skills.
+func invalidateSkillsCache(cfg *AppConfig) {
+	dir := SkillsDir(cfg)
+	skillsCacheMu.Lock()
+	delete(skillsCacheMap, dir)
+	skillsCacheMu.Unlock()
+}
 
 // SkillMetadata is stored as metadata.json in each skill directory.
 type SkillMetadata struct {
@@ -21,8 +38,9 @@ type SkillMetadata struct {
 	Args        []string          `json:"args,omitempty"`
 	Env         map[string]string `json:"env,omitempty"`
 	Matcher     *SkillMatcher     `json:"matcher,omitempty"`
-	Example     string            `json:"example,omitempty"`
-	CreatedBy   string            `json:"createdBy,omitempty"`
+	Example      string            `json:"example,omitempty"`
+	AllowedTools []string          `json:"allowedTools,omitempty"`
+	CreatedBy    string            `json:"createdBy,omitempty"`
 	Approved    bool              `json:"approved"`
 	Sandbox     bool              `json:"sandbox,omitempty"`
 	CreatedAt   string            `json:"createdAt"`
@@ -122,6 +140,7 @@ func CreateSkill(cfg *AppConfig, meta SkillMetadata, script string) error {
 		return fmt.Errorf("write metadata: %w", err)
 	}
 
+	invalidateSkillsCache(cfg)
 	logInfo("skill created", "name", meta.Name, "approved", meta.Approved, "createdBy", meta.CreatedBy)
 	return nil
 }
@@ -138,8 +157,23 @@ func scriptFilename(command string) string {
 // Skills with metadata.json (approved=true) are loaded first. Skills that only
 // have a SKILL.md with YAML frontmatter are also loaded as doc-only skills.
 // metadata.json takes priority: if a directory has both, metadata.json wins.
+//
+// Results are cached per skills directory and invalidated by CreateSkill,
+// ApproveSkill, and DeleteFileSkill. Callers outside this package that mutate
+// the skills directory directly should call InvalidateSkillsCache.
 func LoadFileSkills(cfg *AppConfig) []SkillConfig {
 	dir := SkillsDir(cfg)
+
+	// Fast path: return cached result if available.
+	skillsCacheMu.RLock()
+	if cached, ok := skillsCacheMap[dir]; ok {
+		result := make([]SkillConfig, len(cached))
+		copy(result, cached)
+		skillsCacheMu.RUnlock()
+		return result
+	}
+	skillsCacheMu.RUnlock()
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -164,20 +198,32 @@ func LoadFileSkills(cfg *AppConfig) []SkillConfig {
 				continue
 			}
 			sc := SkillConfig{
-				Name:        meta.Name,
-				Description: meta.Description,
-				Command:     meta.Command,
-				Args:        meta.Args,
-				Env:         meta.Env,
-				Matcher:     meta.Matcher,
-				Example:     meta.Example,
-				Workdir:     skillDir,
+				Name:         meta.Name,
+				Description:  meta.Description,
+				Command:      meta.Command,
+				Args:         meta.Args,
+				Env:          meta.Env,
+				Matcher:      meta.Matcher,
+				Example:      meta.Example,
+				AllowedTools: meta.AllowedTools,
+				Workdir:      skillDir,
 			}
 			// Detect SKILL.md for Tier 2 doc injection.
 			skillMDPath := filepath.Join(skillDir, "SKILL.md")
 			if info, err := os.Stat(skillMDPath); err == nil {
 				sc.DocPath = skillMDPath
 				sc.DocSize = int(info.Size())
+			}
+			// Detect validation script.
+			scriptGlob := filepath.Join(skillDir, "scripts", "validate.*")
+			if matches, _ := filepath.Glob(scriptGlob); len(matches) > 0 {
+				sc.ValidationScript = matches[0]
+			}
+			// Fallback: parse allowed-tools from SKILL.md frontmatter if not set in metadata.json.
+			if sc.DocPath != "" && len(sc.AllowedTools) == 0 {
+				if tools := parseAllowedToolsFromFrontmatter(sc.DocPath); len(tools) > 0 {
+					sc.AllowedTools = tools
+				}
 			}
 			skills = append(skills, sc)
 			continue
@@ -188,7 +234,60 @@ func LoadFileSkills(cfg *AppConfig) []SkillConfig {
 			skills = append(skills, *sc)
 		}
 	}
+	// --- Also scan skills/learned/ directory for agent-extracted skills pending review ---
+	learnedDir := filepath.Join(dir, "learned")
+	learnedEntries, err := os.ReadDir(learnedDir)
+	if err == nil {
+		for _, entry := range learnedEntries {
+			if !entry.IsDir() {
+				continue
+			}
+			skillDir := filepath.Join(learnedDir, entry.Name())
+			if sc := loadSkillFromFrontmatter(skillDir); sc != nil {
+				sc.Learned = true
+				skills = append(skills, *sc)
+				continue
+			}
+			// Also try metadata.json in learned skills.
+			metaPath := filepath.Join(skillDir, "metadata.json")
+			if data, err := os.ReadFile(metaPath); err == nil {
+				var meta SkillMetadata
+				if json.Unmarshal(data, &meta) == nil {
+					sc := SkillConfig{
+						Name:        meta.Name,
+						Description: meta.Description,
+						Command:     meta.Command,
+						Args:        meta.Args,
+						Env:         meta.Env,
+						Matcher:     meta.Matcher,
+						Example:     meta.Example,
+						Workdir:     skillDir,
+						Learned:     true,
+					}
+					skillMDPath := filepath.Join(skillDir, "SKILL.md")
+					if info, err := os.Stat(skillMDPath); err == nil {
+						sc.DocPath = skillMDPath
+						sc.DocSize = int(info.Size())
+					}
+					skills = append(skills, sc)
+				}
+			}
+		}
+	}
+
+	// Populate cache.
+	skillsCacheMu.Lock()
+	skillsCacheMap[dir] = skills
+	skillsCacheMu.Unlock()
+
 	return skills
+}
+
+// InvalidateSkillsCache clears the LoadFileSkills cache for the given config's
+// skills directory. Useful for callers that modify the skills directory outside
+// of CreateSkill / ApproveSkill / DeleteFileSkill.
+func InvalidateSkillsCache(cfg *AppConfig) {
+	invalidateSkillsCache(cfg)
 }
 
 // loadSkillFromFrontmatter reads a SKILL.md file and parses its YAML frontmatter
@@ -296,6 +395,66 @@ func parseFrontmatterList(raw string) []string {
 	return result
 }
 
+// parseAllowedToolsFromFrontmatter extracts allowed-tools from SKILL.md YAML frontmatter.
+// Supports both inline format: `allowed-tools: [Bash, Read, Grep]`
+// and multi-line list format:
+//
+//	allowed-tools:
+//	  - Bash
+//	  - Read
+func parseAllowedToolsFromFrontmatter(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	text := string(data)
+	if !strings.HasPrefix(text, "---") {
+		return nil
+	}
+	parts := strings.SplitN(text, "---", 3)
+	if len(parts) < 3 {
+		return nil
+	}
+
+	frontmatter := strings.TrimSpace(parts[1])
+	var tools []string
+	inAllowedTools := false
+
+	for _, line := range strings.Split(frontmatter, "\n") {
+		stripped := strings.TrimSpace(line)
+		if strings.HasPrefix(stripped, "- ") && inAllowedTools {
+			item := strings.TrimSpace(strings.TrimPrefix(stripped, "- "))
+			item = strings.Trim(item, `"'`)
+			if item != "" {
+				tools = append(tools, item)
+			}
+			continue
+		}
+		if idx := strings.Index(stripped, ":"); idx > 0 {
+			key := strings.TrimSpace(stripped[:idx])
+			val := strings.TrimSpace(stripped[idx+1:])
+			if key == "allowed-tools" {
+				inAllowedTools = true
+				// Inline format: [Bash, Read, Grep]
+				if strings.HasPrefix(val, "[") {
+					val = strings.Trim(val, "[]")
+					for _, item := range strings.Split(val, ",") {
+						item = strings.TrimSpace(item)
+						item = strings.Trim(item, `"'`)
+						if item != "" {
+							tools = append(tools, item)
+						}
+					}
+					return tools
+				}
+			} else {
+				inAllowedTools = false
+			}
+		}
+	}
+	return tools
+}
+
 // LoadAllFileSkillMetas scans the skills directory and returns all metadata (including unapproved).
 func LoadAllFileSkillMetas(cfg *AppConfig) []SkillMetadata {
 	dir := SkillsDir(cfg)
@@ -379,6 +538,7 @@ func ApproveSkill(cfg *AppConfig, name string) error {
 		return fmt.Errorf("write metadata: %w", err)
 	}
 
+	invalidateSkillsCache(cfg)
 	logInfo("skill approved", "name", name)
 	return nil
 }
@@ -403,6 +563,7 @@ func DeleteFileSkill(cfg *AppConfig, name string) error {
 		return fmt.Errorf("delete skill: %w", err)
 	}
 
+	invalidateSkillsCache(cfg)
 	logInfo("skill deleted", "name", name)
 	return nil
 }

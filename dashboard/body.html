@@ -43,7 +43,7 @@
   <!-- Sidebar Navigation -->
   <nav class="sidebar-nav" id="sidebar-nav">
     <button class="nav-item active" id="tab-dashboard" onclick="switchTab('dashboard')">
-      <span class="nav-icon">&#x1F4CA;</span> Dashboard
+      <span class="nav-icon">&#x1F4CA;</span> Dashboard<span class="hg-nav-badge" id="hg-nav-badge" style="display:none">0</span>
     </button>
     <button class="nav-item" id="tab-chat" onclick="switchTab('chat')">
       <span class="nav-icon">&#x1F4AC;</span> Chat
@@ -175,6 +175,15 @@
     <div class="decor-palette" id="decor-palette" style="display:none"></div>
   </div>
   </div><!-- /zone-command -->
+
+  <!-- Human Gates: "Waiting for You" -->
+  <div class="section hg-panel" id="human-gates-panel" style="display:none">
+    <div class="section-header">
+      <span class="section-title">&#9203; Waiting for You</span>
+      <span class="badge badge-err" id="hg-panel-badge">0</span>
+    </div>
+    <div id="human-gates-list"></div>
+  </div>
 
   <!-- Dashboard Tasks -->
   <div class="section" id="tasks-section">
@@ -928,7 +937,11 @@
       <div class="section">
         <div class="section-header">
           <span class="section-title">Agents</span>
-          <button class="btn btn-add" onclick="openAgentModal()" style="padding:4px 12px;font-size:12px">+ New Agent</button>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span id="agents-mode-badge" style="font-size:11px;padding:2px 8px;border-radius:10px;background:var(--surface);border:1px solid var(--border)"></span>
+            <button id="agents-mode-toggle" class="btn" onclick="toggleInferenceMode()" style="padding:4px 12px;font-size:12px"></button>
+            <button class="btn btn-add" onclick="openAgentModal()" style="padding:4px 12px;font-size:12px">+ New Agent</button>
+          </div>
         </div>
         <div id="agents-list">
           <div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Loading agents...</div>
@@ -957,6 +970,15 @@
         </div>
       </div>
       <div id="integration-reminders"></div>
+
+    <!-- Human Gates: "Waiting for You" (Tasks page) -->
+    <div class="section hg-panel" id="human-gates-panel-tasks" style="display:none">
+      <div class="section-header">
+        <span class="section-title">&#9203; Waiting for You</span>
+        <span class="badge badge-err" id="hg-panel-badge-tasks">0</span>
+      </div>
+      <div id="human-gates-list-tasks"></div>
+    </div>
 
     <!-- Workflow Triggers -->
     <div class="section">
@@ -1433,10 +1455,19 @@
             <option value="">— custom —</option>
           </select>
         </div>
-        <!-- Model -->
+        <!-- Model & Provider -->
         <div style="margin-bottom:12px">
-          <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:4px">Model</label>
+          <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:4px">Model & Provider</label>
+          <!-- Provider bar -->
+          <div id="af-provider-bar" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px"></div>
+          <!-- Model dropdown -->
+          <select id="af-model-select" style="width:100%;padding:7px 10px;font-size:13px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);display:none" onchange="onModelSelectChange()">
+          </select>
+          <!-- Custom model input (fallback) -->
           <input id="af-model" type="text" placeholder="claude-sonnet-4-6" style="width:100%;padding:7px 10px;font-size:13px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);box-sizing:border-box">
+          <input id="af-provider" type="hidden" value="">
+          <!-- Provider status -->
+          <div id="af-provider-status" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
         </div>
         <!-- Permission Mode -->
         <div style="margin-bottom:12px">
@@ -1556,7 +1587,8 @@
     <button class="modal-close" onclick="closeTaskDetail()">&times;</button>
     <button id="td-cancel-btn" onclick="cancelTaskFromDetail()" style="position:absolute;top:14px;right:120px;background:var(--warning,#d69e2e);color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:12px;cursor:pointer;display:none">Cancel</button>
     <button onclick="deleteTask()" style="position:absolute;top:14px;right:48px;background:var(--danger,#e53e3e);color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:12px;cursor:pointer">Delete</button>
-    <h3 id="task-detail-title" style="margin-bottom:12px">Task Detail</h3>
+    <h3 id="task-detail-title" style="margin-bottom:6px">Task Detail</h3>
+    <div id="td-id-display" style="font-size:11px;color:var(--muted);margin-bottom:10px;font-family:monospace;user-select:all"></div>
     <input type="hidden" id="td-id" value="">
     <div class="task-detail-grid">
       <div class="task-detail-field">
@@ -1641,6 +1673,7 @@
         <a id="td-wf-run-link" href="#" onclick="return openWfRunFromTask()" style="font-size:11px;color:var(--accent)">View Full Run</a>
       </div>
       <div id="td-wf-steps" class="td-wf-steps"></div>
+      <div id="td-hg-inline" style="display:none;margin-top:8px"></div>
     </div>
     <!-- Comment Thread -->
     <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Comments</div>

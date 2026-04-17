@@ -144,12 +144,40 @@ Tetora 內建網頁儀表板，位於 `http://localhost:8991/dashboard`。儀表
 | **洞察** | 7 天趨勢圖、歷史任務產出與成本圖表 |
 | **工程細節** | 成本儀表板、排程任務、工作階段、供應商健康度、信任度、SLA、版本歷史、路由、記憶等（可收合） |
 
+代理編輯器內建**供應商感知的模型選擇器**，可一鍵切換雲端與本地模型（Ollama）。全域**推論模式切換**按鈕可一次將所有代理切換至雲端或本地。每張代理卡片顯示 Cloud/Local 標章與快速切換下拉選單。
+
 提供多種主題（Glass、Clean、Material、Boardroom、Retro）。Agent World 像素辦公室可自訂裝飾與縮放控制。
 
 ```bash
 # 在預設瀏覽器中開啟儀表板
 tetora dashboard
 ```
+
+---
+
+## Discord 指令
+
+Tetora 在 Discord 中回應 `!` 前綴指令：
+
+| 指令 | 說明 |
+|---------|-------------|
+| `!model` | 顯示所有代理，依 Cloud / Local 分組 |
+| `!model pick [agent]` | 互動式模型選擇器（按鈕 + 下拉選單） |
+| `!model <model> [agent]` | 直接設定模型（自動偵測供應商） |
+| `!local [agent]` | 切換至本地模型（Ollama） |
+| `!cloud [agent]` | 恢復雲端模型 |
+| `!mode` | 推論模式摘要與切換按鈕 |
+| `!chat <agent>` | 鎖定頻道至指定代理 |
+| `!end` | 解鎖頻道，恢復智慧派工 |
+| `!new` | 開始新工作階段 |
+| `!ask <prompt>` | 單次提問 |
+| `!cancel` | 取消所有執行中任務 |
+| `!approve [tool\|reset]` | 管理自動核准工具 |
+| `!status` / `!cost` / `!jobs` | 營運概覽 |
+| `!help` | 顯示指令參考 |
+| `@Tetora <text>` | 智慧派工至最佳代理 |
+
+**[完整 Discord 指令參考](docs/discord-commands.md)** -- 模型切換、遠端/本地切換、供應商設定等。
 
 ---
 
@@ -221,6 +249,54 @@ make test
 
 ---
 
+## 工作階段壓縮（Session Compaction）
+
+Tetora 會在工作階段上下文過大時自動壓縮。這直接影響 **API 費用**——上下文越大，每次請求的 cache write 成本越高。
+
+### 運作方式
+
+每個代理的工作階段都會累積對話歷史。隨著歷史增長，每次 API 呼叫的 prompt cache write 費用也會增加。當工作階段超過設定的閾值，壓縮會自動觸發。
+
+目前支援兩種策略：
+
+| 策略 | 行為 | 適合情境 |
+|---|---|---|
+| `inline`（預設）| 在 Tetora DB 中刪除舊訊息；Claude CLI 的 session 檔案不變 | 優先保留對話連貫性 |
+| `fresh-session` | 摘要完整歷史 → 存入 memory → archive 工作階段；下一則訊息從乾淨的 JSONL 重新開始 | 長期控制 cache write 成本 |
+
+**為什麼 `fresh-session` 對費用影響重大：**
+
+使用 `inline` 時，即使壓縮後，Claude CLI 的 `.jsonl` 檔案仍持續增長，cache write 成本會與 context 大小成正比累積。使用 `fresh-session` 時，CLI session 歸零重置——每次壓縮週期都將 cache write 的費用上限重設為零。
+
+### 設定範例
+
+```json
+{
+  "session": {
+    "compactAfter": 30,
+    "compactTokens": 50000,
+    "compaction": {
+      "strategy": "fresh-session"
+    }
+  }
+}
+```
+
+| 欄位 | 預設值 | 說明 |
+|---|---|---|
+| `compactAfter` | `30` | 訊息數超過此值時觸發壓縮 |
+| `compactTokens` | `200000` | 輸入 token 數超過此值時觸發壓縮 |
+| `compaction.strategy` | `"inline"` | `"inline"` 或 `"fresh-session"` |
+| `compaction.model` | coordinator 模型 | 用於生成摘要的模型 |
+
+壓縮在背景非同步執行，失敗時會自動指數退避重試。`fresh-session` 生成的摘要會自動注入下一個工作階段的 system prompt，代理仍可保留關鍵上下文。
+
+### 取捨
+
+`fresh-session` 消除 cache write 累積，代價是失去 Claude CLI 原生的 `--resume` 連續性。對於長期個人助理使用情境（context 大、頻繁閒置），建議設定 `fresh-session` 搭配 `compactTokens: 50000`。
+
+---
+
 ## 工作流程
 
 Tetora 內建工作流程引擎，可協調多步驟、多代理的任務。以 JSON 定義你的流程管線，讓代理自動協作完成。
@@ -278,7 +354,14 @@ tetora workflow status <run-id>
 | `tetora restore <file>` | 從備份封存檔還原 |
 | `tetora dashboard` | 在瀏覽器中開啟網頁儀表板 |
 | `tetora logs` | 檢視常駐程式日誌（`-f` 即時追蹤，`--json` 結構化輸出） |
+| `tetora health` | 執行階段健康檢查（常駐程式、worker、看板、磁碟） |
+| `tetora drain` | 優雅關閉：停止新任務，等待執行中代理完成 |
 | `tetora data status` | 顯示資料保留狀態 |
+| `tetora security scan` | 安全掃描與基線檢查 |
+| `tetora prompt list` | 管理提示詞範本 |
+| `tetora project add` | 將專案加入工作空間 |
+| `tetora guide` | 互動式新手引導 |
+| `tetora upgrade` | 升級至最新版本 |
 | `tetora service install` | 安裝為 launchd 服務（macOS） |
 | `tetora completion <shell>` | 產生 shell 自動補全（bash、zsh、fish） |
 | `tetora version` | 顯示版本 |

@@ -10,6 +10,40 @@ import (
 	"tetora/internal/log"
 )
 
+// LoadDotEnv loads key=value pairs from the given file into environment variables.
+// Skips blank lines and comments (#). Does nothing if the file does not exist.
+func LoadDotEnv(path string) error {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		v = strings.TrimSpace(v)
+		if len(v) >= 2 && ((v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'')) {
+			v = v[1 : len(v)-1]
+		}
+		if os.Getenv(k) == "" {
+			os.Setenv(k, v)
+		}
+	}
+	return nil
+}
+
 // ResolveEnvRef resolves a value starting with $ to the environment variable.
 // Returns the original value if it doesn't start with $, or the env var value.
 // Logs a warning if the env var is not set.
@@ -89,6 +123,9 @@ func ResolveSecrets(cfg *Config) {
 	if cfg.Voice.TTS.APIKey != "" {
 		cfg.Voice.TTS.APIKey = ResolveEnvRef(cfg.Voice.TTS.APIKey, "voice.tts.apiKey")
 	}
+	if cfg.Voice.TTS.FalAPIKey != "" {
+		cfg.Voice.TTS.FalAPIKey = ResolveEnvRef(cfg.Voice.TTS.FalAPIKey, "voice.tts.falApiKey")
+	}
 	if cfg.WhatsApp.AccessToken != "" {
 		cfg.WhatsApp.AccessToken = ResolveEnvRef(cfg.WhatsApp.AccessToken, "whatsapp.accessToken")
 	}
@@ -162,7 +199,7 @@ func ResolveMCPPaths(cfg *Config) {
 	cfg.MCPPaths = make(map[string]string)
 	for name, raw := range cfg.MCPConfigs {
 		path := filepath.Join(dir, name+".json")
-		if err := os.WriteFile(path, raw, 0o644); err != nil {
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
 			log.Warn("write mcp config failed", "name", name, "error", err)
 			continue
 		}

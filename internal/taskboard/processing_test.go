@@ -115,9 +115,10 @@ func (m *mockWorktrees) Remove(_, worktreeDir string) error {
 	m.removed = append(m.removed, worktreeDir)
 	return nil
 }
-func (m *mockWorktrees) CommitCount(_ string) int { return m.commitCount }
-func (m *mockWorktrees) HasChanges(_ string) bool { return m.hasChanges }
+func (m *mockWorktrees) CommitCount(_ string) int    { return m.commitCount }
+func (m *mockWorktrees) HasChanges(_ string) bool    { return m.hasChanges }
 func (m *mockWorktrees) Merge(_, _, _ string) (string, error) { return "", nil }
+func (m *mockWorktrees) AcquireSessionLock(_ string) func() { return func() {} }
 
 // reviewJSON builds a review JSON response string.
 func reviewJSON(verdict, comment string) string {
@@ -1355,5 +1356,190 @@ func TestWorktreeFailure_NoChanges_DiscardsWorktree(t *testing.T) {
 	comments := taskComments(t, d, task.ID)
 	if !hasComment(comments, "no changes found") {
 		t.Errorf("expected 'no changes found' comment, got: %v", comments)
+	}
+}
+
+// =============================================================================
+// dispatchTask prompt construction tests
+// =============================================================================
+
+// capturingExecutor records the last prompt passed to RunTask.
+type capturingExecutor struct {
+	capturedPrompt string
+	result         dispatch.TaskResult
+}
+
+func (c *capturingExecutor) RunTask(_ context.Context, task dispatch.Task, _ string) dispatch.TaskResult {
+	c.capturedPrompt = task.Prompt
+	return c.result
+}
+
+// TestDispatchTask_PromptContainsTaskIDTitle asserts that the prompt built by
+// dispatchTask includes the exact "[task-ID] title" string required for git
+// commit messages. This is a regression guard: if the formatting line in
+// processing.go is accidentally changed or removed, this test will catch it.
+func TestDispatchTask_PromptContainsTaskIDTitle(t *testing.T) {
+	ex := &capturingExecutor{result: dispatch.TaskResult{Status: "success", Output: ""}}
+
+	d := newTestDispatcher(t, config.TaskBoardConfig{}, DispatcherDeps{
+		Executor:     ex,
+		FillDefaults: func(_ *config.Config, _ *dispatch.Task) {},
+	})
+
+	task, err := d.engine.CreateTask(TaskBoard{
+		Title:    "修正 dispatch prompt 格式（繁體中文）",
+		Status:   "todo",
+		Assignee: "kokuyou",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	d.dispatchTask(task)
+
+	want := fmt.Sprintf("[%s] %s", task.ID, task.Title)
+	if !strings.Contains(ex.capturedPrompt, want) {
+		t.Errorf("prompt does not contain %q\nfull prompt:\n%s", want, ex.capturedPrompt)
+	}
+}
+
+// =============================================================================
+// Context cancellation → retryable (reset to todo) tests
+// =============================================================================
+
+// fixedResultExecutor always returns the same result, regardless of call count.
+type fixedResultExecutor struct {
+	result dispatch.TaskResult
+}
+
+func (f *fixedResultExecutor) RunTask(_ context.Context, _ dispatch.Task, _ string) dispatch.TaskResult {
+	return f.result
+}
+
+func TestDispatchTask_ContextCanceled_ResetsToTodo_NoRetryBurn(t *testing.T) {
+	// When the executor returns an error containing "context canceled"
+	// (e.g. daemon shutdown), the task should be reset to "todo" — and
+	// retry_count must NOT be incremented (context cancellation is
+	// infrastructure noise, not a task failure).
+	ex := &fixedResultExecutor{result: dispatch.TaskResult{
+		Status: "error",
+		Error:  "context canceled",
+		Output: "partial output before cancellation",
+	}}
+
+	d := newTestDispatcher(t, config.TaskBoardConfig{}, DispatcherDeps{
+		Executor:     ex,
+		FillDefaults: func(_ *config.Config, _ *dispatch.Task) {},
+	})
+
+	task, err := d.engine.CreateTask(TaskBoard{
+		Title:    "task interrupted by daemon shutdown",
+		Status:   "todo",
+		Assignee: "kokuyou",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	d.dispatchTask(task)
+
+	got, err := d.engine.GetTask(task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Status != "todo" {
+		t.Errorf("expected status 'todo' after context canceled, got %q", got.Status)
+	}
+	// Context cancellation must NOT burn a retry — retry_count should remain 0.
+	if got.RetryCount != 0 {
+		t.Errorf("expected retry_count 0 (no retry burn), got %d", got.RetryCount)
+	}
+
+	// Verify system comment was added.
+	comments, _ := d.engine.GetThread(task.ID)
+	var found bool
+	for _, c := range comments {
+		if c.Author == "system" && strings.Contains(c.Content, "[auto-reset]") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected [auto-reset] system comment for context cancellation")
+	}
+}
+
+func TestDispatchTask_ContextCanceled_WrappedError_ResetsToTodo(t *testing.T) {
+	// Errors wrapping "context canceled" deeper in the message should also be retryable.
+	ex := &fixedResultExecutor{result: dispatch.TaskResult{
+		Status: "error",
+		Error:  "dispatch failed: rpc error: context canceled: deadline exceeded",
+		Output: "partial",
+	}}
+
+	d := newTestDispatcher(t, config.TaskBoardConfig{}, DispatcherDeps{
+		Executor:     ex,
+		FillDefaults: func(_ *config.Config, _ *dispatch.Task) {},
+	})
+
+	task, err := d.engine.CreateTask(TaskBoard{
+		Title:    "task with wrapped context canceled error",
+		Status:   "todo",
+		Assignee: "kokuyou",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	d.dispatchTask(task)
+
+	got, err := d.engine.GetTask(task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Status != "todo" {
+		t.Errorf("expected status 'todo' after wrapped context canceled, got %q", got.Status)
+	}
+	if got.RetryCount != 0 {
+		t.Errorf("expected retry_count 0 (no retry burn for context cancel), got %d", got.RetryCount)
+	}
+}
+
+func TestDispatchTask_RealError_AutoRetried(t *testing.T) {
+	// A genuine runtime error (not context cancellation) goes through normal
+	// failure → AutoRetryFailed path, which resets to "todo" but increments
+	// retry_count. This test verifies the retry_count IS incremented.
+	ex := &fixedResultExecutor{result: dispatch.TaskResult{
+		Status: "error",
+		Error:  "runtime error: index out of range [5] with length 3",
+		Output: "some output",
+	}}
+
+	d := newTestDispatcher(t, config.TaskBoardConfig{}, DispatcherDeps{
+		Executor:     ex,
+		FillDefaults: func(_ *config.Config, _ *dispatch.Task) {},
+	})
+
+	task, err := d.engine.CreateTask(TaskBoard{
+		Title:    "task with real runtime error",
+		Status:   "todo",
+		Assignee: "kokuyou",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	d.dispatchTask(task)
+
+	got, err := d.engine.GetTask(task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	// AutoRetryFailed resets to "todo" but increments retry_count.
+	if got.Status != "todo" {
+		t.Errorf("expected status 'todo' after auto-retry, got %q", got.Status)
+	}
+	if got.RetryCount != 1 {
+		t.Errorf("expected retry_count 1 (auto-retry increments), got %d", got.RetryCount)
 	}
 }

@@ -453,6 +453,7 @@ header {
 .kanban-column.drag-over .kanban-column-body { min-height: 60px; }
 .kanban-card-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 6px; line-height: 1.3; }
 .kanban-card-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.kanban-card-id { font-size: 10px; color: var(--muted); font-family: monospace; margin-top: 5px; opacity: 0.6; }
 .kanban-badge {
   padding: 1px 7px; border-radius: 0; font-size: 10px; font-weight: 600;
 }
@@ -1468,12 +1469,17 @@ body.mode-light.theme-material .btn:hover {
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 12px;
 }
+.md-rendered .code-block-wrap { position:relative; margin:8px 0; }
+.md-rendered .code-block-wrap .copy-btn { position:absolute; top:6px; right:6px; padding:3px 8px; font-size:11px; cursor:pointer; background:rgba(255,255,255,0.08); border:1px solid var(--border); color:var(--muted); border-radius:4px; opacity:0; transition:opacity 0.15s; font-family:'SF Mono','Fira Code',monospace; z-index:1; }
+.md-rendered .code-block-wrap:hover .copy-btn { opacity:1; }
+.md-rendered .code-block-wrap .copy-btn:hover { color:var(--text); border-color:var(--accent); }
+.md-rendered .table-wrap { overflow-x:auto; margin:8px 0; }
 .md-rendered pre {
   background: #0d0d14;
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 12px;
-  margin: 8px 0;
+  margin: 0;
   overflow-x: auto;
 }
 .md-rendered pre code {
@@ -2290,17 +2296,23 @@ body.mode-light.theme-material .btn:hover {
 .btn-mini { padding:2px 8px; font-size:11px; cursor:pointer; background:var(--surface); border:1px solid var(--border); color:var(--muted); font-family:var(--font-mono); }
 .btn-mini:hover { color:var(--text); border-color:var(--accent); }
 .btn-mini.active { color:var(--accent); border-color:var(--accent); background:rgba(96,165,250,0.08); }
-.memory-rendered { padding:12px; font-size:14px; line-height:1.6; color:var(--text); overflow-y:auto; }
+.memory-rendered { padding:12px; font-size:14px; line-height:1.6; color:var(--text); overflow-y:auto; overflow-x:auto; }
+.memory-editor { min-width:0; overflow:hidden; }
 .memory-rendered h1,.memory-rendered h2,.memory-rendered h3 { color:var(--accent); margin:16px 0 8px; }
 .memory-rendered h1 { font-size:20px; } .memory-rendered h2 { font-size:17px; } .memory-rendered h3 { font-size:15px; }
 .memory-rendered p { margin:8px 0; } .memory-rendered code { background:var(--bg); padding:2px 5px; font-size:12px; }
-.memory-rendered pre { background:var(--bg); padding:12px; overflow-x:auto; margin:8px 0; }
+.memory-rendered .code-block-wrap { position:relative; margin:8px 0; }
+.memory-rendered .code-block-wrap .copy-btn { position:absolute; top:6px; right:6px; padding:3px 8px; font-size:11px; cursor:pointer; background:var(--surface); border:1px solid var(--border); color:var(--muted); border-radius:4px; opacity:0; transition:opacity 0.15s; font-family:var(--font-mono); z-index:1; }
+.memory-rendered .code-block-wrap:hover .copy-btn { opacity:1; }
+.memory-rendered .code-block-wrap .copy-btn:hover { color:var(--text); border-color:var(--accent); }
+.memory-rendered pre { background:var(--bg); padding:12px; overflow-x:auto; margin:0; border-radius:6px; }
 .memory-rendered pre code { padding:0; }
 .memory-rendered ul,.memory-rendered ol { padding-left:20px; margin:8px 0; }
 .memory-rendered li { margin:4px 0; }
 .memory-rendered a { color:var(--accent); }
 .memory-rendered hr { border:none; border-top:1px solid var(--border); margin:16px 0; }
-.memory-rendered table { border-collapse:collapse; width:100%; margin:8px 0; }
+.memory-rendered .table-wrap { overflow-x:auto; margin:8px 0; }
+.memory-rendered table { border-collapse:collapse; width:max-content; min-width:100%; margin:0; }
 .memory-rendered th,.memory-rendered td { border:1px solid var(--border); padding:6px 10px; font-size:13px; text-align:left; }
 .memory-rendered th { background:rgba(96,165,250,0.06); }
 @media (max-width:768px) { .memory-browser { grid-template-columns:1fr; } .memory-tree { max-height:200px; border-right:none; border-bottom:1px solid var(--border); padding-right:0; padding-bottom:8px; } }
@@ -2767,3 +2779,89 @@ body:not([class*="theme-"])::after, body.theme-default::after {
   .tb-agent-grid { grid-template-columns: 1fr; }
   .tb-modal { min-width: unset !important; max-width: calc(100vw - 32px) !important; margin: 16px; }
 }
+
+/* ============================================================
+   Human Gates — "Waiting for You" Panel
+   ============================================================ */
+.hg-nav-badge {
+  display: inline-block;
+  background: var(--red);
+  color: #fff;
+  font-size: 9px;
+  font-family: var(--font-pixel);
+  padding: 1px 5px;
+  border-radius: 8px;
+  margin-left: 6px;
+  min-width: 16px;
+  text-align: center;
+  vertical-align: middle;
+}
+.hg-panel {
+  border-color: rgba(251,191,36,0.3);
+}
+.hg-panel .section-header {
+  border-bottom: 1px solid rgba(251,191,36,0.2);
+}
+.hg-card {
+  background: var(--bg);
+  border: 1px solid rgba(251,191,36,0.4);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  transition: opacity 0.2s;
+}
+.hg-card:last-child { margin-bottom: 0; }
+.hg-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.hg-icon { font-size: 16px; flex-shrink: 0; }
+.hg-meta { flex: 1; min-width: 0; }
+.hg-wf-name { font-size: 13px; color: var(--text); display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hg-step-id { font-size: 11px; color: var(--muted); display: block; }
+.hg-subtype-badge { flex-shrink: 0; }
+.hg-wait-time { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+.hg-prompt {
+  font-size: 13px;
+  color: var(--text);
+  margin: 0 0 10px 0;
+  line-height: 1.4;
+}
+.hg-actions { display: flex; flex-direction: column; gap: 6px; }
+.hg-comment-row { display: flex; flex-direction: column; }
+.hg-comment, .hg-input {
+  font-size: 12px;
+  padding: 6px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  resize: vertical;
+  font-family: var(--font-body);
+  width: 100%;
+  box-sizing: border-box;
+}
+.hg-comment:focus, .hg-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.hg-btn-row {
+  display: flex;
+  gap: 8px;
+}
+.hg-btn-approve { background: var(--green) !important; color: #000 !important; }
+.hg-btn-reject  { border-color: var(--red) !important; color: var(--red) !important; background: transparent !important; }
+.hg-btn-done    { background: var(--accent) !important; color: #fff !important; }
+.hg-btn-submit  { background: var(--accent2) !important; color: #fff !important; }
+
+/* Inline gate card in task detail modal */
+.hg-inline-card {
+  background: rgba(251,191,36,0.06);
+  border: 1px solid rgba(251,191,36,0.3);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+}
+.hg-inline-card:last-child { margin-bottom: 0; }

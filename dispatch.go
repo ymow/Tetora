@@ -423,22 +423,29 @@ func selectSem(sem, childSem chan struct{}, depth int) chan struct{} {
 	return sem
 }
 
-func dispatch(ctx context.Context, cfg *Config, tasks []Task, state *dispatchState, sem, childSem chan struct{}) *DispatchResult {
+func dispatch(ctx context.Context, cfg *Config, tasks []Task, state *dispatchState, sem, childSem chan struct{}, skipActive ...bool) *DispatchResult {
 	ctx, cancel := context.WithCancel(ctx)
-	state.mu.Lock()
-	state.active = true
-	state.startAt = time.Now()
-	state.cancel = cancel
-	state.finished = nil
-	state.running = make(map[string]*taskState)
-	state.mu.Unlock()
+	// skipActive: true when called from a sub-agent context; skips state.active management
+	// so nested dispatches don't corrupt the parent's active flag.
+	manageActive := len(skipActive) == 0 || !skipActive[0]
+	if manageActive {
+		state.mu.Lock()
+		state.active = true
+		state.startAt = time.Now()
+		state.cancel = cancel
+		state.finished = nil
+		state.running = make(map[string]*taskState)
+		state.mu.Unlock()
+	}
 
 	defer func() {
 		cancel()
-		state.mu.Lock()
-		state.active = false
-		state.cancel = nil
-		state.mu.Unlock()
+		if manageActive {
+			state.mu.Lock()
+			state.active = false
+			state.cancel = nil
+			state.mu.Unlock()
+		}
 	}()
 
 	var wg sync.WaitGroup
@@ -690,6 +697,10 @@ func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem ch
 	if result.Status == "success" && strings.TrimSpace(result.Output) == "" {
 		result.Status = "error"
 		result.Error = "session produced no output"
+		log.WarnCtx(ctx, "dispatch: session produced no output",
+			"taskId", task.ID[:8], "provider", result.Provider,
+			"model", result.Model, "tokensOut", result.TokensOut,
+			"durationMs", result.DurationMs)
 	}
 
 	// Guard: errors must always have a non-empty message for diagnosability.
@@ -1698,9 +1709,10 @@ func recordHistory(dbPath string, jobID, name, source, role string, task Task, r
 		Status:        result.Status,
 		ExitCode:      result.ExitCode,
 		CostUSD:       result.CostUSD,
-		OutputSummary: truncateStr(result.Output, 1000),
+		OutputSummary: truncateStr(result.Output, 5000),
 		Error:         result.Error,
 		Model:         result.Model,
+		Provider:      result.Provider,
 		SessionID:     result.SessionID,
 		OutputFile:    outputFile,
 		TokensIn:      result.TokensIn,
@@ -1717,14 +1729,51 @@ func recordHistory(dbPath string, jobID, name, source, role string, task Task, r
 	recordSkillCompletion(dbPath, task, result, role, startedAt, finishedAt)
 }
 
+// recordHistoryCtx is like recordHistory but respects context cancellation.
+func recordHistoryCtx(ctx context.Context, dbPath string, jobID, name, source, role string, task Task, result TaskResult, startedAt, finishedAt, outputFile string) {
+	if dbPath == "" {
+		return
+	}
+	run := JobRun{
+		JobID:         jobID,
+		Name:          name,
+		Source:        source,
+		StartedAt:     startedAt,
+		FinishedAt:    finishedAt,
+		Status:        result.Status,
+		ExitCode:      result.ExitCode,
+		CostUSD:       result.CostUSD,
+		OutputSummary: truncateStr(result.Output, 5000),
+		Error:         result.Error,
+		Model:         result.Model,
+		Provider:      result.Provider,
+		SessionID:     result.SessionID,
+		OutputFile:    outputFile,
+		TokensIn:      result.TokensIn,
+		TokensOut:     result.TokensOut,
+		Agent:         role,
+		ParentID:      task.ParentID,
+	}
+	if err := history.InsertRunCtx(ctx, dbPath, run); err != nil {
+		log.Warn("record history failed", "error", err)
+	}
+
+	// NOTE: recordSkillCompletion is not updated to ctx-aware; it's non-critical telemetry.
+	recordSkillCompletion(dbPath, task, result, role, startedAt, finishedAt)
+}
+
 // --- Generic helpers ---
 
 // truncateStr is like truncate() but avoids name collision if truncate is in another file.
 func truncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	if maxLen < 4 {
+		return string(runes[:maxLen])
+	}
+	return string(runes[:maxLen-3]) + "..."
 }
 
 // stringSliceContains checks if a string slice contains a value.
@@ -2069,7 +2118,7 @@ func checkBindings(cfg *Config, req RouteRequest) *RouteResult {
 
 // classifyByKeywords delegates to internal/dispatch.ClassifyByKeywords.
 func classifyByKeywords(cfg *Config, prompt string) *RouteResult {
-	return dtypes.ClassifyByKeywords(cfg, prompt)
+	return dtypes.ClassifyByKeywords(cfg, prompt, nil)
 }
 
 // --- LLM Classification (Slow Path) ---
@@ -2484,9 +2533,10 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 	providerTools := make([]provider.ToolDef, len(tools))
 	for i, t := range tools {
 		providerTools[i] = provider.ToolDef{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: t.InputSchema,
+			Name:         t.Name,
+			Description:  t.Description,
+			InputSchema:  t.InputSchema,
+			DeferLoading: t.DeferLoading,
 		}
 	}
 	req.Tools = providerTools
@@ -2682,6 +2732,13 @@ func executeWithProviderAndTools(ctx context.Context, cfg *Config, task Task, ag
 				tr.Content = truncateToolOutput(output, cfg.Tools.ToolOutputLimit)
 			}
 			toolResults = append(toolResults, tr)
+
+			// Record tool usage for reranking popularity bonus.
+			if cfg.Runtime.ToolRegistry != nil {
+				if reg, ok := cfg.Runtime.ToolRegistry.(*ToolRegistry); ok {
+					reg.RecordUsage(tc.Name)
+				}
+			}
 
 			// P27.3: Send tool status to channel.
 			if cfg.StreamToChannels && task.ChannelNotifier != nil {
@@ -3055,6 +3112,7 @@ func cmdTask(args []string) {
 		var title, description, priority, assignee, taskType string
 		var dependsOn []string
 		var workdirs []string
+		var allowDangerous bool
 		for _, arg := range args {
 			if strings.HasPrefix(arg, "--title=") {
 				title = strings.TrimPrefix(arg, "--title=")
@@ -3076,6 +3134,8 @@ func cmdTask(args []string) {
 				if dir != "" {
 					workdirs = append(workdirs, dir)
 				}
+			} else if arg == "--allow-dangerous" {
+				allowDangerous = true
 			}
 		}
 
@@ -3085,13 +3145,14 @@ func cmdTask(args []string) {
 		}
 
 		task, err := tb.CreateTask(TaskBoard{
-			Title:       title,
-			Description: description,
-			Priority:    priority,
-			Assignee:    assignee,
-			Type:        taskType,
-			DependsOn:   dependsOn,
-			Workdirs:    workdirs,
+			Title:          title,
+			Description:    description,
+			Priority:       priority,
+			Assignee:       assignee,
+			Type:           taskType,
+			DependsOn:      dependsOn,
+			Workdirs:       workdirs,
+			AllowDangerous: allowDangerous,
 		})
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
@@ -3348,6 +3409,14 @@ func buildBranchName(cfg config.GitWorkflowConfig, t taskboard.TaskBoard) string
 
 func slugify(s string) string {
 	return worktree.Slugify(s)
+}
+
+// acquireSessionLock writes a session lock into wtDir containing the current
+// process PID and returns a release function. Used by workflow executors to
+// prevent prune/Remove from deleting an active worktree. The release function
+// is idempotent and safe to call even if the directory is already gone.
+func acquireSessionLock(wtDir string) func() {
+	return worktree.AcquireSessionLock(wtDir)
 }
 
 func slugifyBranch(s string) string {
@@ -3895,7 +3964,7 @@ func (r *rootWorkflowRunner) Execute(ctx context.Context, workflowName string, v
 }
 
 func (r *rootWorkflowRunner) Resume(ctx context.Context, runID string) (taskboard.WorkflowRunResult, error) {
-	run, err := resumeWorkflow(ctx, r.cfg, runID, r.state, r.sem, r.childSem)
+	run, err := resumeWorkflow(ctx, r.cfg, runID, r.state, r.sem, r.childSem, nil)
 	if err != nil {
 		return taskboard.WorkflowRunResult{}, err
 	}

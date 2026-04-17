@@ -51,6 +51,13 @@ func launchdInstall() {
 	os.MkdirAll(plistDir, 0o755)
 	plistPath := filepath.Join(plistDir, PlistLabel+".plist")
 
+	// Build PATH that includes common tool locations so spawned processes
+	// (e.g. claude CLI, tetora CLI) are reachable from the launchd environment.
+	// ~/.tetora/bin is included so agents can call `tetora dispatch/task` from within sessions.
+	// ~/.local/bin is included because npm global installs land there and
+	// .zshrc (which adds it) is NOT sourced by login shells in launchd.
+	daemonPath := home + "/.tetora/bin:" + home + "/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
 	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -72,11 +79,23 @@ func launchdInstall() {
     <string>%s</string>
     <key>WorkingDirectory</key>
     <string>%s</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>%s</string>
+        <key>HOME</key>
+        <string>%s</string>
+        <key>USER</key>
+        <string>%s</string>
+    </dict>
 </dict>
 </plist>`, PlistLabel, exe,
 		filepath.Join(logDir, "tetora.log"),
 		filepath.Join(logDir, "tetora.err"),
-		tetoraDir)
+		tetoraDir,
+		daemonPath,
+		home,
+		os.Getenv("USER"))
 
 	if err := os.WriteFile(plistPath, []byte(plist), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "Error writing plist: %v\n", err)
@@ -170,14 +189,19 @@ func KillDaemonProcess() bool {
 
 // RestartLaunchd kills the running daemon, then uses launchctl bootout/bootstrap
 // to restart the service. This is the modern replacement for unload/load.
+//
+// Order matters: bootout must happen BEFORE killing the process. With KeepAlive=true
+// launchd respawns immediately on each kill, so killing first produces an ever-changing
+// PID and leaves the service still bootstrapped, causing bootstrap to fail with I/O error 5.
 func RestartLaunchd(plistPath string) error {
-	KillDaemonProcess()
-
 	uid := fmt.Sprintf("%d", os.Getuid())
 	target := "gui/" + uid
 
-	// bootout (ignore errors — may not be bootstrapped yet)
+	// bootout first so launchd stops respawning on kill
 	exec.Command("launchctl", "bootout", target+"/"+PlistLabel).Run()
+
+	// now kill any lingering process (launchd won't respawn after bootout)
+	KillDaemonProcess()
 
 	// bootstrap
 	out, err := exec.Command("launchctl", "bootstrap", target, plistPath).CombinedOutput()

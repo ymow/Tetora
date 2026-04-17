@@ -50,9 +50,10 @@ type WorkflowStep struct {
 	Parallel []WorkflowStep `json:"parallel,omitempty"` // sub-steps to run in parallel
 
 	// Failure handling.
-	RetryMax   int    `json:"retryMax,omitempty"`   // max retries on failure
-	RetryDelay string `json:"retryDelay,omitempty"` // delay between retries
-	OnError    string `json:"onError,omitempty"`    // "stop" (default), "skip", "retry"
+	RetryMax      int    `json:"retryMax,omitempty"`      // max retries on failure
+	RetryDelay    string `json:"retryDelay,omitempty"`    // delay between retries
+	OnError       string `json:"onError,omitempty"`       // "stop" (default), "skip", "retry"
+	AllowDangerous bool  `json:"allowDangerous,omitempty"` // bypass dangerous-ops check for this step
 
 	// New step types: tool_call, delay, notify, external.
 	ToolName  string            `json:"toolName,omitempty"`  // for type="tool_call"
@@ -75,6 +76,16 @@ type WorkflowStep struct {
 	CallbackContentType string            `json:"callbackContentType,omitempty"` // callback content type, default application/json
 	CallbackResponseMap *ResponseMapping  `json:"callbackResponseMap,omitempty"` // extract status/data from webhook body
 	OnTimeout           string            `json:"onTimeout,omitempty"`           // timeout behavior: stop / skip
+
+	// Human gate step (type="human").
+	HumanSubtype   string   `json:"humanSubtype,omitempty"`   // "approval", "action", "input"
+	HumanPrompt    string   `json:"humanPrompt,omitempty"`    // message shown to human (supports {{var}})
+	HumanAssignee  string   `json:"humanAssignee,omitempty"`  // assigned person (supports {{var}})
+	HumanTimeout   string   `json:"humanTimeout,omitempty"`   // duration string, e.g. "24h" (empty = 72h default)
+	HumanOnTimeout string   `json:"humanOnTimeout,omitempty"` // "stop" (default), "skip", "approve"
+	HumanInputKey  string   `json:"humanInputKey,omitempty"`  // subtype=input: response written to step output under this key
+	HumanOptions   []string          `json:"humanOptions,omitempty"`   // reserved: custom option labels for approval
+	HumanContext    map[string]string `json:"humanContext,omitempty"`   // key-value context shown in gate card
 }
 
 // ResponseMapping extracts structured data from arbitrary webhook bodies.

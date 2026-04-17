@@ -9093,7 +9093,7 @@ func TestPluginSearchTools(t *testing.T) {
 		t.Fatalf("search_tools: %v", err)
 	}
 
-	var tools []map[string]string
+	var tools []map[string]any
 	if err := json.Unmarshal([]byte(result), &tools); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -9109,7 +9109,7 @@ func TestPluginSearchTools(t *testing.T) {
 		t.Fatalf("search_tools: %v", err)
 	}
 
-	var tools2 []map[string]string
+	var tools2 []map[string]any
 	json.Unmarshal([]byte(result2), &tools2)
 
 	if len(tools2) != 1 {
@@ -13031,9 +13031,14 @@ func TestSpendingForecast(t *testing.T) {
 	cleanup := setupTestGlobals(t, dbPath, cfg)
 	defer cleanup()
 
-	// Insert expenses for this month.
+	// Insert expenses for this month (use only dates within the current month).
 	now := time.Now().UTC()
-	for i := 0; i < 5; i++ {
+	day := now.Day()
+	count := 5
+	if day < count {
+		count = day // avoid crossing into previous month
+	}
+	for i := 0; i < count; i++ {
 		date := now.AddDate(0, 0, -i).Format("2006-01-02")
 		insertExpense(t, dbPath, 100, "food", "daily food", date)
 	}
@@ -13047,9 +13052,10 @@ func TestSpendingForecast(t *testing.T) {
 	if result["month"] != month {
 		t.Errorf("month: got %v, want %s", result["month"], month)
 	}
+	expectedTotal := float64(count * 100)
 	currentTotal, _ := result["current_total"].(float64)
-	if currentTotal != 500 {
-		t.Errorf("current_total: got %v, want 500", currentTotal)
+	if currentTotal != expectedTotal {
+		t.Errorf("current_total: got %v, want %v", currentTotal, expectedTotal)
 	}
 	dailyRate, _ := result["daily_rate"].(float64)
 	if dailyRate <= 0 {
@@ -15418,7 +15424,8 @@ CREATE TABLE IF NOT EXISTS job_runs (
   error TEXT DEFAULT '', model TEXT DEFAULT '',
   session_id TEXT DEFAULT '', output_file TEXT DEFAULT '',
   tokens_in INTEGER DEFAULT 0, tokens_out INTEGER DEFAULT 0,
-  agent TEXT DEFAULT '', parent_id TEXT DEFAULT ''
+  agent TEXT DEFAULT '', parent_id TEXT DEFAULT '',
+  provider TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -18227,13 +18234,95 @@ func TestResolveSessionScope_Group(t *testing.T) {
 	if scope.TrustLevel != "observe" {
 		t.Errorf("TrustLevel = %q, want observe", scope.TrustLevel)
 	}
-	// Group should always use minimal tools
-	if scope.ToolProfile != "minimal" {
-		t.Errorf("ToolProfile = %q, want minimal", scope.ToolProfile)
+	// Group caps at standard even if role is "full"
+	if scope.ToolProfile != "standard" {
+		t.Errorf("ToolProfile = %q, want standard", scope.ToolProfile)
 	}
 	// Group should always be sandboxed
 	if !scope.Sandbox {
 		t.Error("Sandbox = false, want true")
+	}
+}
+
+func TestResolveSessionScope_GroupProfileOverride(t *testing.T) {
+	tests := []struct {
+		name        string
+		policy      AgentToolPolicy
+		wantProfile string
+	}{
+		{
+			name:        "groupProfile minimal passes through",
+			policy:      AgentToolPolicy{GroupProfile: "minimal"},
+			wantProfile: "minimal",
+		},
+		{
+			name:        "groupProfile full capped to standard",
+			policy:      AgentToolPolicy{GroupProfile: "full"},
+			wantProfile: "standard",
+		},
+		{
+			name:        "groupProfile standard passes through",
+			policy:      AgentToolPolicy{GroupProfile: "standard"},
+			wantProfile: "standard",
+		},
+		{
+			name:        "groupProfile takes priority over profile",
+			policy:      AgentToolPolicy{Profile: "minimal", GroupProfile: "standard"},
+			wantProfile: "standard",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Agents: map[string]AgentConfig{
+					"kohaku": {ToolPolicy: tt.policy},
+				},
+			}
+			scope := resolveSessionScope(cfg, "kohaku", "group")
+			if scope.ToolProfile != tt.wantProfile {
+				t.Errorf("ToolProfile = %q, want %q", scope.ToolProfile, tt.wantProfile)
+			}
+			if scope.TrustLevel != "observe" {
+				t.Errorf("TrustLevel = %q, want observe", scope.TrustLevel)
+			}
+		})
+	}
+}
+
+func TestResolveSessionScope_DMProfileOverride(t *testing.T) {
+	tests := []struct {
+		name        string
+		policy      AgentToolPolicy
+		wantProfile string
+	}{
+		{
+			name:        "dmProfile overrides profile",
+			policy:      AgentToolPolicy{Profile: "minimal", DMProfile: "standard"},
+			wantProfile: "standard",
+		},
+		{
+			name:        "falls back to profile when dmProfile unset",
+			policy:      AgentToolPolicy{Profile: "minimal"},
+			wantProfile: "minimal",
+		},
+		{
+			name:        "defaults to standard when both unset",
+			policy:      AgentToolPolicy{},
+			wantProfile: "standard",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Agents: map[string]AgentConfig{
+					"kohaku": {ToolPolicy: tt.policy},
+				},
+			}
+			scope := resolveSessionScope(cfg, "kohaku", "dm")
+			if scope.ToolProfile != tt.wantProfile {
+				t.Errorf("ToolProfile = %q, want %q", scope.ToolProfile, tt.wantProfile)
+			}
+		})
 	}
 }
 
@@ -19934,5 +20023,59 @@ func TestCompactionBackoff_SuccessClearsState(t *testing.T) {
 	compactionBackoffMu.Unlock()
 	if exists {
 		t.Fatal("state should be deleted after success")
+	}
+}
+
+func TestRecordSessionActivityCtxGoroutineBudget(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not found, skipping test")
+	}
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	if err := initSessionDB(dbPath); err != nil {
+		t.Fatalf("initSessionDB: %v", err)
+	}
+
+	// Baseline goroutine count.
+	runtime.GC()
+	time.Sleep(50 * time.Millisecond) // let GC finalizers settle
+	before := runtime.NumGoroutine()
+
+	// Context that expires in 100ms — simulates a short-lived budget scenario.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	task := Task{
+		ID:        "budget-test-task",
+		Prompt:    "goroutine budget test",
+		SessionID: "budget-test-session",
+		Source:    "test",
+	}
+	result := TaskResult{
+		ID:        "budget-test-result",
+		SessionID: "budget-test-session",
+		Status:    "success",
+		Output:    "ok",
+	}
+
+	// recordSessionActivityCtx spawns a goroutine and returns immediately.
+	callStart := time.Now()
+	recordSessionActivityCtx(ctx, dbPath, task, result, "黒曜")
+	if elapsed := time.Since(callStart); elapsed > 50*time.Millisecond {
+		t.Errorf("recordSessionActivityCtx blocked caller for %v", elapsed)
+	}
+
+	// Wait for ctx to expire, then give goroutines time to exit.
+	// exec.CommandContext sends SIGKILL on cancel, so cleanup is fast.
+	<-ctx.Done()
+	time.Sleep(500 * time.Millisecond)
+
+	runtime.GC()
+	after := runtime.NumGoroutine()
+
+	// Allow +2 margin for test runner fluctuations.
+	if after > before+2 {
+		t.Errorf("goroutine leak: before=%d after=%d (ctx was cancelled 500ms ago)", before, after)
 	}
 }

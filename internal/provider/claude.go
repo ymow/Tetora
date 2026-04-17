@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"tetora/internal/log"
@@ -43,21 +42,16 @@ func (p *ClaudeProvider) Execute(ctx context.Context, req Request) (*Result, err
 		for _, e := range rawEnv {
 			if !strings.HasPrefix(e, "CLAUDECODE=") &&
 				!strings.HasPrefix(e, "CLAUDE_CODE_ENTRYPOINT=") &&
-				!strings.HasPrefix(e, "CLAUDE_CODE_TEAM_MODE=") {
+				!strings.HasPrefix(e, "CLAUDE_CODE_TEAM_MODE=") &&
+				!strings.HasPrefix(e, "TETORA_SOURCE=") {
 				filteredEnv = append(filteredEnv, e)
 			}
 		}
-		cmd.Env = filteredEnv
+		cmd.Env = append(filteredEnv, "TETORA_SOURCE=agent_dispatch")
 	}
 
 	// Kill entire process group on timeout to prevent orphaned child processes.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
-		return os.ErrProcessDone
-	}
+	SetProcessGroup(cmd)
 	cmd.WaitDelay = 5 * time.Second
 
 	// Pipe prompt via stdin to avoid OS ARG_MAX limits on long prompts.
@@ -141,16 +135,23 @@ func (p *ClaudeProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, re
 
 	var resultMsg *claudeStreamMsg
 	toolNameByID := make(map[string]string)
+	var nonJSONLines []string // non-JSON output from CLI (e.g. "api 400" error text)
 	scanner := bufio.NewScanner(stdoutPipe)
 	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
+	lineCount := 0
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
+		lineCount++
 
 		var msg claudeStreamMsg
 		if err := json.Unmarshal(line, &msg); err != nil {
+			lineStr := strings.TrimSpace(string(line))
+			if lineStr != "" && len(nonJSONLines) < 10 {
+				nonJSONLines = append(nonJSONLines, lineStr)
+			}
 			if req.OnEvent != nil {
 				req.OnEvent(Event{
 					Type:      EventOutputChunk,
@@ -248,8 +249,25 @@ func (p *ClaudeProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, re
 		exitCode = cmd.ProcessState.ExitCode()
 	}
 
+	// Distinguish between CLI silent success and truly no output to aid diagnosis.
+	if exitCode == 0 && ctx.Err() == nil && runErr == nil {
+		if lineCount == 0 {
+			log.Warn("truly_no_output: CLI exited 0 with empty stdout",
+				"sessionId", req.SessionID, "exitCode", exitCode)
+		} else if resultMsg == nil {
+			log.Warn("output_without_result: CLI produced output lines but no result message",
+				"sessionId", req.SessionID, "lineCount", lineCount)
+		}
+	}
+
 	pr := buildResultFromStream(resultMsg, stderr.Bytes(), exitCode)
 	pr.DurationMs = elapsed.Milliseconds()
+
+	// Warn when result message is present but carries no tokens and no output.
+	if pr.Error == "empty run: CLI returned success but no tokens were consumed" {
+		log.Warn("empty_result_event: CLI returned result message with zero tokens and empty output",
+			"sessionId", req.SessionID, "exitCode", exitCode)
+	}
 
 	if ctx.Err() == context.DeadlineExceeded {
 		pr.IsError = true
@@ -270,6 +288,16 @@ func (p *ClaudeProvider) executeStreaming(ctx context.Context, cmd *exec.Cmd, re
 	} else if runErr != nil && !pr.IsError {
 		pr.IsError = true
 		pr.Error = runErr.Error()
+	}
+
+	// If the error message is generic/unhelpful, try to surface non-JSON CLI output
+	// (e.g. "api 400", "Error: rate limit exceeded") that was emitted before the result.
+	if pr.IsError && pr.Error == "error_during_execution" && len(nonJSONLines) > 0 {
+		cliText := strings.Join(nonJSONLines, " | ")
+		if len(cliText) > 300 {
+			cliText = cliText[:300]
+		}
+		pr.Error = cliText
 	}
 
 	return pr, nil
@@ -293,6 +321,11 @@ func buildResultFromStream(resultMsg *claudeStreamMsg, stderr []byte, exitCode i
 	pr.ProviderMs = resultMsg.DurationMs
 	if resultMsg.IsError {
 		pr.Error = resultMsg.Subtype
+		// CLI sometimes emits subtype="success" with is_error=true on quick init failures.
+		// Normalise to avoid surfacing "success" as the error message.
+		if pr.Error == "" || pr.Error == "success" {
+			pr.Error = "error_during_execution"
+		}
 	}
 	if !pr.IsError && pr.TokensIn == 0 && pr.TokensOut == 0 && pr.CostUSD == 0 && strings.TrimSpace(pr.Output) == "" {
 		pr.IsError = true
@@ -318,12 +351,17 @@ func BuildClaudeArgs(req Request, streaming bool) []string {
 	if streaming {
 		outputFormat = "stream-json"
 	}
+	permMode := cmp.Or(req.PermissionMode, "acceptEdits")
 	args := []string{
 		"--print",
 		"--verbose",
 		"--output-format", outputFormat,
 		"--model", req.Model,
-		"--permission-mode", cmp.Or(req.PermissionMode, "acceptEdits"),
+		"--permission-mode", permMode,
+	}
+	// bypassPermissions needs --dangerously-skip-permissions to also skip Bash confirmations.
+	if permMode == "bypassPermissions" {
+		args = append(args, "--dangerously-skip-permissions")
 	}
 
 	resume := req.Resume
@@ -485,6 +523,11 @@ func buildResultFromParsed(co claudeOutput) *Result {
 	if co.IsError {
 		r.IsError = true
 		r.Error = co.Subtype
+		// CLI sometimes emits subtype="success" with is_error=true on quick init failures.
+		// Normalise to avoid surfacing "success" as the error message.
+		if r.Error == "" || r.Error == "success" {
+			r.Error = "error_during_execution"
+		}
 	} else if r.TokensIn == 0 && r.TokensOut == 0 && co.CostUSD == 0 && strings.TrimSpace(co.Result) == "" {
 		r.IsError = true
 		r.Error = "empty run: CLI returned success but no tokens were consumed"

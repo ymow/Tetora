@@ -468,6 +468,7 @@ header {
 .kanban-column.drag-over .kanban-column-body { min-height: 60px; }
 .kanban-card-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 6px; line-height: 1.3; }
 .kanban-card-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.kanban-card-id { font-size: 10px; color: var(--muted); font-family: monospace; margin-top: 5px; opacity: 0.6; }
 .kanban-badge {
   padding: 1px 7px; border-radius: 0; font-size: 10px; font-weight: 600;
 }
@@ -1483,12 +1484,17 @@ body.mode-light.theme-material .btn:hover {
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 12px;
 }
+.md-rendered .code-block-wrap { position:relative; margin:8px 0; }
+.md-rendered .code-block-wrap .copy-btn { position:absolute; top:6px; right:6px; padding:3px 8px; font-size:11px; cursor:pointer; background:rgba(255,255,255,0.08); border:1px solid var(--border); color:var(--muted); border-radius:4px; opacity:0; transition:opacity 0.15s; font-family:'SF Mono','Fira Code',monospace; z-index:1; }
+.md-rendered .code-block-wrap:hover .copy-btn { opacity:1; }
+.md-rendered .code-block-wrap .copy-btn:hover { color:var(--text); border-color:var(--accent); }
+.md-rendered .table-wrap { overflow-x:auto; margin:8px 0; }
 .md-rendered pre {
   background: #0d0d14;
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 12px;
-  margin: 8px 0;
+  margin: 0;
   overflow-x: auto;
 }
 .md-rendered pre code {
@@ -2305,17 +2311,23 @@ body.mode-light.theme-material .btn:hover {
 .btn-mini { padding:2px 8px; font-size:11px; cursor:pointer; background:var(--surface); border:1px solid var(--border); color:var(--muted); font-family:var(--font-mono); }
 .btn-mini:hover { color:var(--text); border-color:var(--accent); }
 .btn-mini.active { color:var(--accent); border-color:var(--accent); background:rgba(96,165,250,0.08); }
-.memory-rendered { padding:12px; font-size:14px; line-height:1.6; color:var(--text); overflow-y:auto; }
+.memory-rendered { padding:12px; font-size:14px; line-height:1.6; color:var(--text); overflow-y:auto; overflow-x:auto; }
+.memory-editor { min-width:0; overflow:hidden; }
 .memory-rendered h1,.memory-rendered h2,.memory-rendered h3 { color:var(--accent); margin:16px 0 8px; }
 .memory-rendered h1 { font-size:20px; } .memory-rendered h2 { font-size:17px; } .memory-rendered h3 { font-size:15px; }
 .memory-rendered p { margin:8px 0; } .memory-rendered code { background:var(--bg); padding:2px 5px; font-size:12px; }
-.memory-rendered pre { background:var(--bg); padding:12px; overflow-x:auto; margin:8px 0; }
+.memory-rendered .code-block-wrap { position:relative; margin:8px 0; }
+.memory-rendered .code-block-wrap .copy-btn { position:absolute; top:6px; right:6px; padding:3px 8px; font-size:11px; cursor:pointer; background:var(--surface); border:1px solid var(--border); color:var(--muted); border-radius:4px; opacity:0; transition:opacity 0.15s; font-family:var(--font-mono); z-index:1; }
+.memory-rendered .code-block-wrap:hover .copy-btn { opacity:1; }
+.memory-rendered .code-block-wrap .copy-btn:hover { color:var(--text); border-color:var(--accent); }
+.memory-rendered pre { background:var(--bg); padding:12px; overflow-x:auto; margin:0; border-radius:6px; }
 .memory-rendered pre code { padding:0; }
 .memory-rendered ul,.memory-rendered ol { padding-left:20px; margin:8px 0; }
 .memory-rendered li { margin:4px 0; }
 .memory-rendered a { color:var(--accent); }
 .memory-rendered hr { border:none; border-top:1px solid var(--border); margin:16px 0; }
-.memory-rendered table { border-collapse:collapse; width:100%; margin:8px 0; }
+.memory-rendered .table-wrap { overflow-x:auto; margin:8px 0; }
+.memory-rendered table { border-collapse:collapse; width:max-content; min-width:100%; margin:0; }
 .memory-rendered th,.memory-rendered td { border:1px solid var(--border); padding:6px 10px; font-size:13px; text-align:left; }
 .memory-rendered th { background:rgba(96,165,250,0.06); }
 @media (max-width:768px) { .memory-browser { grid-template-columns:1fr; } .memory-tree { max-height:200px; border-right:none; border-bottom:1px solid var(--border); padding-right:0; padding-bottom:8px; } }
@@ -2782,6 +2794,92 @@ body:not([class*="theme-"])::after, body.theme-default::after {
   .tb-agent-grid { grid-template-columns: 1fr; }
   .tb-modal { min-width: unset !important; max-width: calc(100vw - 32px) !important; margin: 16px; }
 }
+
+/* ============================================================
+   Human Gates — "Waiting for You" Panel
+   ============================================================ */
+.hg-nav-badge {
+  display: inline-block;
+  background: var(--red);
+  color: #fff;
+  font-size: 9px;
+  font-family: var(--font-pixel);
+  padding: 1px 5px;
+  border-radius: 8px;
+  margin-left: 6px;
+  min-width: 16px;
+  text-align: center;
+  vertical-align: middle;
+}
+.hg-panel {
+  border-color: rgba(251,191,36,0.3);
+}
+.hg-panel .section-header {
+  border-bottom: 1px solid rgba(251,191,36,0.2);
+}
+.hg-card {
+  background: var(--bg);
+  border: 1px solid rgba(251,191,36,0.4);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  transition: opacity 0.2s;
+}
+.hg-card:last-child { margin-bottom: 0; }
+.hg-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.hg-icon { font-size: 16px; flex-shrink: 0; }
+.hg-meta { flex: 1; min-width: 0; }
+.hg-wf-name { font-size: 13px; color: var(--text); display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hg-step-id { font-size: 11px; color: var(--muted); display: block; }
+.hg-subtype-badge { flex-shrink: 0; }
+.hg-wait-time { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+.hg-prompt {
+  font-size: 13px;
+  color: var(--text);
+  margin: 0 0 10px 0;
+  line-height: 1.4;
+}
+.hg-actions { display: flex; flex-direction: column; gap: 6px; }
+.hg-comment-row { display: flex; flex-direction: column; }
+.hg-comment, .hg-input {
+  font-size: 12px;
+  padding: 6px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  resize: vertical;
+  font-family: var(--font-body);
+  width: 100%;
+  box-sizing: border-box;
+}
+.hg-comment:focus, .hg-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.hg-btn-row {
+  display: flex;
+  gap: 8px;
+}
+.hg-btn-approve { background: var(--green) !important; color: #000 !important; }
+.hg-btn-reject  { border-color: var(--red) !important; color: var(--red) !important; background: transparent !important; }
+.hg-btn-done    { background: var(--accent) !important; color: #fff !important; }
+.hg-btn-submit  { background: var(--accent2) !important; color: #fff !important; }
+
+/* Inline gate card in task detail modal */
+.hg-inline-card {
+  background: rgba(251,191,36,0.06);
+  border: 1px solid rgba(251,191,36,0.3);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+}
+.hg-inline-card:last-child { margin-bottom: 0; }
 </style>
 </head>
 <body>
@@ -2830,7 +2928,7 @@ body:not([class*="theme-"])::after, body.theme-default::after {
   <!-- Sidebar Navigation -->
   <nav class="sidebar-nav" id="sidebar-nav">
     <button class="nav-item active" id="tab-dashboard" onclick="switchTab('dashboard')">
-      <span class="nav-icon">&#x1F4CA;</span> Dashboard
+      <span class="nav-icon">&#x1F4CA;</span> Dashboard<span class="hg-nav-badge" id="hg-nav-badge" style="display:none">0</span>
     </button>
     <button class="nav-item" id="tab-chat" onclick="switchTab('chat')">
       <span class="nav-icon">&#x1F4AC;</span> Chat
@@ -2962,6 +3060,15 @@ body:not([class*="theme-"])::after, body.theme-default::after {
     <div class="decor-palette" id="decor-palette" style="display:none"></div>
   </div>
   </div><!-- /zone-command -->
+
+  <!-- Human Gates: "Waiting for You" -->
+  <div class="section hg-panel" id="human-gates-panel" style="display:none">
+    <div class="section-header">
+      <span class="section-title">&#9203; Waiting for You</span>
+      <span class="badge badge-err" id="hg-panel-badge">0</span>
+    </div>
+    <div id="human-gates-list"></div>
+  </div>
 
   <!-- Dashboard Tasks -->
   <div class="section" id="tasks-section">
@@ -3715,7 +3822,11 @@ body:not([class*="theme-"])::after, body.theme-default::after {
       <div class="section">
         <div class="section-header">
           <span class="section-title">Agents</span>
-          <button class="btn btn-add" onclick="openAgentModal()" style="padding:4px 12px;font-size:12px">+ New Agent</button>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span id="agents-mode-badge" style="font-size:11px;padding:2px 8px;border-radius:10px;background:var(--surface);border:1px solid var(--border)"></span>
+            <button id="agents-mode-toggle" class="btn" onclick="toggleInferenceMode()" style="padding:4px 12px;font-size:12px"></button>
+            <button class="btn btn-add" onclick="openAgentModal()" style="padding:4px 12px;font-size:12px">+ New Agent</button>
+          </div>
         </div>
         <div id="agents-list">
           <div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Loading agents...</div>
@@ -3744,6 +3855,15 @@ body:not([class*="theme-"])::after, body.theme-default::after {
         </div>
       </div>
       <div id="integration-reminders"></div>
+
+    <!-- Human Gates: "Waiting for You" (Tasks page) -->
+    <div class="section hg-panel" id="human-gates-panel-tasks" style="display:none">
+      <div class="section-header">
+        <span class="section-title">&#9203; Waiting for You</span>
+        <span class="badge badge-err" id="hg-panel-badge-tasks">0</span>
+      </div>
+      <div id="human-gates-list-tasks"></div>
+    </div>
 
     <!-- Workflow Triggers -->
     <div class="section">
@@ -4220,10 +4340,19 @@ body:not([class*="theme-"])::after, body.theme-default::after {
             <option value="">— custom —</option>
           </select>
         </div>
-        <!-- Model -->
+        <!-- Model & Provider -->
         <div style="margin-bottom:12px">
-          <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:4px">Model</label>
+          <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:4px">Model & Provider</label>
+          <!-- Provider bar -->
+          <div id="af-provider-bar" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px"></div>
+          <!-- Model dropdown -->
+          <select id="af-model-select" style="width:100%;padding:7px 10px;font-size:13px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);display:none" onchange="onModelSelectChange()">
+          </select>
+          <!-- Custom model input (fallback) -->
           <input id="af-model" type="text" placeholder="claude-sonnet-4-6" style="width:100%;padding:7px 10px;font-size:13px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);box-sizing:border-box">
+          <input id="af-provider" type="hidden" value="">
+          <!-- Provider status -->
+          <div id="af-provider-status" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
         </div>
         <!-- Permission Mode -->
         <div style="margin-bottom:12px">
@@ -4343,7 +4472,8 @@ body:not([class*="theme-"])::after, body.theme-default::after {
     <button class="modal-close" onclick="closeTaskDetail()">&times;</button>
     <button id="td-cancel-btn" onclick="cancelTaskFromDetail()" style="position:absolute;top:14px;right:120px;background:var(--warning,#d69e2e);color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:12px;cursor:pointer;display:none">Cancel</button>
     <button onclick="deleteTask()" style="position:absolute;top:14px;right:48px;background:var(--danger,#e53e3e);color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:12px;cursor:pointer">Delete</button>
-    <h3 id="task-detail-title" style="margin-bottom:12px">Task Detail</h3>
+    <h3 id="task-detail-title" style="margin-bottom:6px">Task Detail</h3>
+    <div id="td-id-display" style="font-size:11px;color:var(--muted);margin-bottom:10px;font-family:monospace;user-select:all"></div>
     <input type="hidden" id="td-id" value="">
     <div class="task-detail-grid">
       <div class="task-detail-field">
@@ -4428,6 +4558,7 @@ body:not([class*="theme-"])::after, body.theme-default::after {
         <a id="td-wf-run-link" href="#" onclick="return openWfRunFromTask()" style="font-size:11px;color:var(--accent)">View Full Run</a>
       </div>
       <div id="td-wf-steps" class="td-wf-steps"></div>
+      <div id="td-hg-inline" style="display:none;margin-top:8px"></div>
     </div>
     <!-- Comment Thread -->
     <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Comments</div>
@@ -5192,7 +5323,7 @@ function connectDashboardSSE() {
     pollTimer = setInterval(refresh, 5000);
   };
 
-  var eventTypes = ['task_received', 'task_routing', 'started', 'completed', 'error', 'task_queued', 'tool_call', 'tool_result', 'output_chunk', 'discord_processing', 'discord_replying', 'agent_state', 'board_updated', 'worker_update', 'hook_event', 'plan_review'];
+  var eventTypes = ['task_received', 'task_routing', 'started', 'completed', 'error', 'task_queued', 'tool_call', 'tool_result', 'output_chunk', 'discord_processing', 'discord_replying', 'agent_state', 'board_updated', 'worker_update', 'hook_event', 'plan_review', 'human_gate_waiting', 'human_gate_responded'];
   eventTypes.forEach(function(evType) {
     es.addEventListener(evType, function(e) {
       try {
@@ -5331,6 +5462,19 @@ function handleActivityEvent(type, ev) {
       } else {
         detail = 'Plan update';
       }
+      break;
+    case 'human_gate_waiting':
+      badge = 'gate';
+      detail = 'Gate waiting: <b>' + esc(data.stepId || '') + '</b>';
+      if (data.subtype) detail += ' <span class="muted">[' + esc(data.subtype) + ']</span>';
+      if (typeof refreshHumanGates === 'function') refreshHumanGates();
+      addNotification('Gate waiting: ' + (data.stepId || 'step'), 'info', {tab:'dashboard'});
+      break;
+    case 'human_gate_responded':
+      badge = 'gate';
+      detail = 'Gate responded: <b>' + esc(data.stepId || '') + '</b>';
+      if (data.decision) detail += ' → ' + esc(data.decision);
+      if (typeof refreshHumanGates === 'function') refreshHumanGates();
       break;
     default:
       detail = type;
@@ -7063,7 +7207,7 @@ function renderMarkdown(text) {
   const codeBlocks = [];
   text = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
     const idx = codeBlocks.length;
-    codeBlocks.push(`<pre><code class="lang-${escHtml(lang || 'text')}">${escHtml(code.replace(/\n$/, ''))}</code></pre>`);
+    codeBlocks.push(`<div class="code-block-wrap"><button class="copy-btn" onclick="copyCodeBlock(this)">Copy</button><pre><code class="lang-${escHtml(lang || 'text')}">${escHtml(code.replace(/\n$/, ''))}</code></pre></div>`);
     return `\x00CODEBLOCK${idx}\x00`;
   });
 
@@ -7136,19 +7280,19 @@ function renderMarkdown(text) {
       const nextLine = (i + 1 < lines.length) ? escHtml(lines[i + 1]) : '';
       const nextIsSep = nextLine.indexOf('|') >= 0 && nextLine.split('|').slice(1, -1).every(c => /^[-:\s]+$/.test(c.trim()));
       if (nextIsSep && result[result.length - 1] !== '<table>') {
-        result.push('<table>');
+        result.push('<div class="table-wrap"><table>');
         result.push('<tr>' + cells.map(c => '<th>' + inlineFormat(c) + '</th>').join('') + '</tr>');
       } else {
         if (result.length > 0 && !result[result.length - 1].includes('<table') && !result[result.length - 1].includes('<tr>') && !result[result.length - 1].includes('<th>')) {
           // Not in a table yet but got a | row — start table
-          result.push('<table>');
+          result.push('<div class="table-wrap"><table>');
         }
         result.push('<tr>' + cells.map(c => '<td>' + inlineFormat(c) + '</td>').join('') + '</tr>');
       }
       // Check if next line is NOT a table row — close table
       const nextLineRaw = (i + 1 < lines.length) ? lines[i + 1] : '';
       if (!nextLineRaw.trim().startsWith('|')) {
-        result.push('</table>');
+        result.push('</table></div>');
       }
       continue;
     }
@@ -7180,6 +7324,15 @@ function inlineFormat(text) {
   // Links.
   text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   return text;
+}
+
+function copyCodeBlock(btn) {
+  var code = btn.parentElement.querySelector('code');
+  if (!code) return;
+  navigator.clipboard.writeText(code.textContent).then(function() {
+    btn.textContent = 'Copied!';
+    setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
+  });
 }
 
 function setOutputMode(mode) {
@@ -8422,9 +8575,11 @@ function renderBoard() {
       if (t.costUsd > 0) badges += '<span class="kanban-badge kanban-badge-cost">$' + t.costUsd.toFixed(2) + '</span>';
       if (t.model) badges += '<span class="kanban-badge kanban-badge-model">' + esc(t.model) + '</span>';
       if (t.workflow && t.workflow !== 'none') badges += '<span class="kanban-badge kanban-badge-workflow">' + esc(t.workflow) + '</span>';
+      var shortId = esc(t.id.replace('task-', '').slice(-8));
       return '<div class="kanban-card" draggable="true" data-task-id="' + esc(t.id) + '" onclick="openTaskDetail(\'' + esc(t.id) + '\')" ondragstart="onCardDragStart(event)" ondragend="onCardDragEnd(event)">' +
         '<div class="kanban-card-title">' + esc(t.title) + '</div>' +
         (badges ? '<div class="kanban-card-badges">' + badges + '</div>' : '') +
+        '<div class="kanban-card-id" title="' + esc(t.id) + '">#' + shortId + '</div>' +
       '</div>';
     }).join('');
     return '<div class="kanban-column" data-status="' + status + '" ondragover="onColumnDragOver(event)" ondragleave="onColumnDragLeave(event)" ondrop="onColumnDrop(event)">' +
@@ -8498,7 +8653,16 @@ function filterBoard() {
 // --- Task Detail Modal ---
 
 async function openTaskDetail(taskId) {
+  history.pushState({taskId: taskId}, '', '#task/' + taskId);
+  await _showTaskDetail(taskId);
+}
+
+// Pure display function — no history manipulation.
+// Use this from popstate and initial hash loading.
+async function _showTaskDetail(taskId) {
   document.getElementById('td-id').value = taskId;
+  var idDisplay = document.getElementById('td-id-display');
+  if (idDisplay) idDisplay.textContent = taskId;
   try {
     var task = await fetchJSON('/api/tasks/' + taskId);
     document.getElementById('task-detail-title').textContent = task.title || 'Task Detail';
@@ -8598,6 +8762,9 @@ async function openTaskDetail(taskId) {
 function closeTaskDetail() {
   if (taskWfSSE) { taskWfSSE.close(); taskWfSSE = null; }
   document.getElementById('task-detail-modal').classList.remove('open');
+  if (location.hash.startsWith('#task/')) {
+    history.pushState(null, '', location.pathname + location.search);
+  }
 }
 
 async function deleteTask() {
@@ -9397,9 +9564,11 @@ async function loadTaskWfProgress(task) {
     var run = data.run || data;
     renderTaskWfProgress(run);
 
-    if (run.status === 'running') {
+    if (run.status === 'running' || run.status === 'waiting') {
       subscribeTaskWfSSE(runId);
     }
+    // Load inline human gate cards for this run.
+    renderInlineTaskGates(runId);
   } catch(e) {
     container.style.display = 'none';
   }
@@ -9491,6 +9660,12 @@ function subscribeTaskWfSSE(runId) {
       }
       if (ev.type === 'step_completed' && ev.data) {
         updateTaskWfStep(ev.data.stepId, ev.data.status, ev.data.durationMs);
+      }
+      if (ev.type === 'human_gate_waiting' && ev.data) {
+        addInlineHgCard(ev.data);
+      }
+      if (ev.type === 'human_gate_responded' && ev.data) {
+        removeInlineHgCard(ev.data.hgKey);
       }
       if (ev.type === 'workflow_completed') {
         if (taskWfSSE) { taskWfSSE.close(); taskWfSSE = null; }
@@ -9584,6 +9759,306 @@ async function retryTaskWorkflowFresh() {
     toast('Reset failed: ' + (e.message || e));
   }
 }
+
+// ============================================================
+// Human Gates — "Waiting for You" panel
+// ============================================================
+
+var hgPollTimer = null;
+
+function startHumanGatePolling() {
+  refreshHumanGates();
+  if (hgPollTimer) clearInterval(hgPollTimer);
+  hgPollTimer = setInterval(refreshHumanGates, 30000);
+}
+
+async function refreshHumanGates() {
+  try {
+    var gates = await fetchJSON('/api/human-gates?status=waiting');
+    var list = Array.isArray(gates) ? gates : [];
+    renderHumanGatesPanel(list, 'human-gates-panel', 'human-gates-list', 'hg-panel-badge');
+    renderHumanGatesPanel(list, 'human-gates-panel-tasks', 'human-gates-list-tasks', 'hg-panel-badge-tasks');
+    updateHumanGatesBadge(list.length);
+  } catch(e) {}
+}
+
+function renderHumanGatesPanel(gates, panelId, listId, badgeId) {
+  var panel = document.getElementById(panelId);
+  var list = document.getElementById(listId);
+  var badge = document.getElementById(badgeId);
+  if (!panel || !list) return;
+  if (badge) badge.textContent = gates.length;
+  if (gates.length === 0) {
+    panel.style.display = 'none';
+    return;
+  }
+  var sorted = gates.slice().sort(function(a, b) {
+    return (a.createdAt || '').localeCompare(b.createdAt || '');
+  });
+  panel.style.display = '';
+  list.innerHTML = sorted.map(function(g) { return buildHgCardHtml(g, 'hg-dash-card-'); }).join('');
+}
+
+function buildHgCardHtml(hg, cardPrefix) {
+  var key = hg.key || '';
+  var subtype = hg.subtype || 'approval';
+  var prompt = hg.prompt || '';
+  var workflowName = hg.workflowName || '';
+  var stepId = hg.stepId || '';
+  var createdAt = hg.createdAt || '';
+  var prefix = cardPrefix || 'hg-dash-card-';
+
+  var icons = { approval: '&#x1F510;', action: '&#x2705;', input: '&#x270F;&#xFE0F;' };
+  var icon = icons[subtype] || '&#x23F3;';
+  var waitTime = hgWaitTime(createdAt);
+  var inputId = prefix + escAttr(key) + '-input';
+
+  var actionsHtml = '';
+  if (subtype === 'approval') {
+    actionsHtml =
+      '<div class="hg-comment-row"><textarea class="hg-comment" id="' + inputId + '" placeholder="Comment (optional)..." rows="2"></textarea></div>' +
+      '<div class="hg-btn-row">' +
+      '<button class="btn btn-primary hg-btn-approve" onclick="hgApprove(\'' + escAttr(key) + '\',\'' + escAttr(prefix) + '\')">Approve</button>' +
+      ' <button class="btn hg-btn-reject" onclick="hgReject(\'' + escAttr(key) + '\',\'' + escAttr(prefix) + '\')">Reject</button>' +
+      '</div>';
+  } else if (subtype === 'action') {
+    actionsHtml =
+      '<div class="hg-comment-row"><textarea class="hg-comment" id="' + inputId + '" placeholder="Note (optional)..." rows="2"></textarea></div>' +
+      '<div class="hg-btn-row">' +
+      '<button class="btn btn-primary hg-btn-done" onclick="hgComplete(\'' + escAttr(key) + '\',\'' + escAttr(prefix) + '\')">Mark Done</button>' +
+      '</div>';
+  } else {
+    actionsHtml =
+      '<div class="hg-comment-row"><input class="hg-input" id="' + inputId + '" type="text" placeholder="Your response..."></div>' +
+      '<div class="hg-btn-row">' +
+      '<button class="btn btn-primary hg-btn-submit" onclick="hgSubmit(\'' + escAttr(key) + '\',\'' + escAttr(prefix) + '\')">Submit</button>' +
+      '</div>';
+  }
+
+  return '<div class="hg-card" id="' + escAttr(prefix) + escAttr(key) + '">' +
+    '<div class="hg-card-header">' +
+    '<span class="hg-icon">' + icon + '</span>' +
+    '<div class="hg-meta">' +
+    '<strong class="hg-wf-name">' + esc(workflowName || stepId) + '</strong>' +
+    (stepId && workflowName ? '<span class="hg-step-id">' + esc(stepId) + '</span>' : '') +
+    '</div>' +
+    '<span class="badge badge-warn hg-subtype-badge">' + esc(subtype) + '</span>' +
+    (waitTime ? '<span class="hg-wait-time">' + esc(waitTime) + '</span>' : '') +
+    '</div>' +
+    (prompt ? '<p class="hg-prompt">' + esc(prompt) + '</p>' : '') +
+    '<div class="hg-actions">' + actionsHtml + '</div>' +
+    '</div>';
+}
+
+function hgWaitTime(createdAt) {
+  if (!createdAt) return '';
+  var created = new Date(createdAt);
+  if (isNaN(created.getTime())) return '';
+  var diffMs = Date.now() - created.getTime();
+  if (diffMs < 60000) return Math.floor(diffMs / 1000) + 's ago';
+  if (diffMs < 3600000) return Math.floor(diffMs / 60000) + 'm ago';
+  if (diffMs < 86400000) return Math.floor(diffMs / 3600000) + 'h ago';
+  return Math.floor(diffMs / 86400000) + 'd ago';
+}
+
+function updateHumanGatesBadge(count) {
+  var navBadge = document.getElementById('hg-nav-badge');
+  if (navBadge) {
+    navBadge.textContent = count;
+    navBadge.style.display = count > 0 ? '' : 'none';
+  }
+}
+
+function hgGetInputVal(key, prefix) {
+  var inputId = (prefix || 'hg-dash-card-') + key + '-input';
+  var el = document.getElementById(inputId);
+  return el ? el.value : '';
+}
+
+function hgApprove(key, prefix)  { hgRespond(key, 'approve',  hgGetInputVal(key, prefix), prefix); }
+function hgReject(key, prefix)   { hgRespond(key, 'reject',   hgGetInputVal(key, prefix), prefix); }
+function hgComplete(key, prefix) { hgRespond(key, 'complete', hgGetInputVal(key, prefix), prefix); }
+function hgSubmit(key, prefix) {
+  var val = hgGetInputVal(key, prefix);
+  if (!val.trim()) { toast('Please enter a response'); return; }
+  hgRespond(key, 'submit', val, prefix);
+}
+
+async function hgRespond(key, action, response, prefix) {
+  var cardId = (prefix || 'hg-dash-card-') + key;
+  var card = document.getElementById(cardId);
+  if (card) {
+    card.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
+    card.style.opacity = '0.5';
+  }
+  try {
+    await fetchJSON('/api/human-gates/' + encodeURIComponent(key) + '/respond', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: action, response: response, respondedBy: 'takuma' }),
+    });
+    if (card) card.remove();
+    refreshHumanGates();
+    removeInlineHgCard(key);
+    toast('Gate responded: ' + action);
+  } catch(e) {
+    toast('Error: ' + (e.message || e));
+    if (card) {
+      card.querySelectorAll('button').forEach(function(b) { b.disabled = false; });
+      card.style.opacity = '';
+    }
+  }
+}
+
+// --- Inline gate cards in task detail modal ---
+
+async function renderInlineTaskGates(runId) {
+  var container = document.getElementById('td-hg-inline');
+  if (!container) return;
+  try {
+    var [waitingGates, rejectedGates] = await Promise.all([
+      fetchJSON('/api/human-gates?status=waiting'),
+      fetchJSON('/api/human-gates?status=rejected')
+    ]);
+    var allGates = (Array.isArray(waitingGates) ? waitingGates : []).concat(Array.isArray(rejectedGates) ? rejectedGates : []);
+    var runGates = allGates.filter(function(g) { return g.runId === runId; });
+    if (runGates.length === 0) {
+      container.style.display = 'none';
+      return;
+    }
+    container.style.display = '';
+    container.innerHTML =
+      '<div style="font-size:11px;color:#fbbf24;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">&#9203; Human Gate</div>' +
+      runGates.map(buildInlineHgCardHtml).join('');
+  } catch(e) {
+    container.style.display = 'none';
+  }
+}
+
+function buildInlineHgCardHtml(hg) {
+  var key = hg.key || '';
+  var subtype = hg.subtype || 'approval';
+  var prompt = hg.prompt || '';
+  var stepId = hg.stepId || '';
+  var status = hg.status || 'waiting';
+  var inputId = 'hg-inline-' + escAttr(key) + '-input';
+
+  var actionsHtml = '';
+  if (status === 'rejected') {
+    actionsHtml =
+      '<span class="badge badge-err" style="font-size:9px;margin-right:6px">rejected</span>' +
+      '<button class="gate-retry-btn" data-key="' + escAttr(key) + '" style="font-size:11px;padding:2px 8px;border:1px solid #fbbf24;background:transparent;color:#fbbf24;border-radius:4px;cursor:pointer">Retry</button>';
+  } else if (subtype === 'approval') {
+    actionsHtml =
+      '<textarea class="hg-comment" id="' + inputId + '" placeholder="Comment (optional)..." rows="1" style="font-size:11px;margin-bottom:4px;width:100%;box-sizing:border-box"></textarea>' +
+      '<button class="btn btn-primary" style="font-size:11px;padding:2px 8px" onclick="hgInlineApprove(\'' + escAttr(key) + '\')">Approve</button>' +
+      ' <button class="btn" style="font-size:11px;padding:2px 8px;border-color:var(--red);color:var(--red)" onclick="hgInlineReject(\'' + escAttr(key) + '\')">Reject</button>';
+  } else if (subtype === 'action') {
+    actionsHtml =
+      '<textarea class="hg-comment" id="' + inputId + '" placeholder="Note (optional)..." rows="1" style="font-size:11px;margin-bottom:4px;width:100%;box-sizing:border-box"></textarea>' +
+      '<button class="btn btn-primary" style="font-size:11px;padding:2px 8px" onclick="hgInlineComplete(\'' + escAttr(key) + '\')">Mark Done</button>';
+  } else {
+    actionsHtml =
+      '<input type="text" id="' + inputId + '" placeholder="Your response..." style="font-size:11px;margin-bottom:4px;width:100%;box-sizing:border-box">' +
+      '<button class="btn btn-primary" style="font-size:11px;padding:2px 8px" onclick="hgInlineSubmit(\'' + escAttr(key) + '\')">Submit</button>';
+  }
+
+  var badgeCls = status === 'rejected' ? 'badge-err' : 'badge-warn';
+  return '<div class="hg-inline-card" id="hg-inline-card-' + escAttr(key) + '">' +
+    '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">' +
+    '<span style="font-size:11px;font-weight:600">' + esc(stepId) + '</span>' +
+    '<span class="badge ' + badgeCls + '" style="font-size:9px">' + esc(subtype) + '</span>' +
+    '</div>' +
+    (prompt ? '<div style="font-size:12px;margin-bottom:6px;color:var(--text)">' + esc(prompt) + '</div>' : '') +
+    actionsHtml +
+    '</div>';
+}
+
+function addInlineHgCard(data) {
+  var container = document.getElementById('td-hg-inline');
+  if (!container) return;
+  var key = data.hgKey || data.key || '';
+  if (!key || document.getElementById('hg-inline-card-' + key)) return;
+  container.style.display = '';
+  if (!container.querySelector('.hg-inline-card')) {
+    container.innerHTML =
+      '<div style="font-size:11px;color:#fbbf24;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">&#9203; Human Gate</div>';
+  }
+  var div = document.createElement('div');
+  div.innerHTML = buildInlineHgCardHtml({
+    key: key, hgKey: key,
+    stepId: data.stepId, subtype: data.subtype, prompt: data.prompt,
+  });
+  container.appendChild(div.firstChild);
+}
+
+function removeInlineHgCard(key) {
+  var card = document.getElementById('hg-inline-card-' + key);
+  if (card) card.remove();
+  var container = document.getElementById('td-hg-inline');
+  if (container && !container.querySelector('.hg-inline-card')) {
+    container.style.display = 'none';
+  }
+}
+
+function hgInlineGetVal(key) {
+  var el = document.getElementById('hg-inline-' + key + '-input');
+  return el ? el.value : '';
+}
+
+function hgInlineApprove(key)  { hgInlineRespond(key, 'approve',  hgInlineGetVal(key)); }
+function hgInlineReject(key)   { hgInlineRespond(key, 'reject',   hgInlineGetVal(key)); }
+function hgInlineComplete(key) { hgInlineRespond(key, 'complete', hgInlineGetVal(key)); }
+function hgInlineSubmit(key) {
+  var val = hgInlineGetVal(key);
+  if (!val.trim()) { toast('Please enter a response'); return; }
+  hgInlineRespond(key, 'submit', val);
+}
+
+async function hgInlineRespond(key, action, response) {
+  var card = document.getElementById('hg-inline-card-' + key);
+  if (card) {
+    card.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
+    card.style.opacity = '0.5';
+  }
+  try {
+    await fetchJSON('/api/human-gates/' + encodeURIComponent(key) + '/respond', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: action, response: response, respondedBy: 'takuma' }),
+    });
+    removeInlineHgCard(key);
+    refreshHumanGates();
+    toast('Gate responded: ' + action);
+  } catch(e) {
+    toast('Error: ' + (e.message || e));
+    if (card) {
+      card.querySelectorAll('button').forEach(function(b) { b.disabled = false; });
+      card.style.opacity = '';
+    }
+  }
+}
+// ============================================================
+// End Human Gates
+// ============================================================
+
+// --- Task URL hash routing ---
+// Opens task detail when URL contains #task/{id}, supports browser back/forward.
+window.addEventListener('popstate', function(e) {
+  if (e.state && e.state.taskId) {
+    _showTaskDetail(e.state.taskId); // pure display — no pushState
+  } else {
+    document.getElementById('task-detail-modal').classList.remove('open');
+  }
+});
+
+(function initTaskHash() {
+  var hash = location.hash;
+  if (hash && hash.startsWith('#task/')) {
+    var taskId = hash.slice(6);
+    if (taskId) _showTaskDetail(taskId); // URL already set, just show
+  }
+})();
 
 // --- Project dropdown in dispatch/job modals ---
 
@@ -10291,8 +10766,340 @@ function archiveChat() {
 
 var _agentArchetypes = [];
 var _agentRunning = {};  // name -> bool (is running)
+var _providerPresets = null; // cached presets from /api/provider-presets
+var _inferenceMode = ''; // current global mode
+
+function isLocalProvider(name) { return name === 'ollama' || name === 'lmstudio'; }
+
+// --- Provider Presets Cache ---
+// Cache expires after 30 seconds so dynamic providers (Ollama) get re-checked.
+var _providerPresetsTime = 0;
+
+async function getProviderPresets() {
+  var now = Date.now();
+  if (_providerPresets && (now - _providerPresetsTime) < 30000) return _providerPresets;
+  try {
+    _providerPresets = await fetchJSON('/api/provider-presets');
+    _providerPresetsTime = now;
+  } catch(e) { _providerPresets = []; }
+  return _providerPresets;
+}
+
+// --- Inference Mode ---
+async function refreshInferenceMode() {
+  try {
+    var data = await fetchJSON('/api/inference-mode');
+    _inferenceMode = data.mode || 'mixed';
+    var badge = document.getElementById('agents-mode-badge');
+    var btn = document.getElementById('agents-mode-toggle');
+    if (badge) {
+      badge.textContent = data.cloud + ' cloud / ' + data.local + ' local';
+      badge.style.borderColor = _inferenceMode === 'local' ? 'var(--green)' : 'var(--border)';
+    }
+    if (btn) {
+      if (_inferenceMode === 'local') {
+        btn.textContent = 'Switch to Cloud';
+        btn.style.borderColor = 'var(--blue)';
+      } else {
+        btn.textContent = 'Switch to Local';
+        btn.style.borderColor = 'var(--green)';
+      }
+    }
+  } catch(e) {}
+}
+
+async function toggleInferenceMode() {
+  var newMode = _inferenceMode === 'local' ? 'cloud' : 'local';
+  var btn = document.getElementById('agents-mode-toggle');
+  if (btn) { btn.disabled = true; btn.textContent = 'Switching...'; }
+  try {
+    var result = await fetchJSON('/api/inference-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: newMode }),
+    });
+    if (result.errors && result.errors.length > 0) {
+      toast('Switched ' + result.switched + ' agents, errors: ' + result.errors.join(', '));
+    } else {
+      toast('Switched ' + result.switched + ' agents to ' + newMode + (result.pinned > 0 ? ' (' + result.pinned + ' pinned)' : ''));
+    }
+    refreshAgents(); // refreshAgents() calls refreshInferenceMode() internally
+  } catch(e) {
+    toast('Error: ' + e.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// --- Model Picker (Agent Editor) ---
+async function populateModelPicker(currentModel, currentProvider) {
+  var bar = document.getElementById('af-provider-bar');
+  var sel = document.getElementById('af-model-select');
+  var input = document.getElementById('af-model');
+  var hidden = document.getElementById('af-provider');
+  var status = document.getElementById('af-provider-status');
+  if (!bar || !sel) return;
+
+  var presets = await getProviderPresets();
+  bar.innerHTML = '';
+
+  presets.forEach(function(p) {
+    if (p.name === 'custom') return;
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn';
+    btn.textContent = p.displayName;
+    btn.style.cssText = 'padding:3px 10px;font-size:11px;white-space:nowrap;';
+
+    // Local providers get green tint
+    if (isLocalProvider(p.name)) {
+      btn.style.borderColor = 'var(--green)';
+    }
+
+    // Dim unavailable providers
+    if (p.dynamic && !p.available) {
+      btn.style.opacity = '0.4';
+      btn.title = 'Offline';
+    }
+
+    // Highlight current provider
+    if (p.name === currentProvider) {
+      btn.style.background = 'var(--accent)';
+      btn.style.color = 'var(--bg)';
+      btn.style.borderColor = 'var(--accent)';
+    }
+
+    btn.onclick = function() {
+      selectProvider(p, currentModel);
+    };
+    bar.appendChild(btn);
+  });
+
+  // Auto-select current provider
+  if (currentProvider) {
+    var preset = presets.find(function(p) { return p.name === currentProvider; });
+    if (preset) selectProvider(preset, currentModel);
+  }
+}
+
+function selectProvider(preset, currentModel) {
+  var bar = document.getElementById('af-provider-bar');
+  var sel = document.getElementById('af-model-select');
+  var input = document.getElementById('af-model');
+  var hidden = document.getElementById('af-provider');
+  var status = document.getElementById('af-provider-status');
+
+  // Update button highlights
+  if (bar) {
+    Array.from(bar.children).forEach(function(btn) {
+      btn.style.background = '';
+      btn.style.color = '';
+      if (btn.textContent === preset.displayName) {
+        btn.style.background = 'var(--accent)';
+        btn.style.color = 'var(--bg)';
+        btn.style.borderColor = 'var(--accent)';
+      }
+    });
+  }
+
+  // Set hidden provider
+  if (hidden) hidden.value = preset.name;
+
+  // Populate model dropdown
+  var models = (preset.fetchedModels && preset.fetchedModels.length > 0)
+    ? preset.fetchedModels
+    : (preset.models || []);
+
+  if (models.length > 0) {
+    sel.innerHTML = '';
+    models.forEach(function(m) {
+      var opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = m;
+      if (m === currentModel) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    // Add "Custom..." option
+    var customOpt = document.createElement('option');
+    customOpt.value = '__custom__';
+    customOpt.textContent = '— type custom model —';
+    sel.appendChild(customOpt);
+
+    sel.style.display = '';
+    // If current model matches, hide text input; otherwise show custom
+    if (models.indexOf(currentModel) >= 0) {
+      input.style.display = 'none';
+      input.value = currentModel;
+    } else if (currentModel) {
+      sel.value = '__custom__';
+      input.style.display = '';
+      input.value = currentModel;
+    } else {
+      input.style.display = 'none';
+      input.value = models[0];
+      sel.selectedIndex = 0;
+    }
+  } else {
+    sel.style.display = 'none';
+    input.style.display = '';
+  }
+
+  // Show provider status
+  if (status) {
+    if (preset.dynamic && !preset.available) {
+      status.innerHTML = '<span style="color:var(--red)">Offline</span>';
+    } else if (preset.requiresKey) {
+      status.innerHTML = '<span style="color:var(--muted)">API key required</span>';
+    } else if (preset.name === 'ollama' || preset.name === 'lmstudio') {
+      status.innerHTML = '<span style="color:var(--green)">Local — free</span>';
+    } else {
+      status.innerHTML = '';
+    }
+  }
+}
+
+function onModelSelectChange() {
+  var sel = document.getElementById('af-model-select');
+  var input = document.getElementById('af-model');
+  if (sel.value === '__custom__') {
+    input.style.display = '';
+    input.value = '';
+    input.focus();
+  } else {
+    input.style.display = 'none';
+    input.value = sel.value;
+  }
+}
+
+// --- Quick-Switch (Agent Card) ---
+var _quickSwitchOpen = null;
+
+function openQuickSwitch(el, event) {
+  event.stopPropagation();
+  closeQuickSwitch();
+  var agentName = el.dataset.agent;
+  var model = el.dataset.model;
+  var providerName = el.dataset.prov;
+
+  var anchor = event.target;
+  var rect = anchor.getBoundingClientRect();
+
+  var dd = document.createElement('div');
+  dd.id = 'quick-switch-dropdown';
+  dd.style.cssText = 'position:fixed;z-index:9999;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 0;min-width:200px;max-height:300px;overflow-y:auto;box-shadow:0 4px 16px rgba(0,0,0,0.3);font-size:12px;';
+  dd.style.top = (rect.bottom + 4) + 'px';
+  dd.style.left = rect.left + 'px';
+
+  // Prevent clicks inside dropdown from closing it
+  dd.addEventListener('click', function(e) { e.stopPropagation(); });
+
+  function addItem(text, bold, onClick) {
+    var item = document.createElement('div');
+    item.style.cssText = 'padding:6px 12px;cursor:pointer;';
+    if (bold) { item.style.color = 'var(--accent)'; item.style.fontWeight = 'bold'; }
+    item.textContent = text;
+    item.onmouseenter = function() { this.style.background = 'var(--hover)'; };
+    item.onmouseleave = function() { this.style.background = ''; };
+    item.addEventListener('click', function() {
+      closeQuickSwitch();
+      onClick();
+    });
+    dd.appendChild(item);
+  }
+
+  function addSeparator() {
+    var sep = document.createElement('div');
+    sep.style.cssText = 'border-top:1px solid var(--border);margin:4px 0';
+    dd.appendChild(sep);
+  }
+
+  function addLabel(text) {
+    var lbl = document.createElement('div');
+    lbl.style.cssText = 'padding:4px 12px;color:var(--muted);font-size:10px;text-transform:uppercase';
+    lbl.textContent = text;
+    dd.appendChild(lbl);
+  }
+
+  // Quick actions
+  addLabel('Quick Actions');
+  var switchLabel = isLocalProvider(providerName) ? '☁ Switch to Cloud' : '🏠 Switch to Local';
+  var switchMode = isLocalProvider(providerName) ? 'cloud' : 'local';
+  addItem(switchLabel, false, function() { quickSwitchMode(agentName, switchMode); });
+
+  addSeparator();
+  addLabel('Models');
+
+  // Load models for current provider
+  getProviderPresets().then(function(presets) {
+    var preset = presets.find(function(p) { return p.name === providerName; });
+    if (!preset) return;
+    var models = (preset.fetchedModels && preset.fetchedModels.length > 0)
+      ? preset.fetchedModels : (preset.models || []);
+
+    models.forEach(function(m) {
+      var modelName = m; // capture
+      addItem(m, m === model, function() { quickSwitchModel(agentName, modelName, providerName); });
+    });
+
+    addSeparator();
+    addItem('More providers...', false, function() { openAgentModal(agentName); });
+  });
+
+  document.body.appendChild(dd);
+  _quickSwitchOpen = dd;
+
+  // Close on outside click
+  setTimeout(function() {
+    document.addEventListener('click', closeQuickSwitch, { once: true });
+  }, 10);
+}
+
+function closeQuickSwitch() {
+  if (_quickSwitchOpen) {
+    _quickSwitchOpen.remove();
+    _quickSwitchOpen = null;
+  }
+}
+
+async function quickSwitchModel(agentName, model, providerName) {
+  try {
+    await fetchJSON('/roles/' + encodeURIComponent(agentName), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: model, provider: providerName }),
+    });
+    toast(agentName + ' → ' + model);
+    refreshAgents();
+  } catch(e) {
+    toast('Error: ' + e.message);
+  }
+}
+
+async function quickSwitchMode(agentName, mode) {
+  // Use the inference-mode endpoint logic but for a single agent.
+  // We simulate it by directly PUTting the agent with appropriate model.
+  if (mode === 'local') {
+    var presets = await getProviderPresets();
+    var ollama = presets.find(function(p) { return p.name === 'ollama'; });
+    if (!ollama || !ollama.available) {
+      toast('Ollama is offline');
+      return;
+    }
+    var models = (ollama.fetchedModels && ollama.fetchedModels.length > 0)
+      ? ollama.fetchedModels : [];
+    if (models.length === 0) {
+      toast('No Ollama models available');
+      return;
+    }
+    quickSwitchModel(agentName, models[0], 'ollama');
+  } else {
+    // Switch to cloud — open editor so user can pick
+    openAgentModal(agentName);
+  }
+}
 
 async function refreshAgents() {
+  refreshInferenceMode();
   var list = document.getElementById('agents-list');
   if (!list) return;
   list.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Loading agents...</div>';
@@ -10353,8 +11160,15 @@ async function refreshAgents() {
       html += '<button class="btn" onclick="deleteAgent(\'' + esc(r.name) + '\')" style="padding:3px 10px;font-size:11px;color:var(--red);border-color:var(--red)">Delete</button>';
       html += '</div></div>';
 
+      // Provider badge
+      var prov = r.provider || '';
+      var isLocal = (isLocalProvider(prov));
+      var provBadge = isLocal
+        ? '<span style="display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;background:var(--green);color:#000;margin-left:6px">LOCAL</span>'
+        : (prov ? '<span style="display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;background:var(--blue);color:#fff;margin-left:6px">CLOUD</span>' : '');
+
       html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:12px">';
-      html += '<div><span style="color:var(--muted)">Model: </span>' + esc(model) + '</div>';
+      html += '<div><span style="color:var(--muted)">Model: </span><span class="model-quickswitch" style="cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px" data-agent="' + esc(r.name) + '" data-model="' + esc(model) + '" data-prov="' + esc(prov) + '" onclick="openQuickSwitch(this,event)">' + esc(model) + ' ▾</span>' + provBadge + '</div>';
       html += '<div><span style="color:var(--muted)">Mode: </span>' + esc(r.permissionMode || 'default') + '</div>';
       if (desc) html += '<div style="grid-column:1/-1"><span style="color:var(--muted)">Description: </span>' + desc + '</div>';
       html += '</div>';
@@ -10404,15 +11218,26 @@ async function openAgentModal(editName) {
   var fileInput = document.getElementById('af-portrait-file');
   if (fileInput) fileInput.value = '';
 
+  // Reset provider picker state
+  document.getElementById('af-provider').value = '';
+  document.getElementById('af-provider-bar').innerHTML = '';
+  document.getElementById('af-model-select').style.display = 'none';
+  document.getElementById('af-model').style.display = '';
+  document.getElementById('af-provider-status').innerHTML = '';
+
   if (editName) {
     // Load existing agent data
     try {
       var data = await fetchJSON('/roles/' + encodeURIComponent(editName));
       document.getElementById('af-name').value = editName;
       document.getElementById('af-model').value = data.model || '';
+      document.getElementById('af-provider').value = data.provider || '';
       document.getElementById('af-permission').value = data.permissionMode || '';
       document.getElementById('af-description').value = data.description || '';
       document.getElementById('af-soul').value = data.soulContent || '';
+
+      // Populate model picker with current provider
+      populateModelPicker(data.model || '', data.provider || '');
 
       // Load portrait preview
       if (previewEl) {
@@ -10432,6 +11257,8 @@ async function openAgentModal(editName) {
   } else {
     if (previewEl) previewEl.style.display = 'none';
     if (deleteBtn) deleteBtn.style.display = 'none';
+    // Populate model picker for new agent (no current selection)
+    populateModelPicker('', '');
   }
 
   modal.style.display = 'flex';
@@ -10466,6 +11293,7 @@ async function submitAgentForm(e) {
   var mode = document.getElementById('af-mode').value;
   var name = document.getElementById('af-name').value.trim();
   var model = document.getElementById('af-model').value.trim();
+  var providerVal = document.getElementById('af-provider').value.trim();
   var permission = document.getElementById('af-permission').value.trim();
   var description = document.getElementById('af-description').value.trim();
   var soul = document.getElementById('af-soul').value;
@@ -10481,7 +11309,7 @@ async function submitAgentForm(e) {
   btn.textContent = mode === 'create' ? 'Creating...' : 'Saving...';
 
   try {
-    var payload = { model: model, permissionMode: permission, description: description, soulContent: soul };
+    var payload = { model: model, provider: providerVal, permissionMode: permission, description: description, soulContent: soul };
     var resp;
     if (mode === 'create') {
       payload.name = name;
@@ -11197,9 +12025,10 @@ function openWfRun(runId) {
       renderWfDAG(runObj, wfDef);
       renderWfStepList(data);
       renderWfCostBar(data);
+      renderHumanGateCards(data.humanGates || []);
 
-      // Subscribe to SSE if running
-      if (runObj.status === 'running') {
+      // Subscribe to SSE if running or waiting
+      if (runObj.status === 'running' || runObj.status === 'waiting') {
         subscribeWfSSE(runId);
       } else if (wfSSE) {
         wfSSE.close();
@@ -11241,7 +12070,7 @@ function renderWfStepList(data) {
 
   var html = '<div style="font-size:13px;font-weight:600;margin-bottom:8px">Step Results</div>';
   steps.forEach(function(sr) {
-    var statusCls = sr.status === 'success' ? 'badge-ok' : (sr.status === 'error' || sr.status === 'timeout') ? 'badge-err' : sr.status === 'waiting' ? 'badge-warn' : sr.status === 'running' ? 'badge-warn' : '';
+    var statusCls = sr.status === 'success' ? 'badge-ok' : (sr.status === 'error' || sr.status === 'timeout') ? 'badge-err' : (sr.status === 'waiting' || sr.status === 'waiting_human' || sr.status === 'running') ? 'badge-warn' : '';
     var dur = sr.durationMs ? formatDuration(sr.durationMs) : '-';
     // Show live elapsed time for running steps.
     if (sr.status === 'running' && sr.startedAt && !sr.durationMs) {
@@ -11301,12 +12130,148 @@ function renderWfStepList(data) {
         html += '</div>';
       }
     }
+    // Human gate info for waiting_human steps
+    if (sr.status === 'waiting_human') {
+      var humanGates = data.humanGates || [];
+      var hg = humanGates.find(function(g) { return (g.step_id || g.stepId) === sr.stepId && g.status === 'waiting'; });
+      if (hg) {
+        html += '<div style="margin-top:8px;padding:8px;background:var(--bg);border:1px solid #fbbf24;border-radius:4px">';
+        html += '<div style="font-size:11px;color:#fbbf24;margin-bottom:4px">Waiting for human ' + esc(hg.subtype || 'approval') + '</div>';
+        if (hg.prompt) html += '<div style="font-size:11px;margin-bottom:4px">' + esc(hg.prompt) + '</div>';
+        if (hg.assignee) html += '<div style="font-size:11px;color:var(--muted)">Assignee: ' + esc(hg.assignee) + '</div>';
+        html += '<div style="font-size:11px;color:var(--muted);margin-top:4px">Key: <code>' + esc(hg.key || '') + '</code></div>';
+        html += '</div>';
+      }
+    }
     html += '</div>';
     html += '</div>';
   });
 
   container.innerHTML = html;
 }
+
+// Human Gate card helpers
+
+function getOrCreateHumanGateContainer() {
+  var container = document.getElementById('wf-human-gates');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'wf-human-gates';
+    container.style.cssText = 'margin-top:12px';
+    var dagSection = document.getElementById('wf-dag-section');
+    if (dagSection) dagSection.appendChild(container);
+  }
+  return container;
+}
+
+function renderHumanGateCards(humanGates) {
+  var container = getOrCreateHumanGateContainer();
+  var pending = humanGates.filter(function(hg) { return hg.status === 'waiting'; });
+  var rejected = humanGates.filter(function(hg) { return hg.status === 'rejected'; });
+  if (pending.length === 0 && rejected.length === 0) { container.innerHTML = ''; return; }
+
+  var html = '';
+  if (pending.length > 0) {
+    html += '<div style="font-size:13px;font-weight:600;margin-bottom:8px;color:#fbbf24">Pending Approvals</div>';
+    pending.forEach(function(hg) { html += buildHumanGateCardHtml(hg); });
+  }
+  if (rejected.length > 0) {
+    html += '<div style="font-size:13px;font-weight:600;margin:12px 0 8px;color:#ef4444">Rejected Gates</div>';
+    rejected.forEach(function(hg) { html += buildHumanGateCardHtml(hg); });
+  }
+  container.innerHTML = html;
+}
+
+function buildHumanGateCardHtml(hg) {
+  var key = hg.hgKey || hg.key || '';
+  var stepId = hg.step_id || hg.stepId || '';
+  var subtype = hg.subtype || 'approval';
+  var prompt = hg.prompt || '';
+  var assignee = hg.assignee || '';
+  var status = hg.status || 'waiting';
+  var isRejected = status === 'rejected';
+  var borderColor = isRejected ? '#ef4444' : '#fbbf24';
+  var dotColor = isRejected ? '#ef4444' : '#fbbf24';
+  var dotAnim = isRejected ? '' : 'animation:pulse 1.5s infinite;';
+  var buttons = '';
+  if (isRejected) {
+    buttons = '<button class="gate-retry-btn" data-key="' + escAttr(key) + '" style="font-size:11px;padding:2px 8px;border:1px solid #fbbf24;background:transparent;color:#fbbf24;border-radius:4px;cursor:pointer">Retry</button>';
+  } else {
+    buttons = '<button class="gate-cancel-btn" data-key="' + escAttr(key) + '" style="font-size:11px;padding:2px 8px;border:1px solid #ef4444;background:transparent;color:#ef4444;border-radius:4px;cursor:pointer">Cancel</button>';
+  }
+  return '<div id="hg-card-' + escAttr(key) + '" style="background:var(--surface);border:1px solid ' + borderColor + ';border-radius:6px;padding:10px;margin-bottom:6px">' +
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">' +
+    '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + dotColor + ';' + dotAnim + '"></span>' +
+    '<strong style="font-size:12px">' + esc(stepId) + '</strong>' +
+    '<span class="badge ' + (isRejected ? 'badge-err' : 'badge-warn') + '" style="font-size:10px">' + esc(subtype) + '</span>' +
+    (isRejected ? '<span class="badge badge-err" style="font-size:10px">rejected</span>' : '') +
+    '</div>' +
+    (prompt ? '<div style="font-size:12px;margin-bottom:4px">' + esc(prompt) + '</div>' : '') +
+    (assignee ? '<div style="font-size:11px;color:var(--muted)">Assignee: ' + esc(assignee) + '</div>' : '') +
+    '<div style="font-size:11px;color:var(--muted);margin-top:4px">Key: <code>' + esc(key) + '</code></div>' +
+    '<div style="margin-top:6px;text-align:right">' + buttons + '</div>' +
+    '</div>';
+}
+
+function addHumanGateCard(data) {
+  var container = getOrCreateHumanGateContainer();
+  var key = data.hgKey || '';
+  if (document.getElementById('hg-card-' + key)) return; // already exists
+  if (!container.querySelector('[style*="Pending Approvals"]')) {
+    container.innerHTML = '<div style="font-size:13px;font-weight:600;margin-bottom:8px;color:#fbbf24">Pending Approvals</div>';
+  }
+  var div = document.createElement('div');
+  div.innerHTML = buildHumanGateCardHtml({
+    hgKey: data.hgKey, stepId: data.stepId, subtype: data.subtype,
+    prompt: data.prompt, assignee: data.assignee
+  });
+  container.appendChild(div.firstChild);
+}
+
+function removeHumanGateCard(hgKey) {
+  var card = document.getElementById('hg-card-' + hgKey);
+  if (card) card.remove();
+  var container = document.getElementById('wf-human-gates');
+  if (container && !container.querySelector('[id^="hg-card-"]')) {
+    container.innerHTML = '';
+  }
+}
+
+// Event delegation for human gate cancel buttons.
+document.addEventListener('click', function(e) {
+  if (!e.target.classList.contains('gate-cancel-btn')) return;
+  var key = e.target.dataset.key;
+  if (!key) return;
+  if (!confirm('Cancel gate ' + key + '?')) return;
+  e.target.disabled = true;
+  e.target.textContent = 'Cancelling...';
+  fetch('/api/human-gates/' + encodeURIComponent(key) + '/cancel', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cancelledBy: 'dashboard'})
+  }).then(function(res) {
+    if (res.ok) { removeHumanGateCard(key); }
+    else { e.target.disabled = false; e.target.textContent = 'Cancel'; }
+  }).catch(function() { e.target.disabled = false; e.target.textContent = 'Cancel'; });
+});
+
+// Event delegation for human gate retry buttons.
+document.addEventListener('click', function(e) {
+  if (!e.target.classList.contains('gate-retry-btn')) return;
+  var key = e.target.dataset.key;
+  if (!key) return;
+  if (!confirm('Retry rejected gate ' + key + '?')) return;
+  e.target.disabled = true;
+  e.target.textContent = 'Retrying...';
+  fetch('/api/human-gates/' + encodeURIComponent(key) + '/retry', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({})
+  }).then(function(res) {
+    if (res.ok) { removeHumanGateCard(key); }
+    else { res.json().then(function(d) { alert('Retry failed: ' + (d.error || 'unknown')); e.target.disabled = false; e.target.textContent = 'Retry'; }).catch(function(){ e.target.disabled = false; e.target.textContent = 'Retry'; }); }
+  }).catch(function() { e.target.disabled = false; e.target.textContent = 'Retry'; });
+});
 
 function toggleStepDetail(el) {
   var detail = el.querySelector('.step-detail');
@@ -11706,6 +12671,16 @@ function subscribeWfSSE(runId) {
         updateWfNodeStatus(ev.data.stepId, 'waiting');
         updateWfStepRow(ev.data.stepId, 'waiting');
       }
+      if (ev.type === 'human_gate_waiting' && ev.data) {
+        updateWfNodeStatus(ev.data.stepId, 'waiting');
+        updateWfStepRow(ev.data.stepId, 'waiting');
+        addHumanGateCard(ev.data);
+      }
+      if (ev.type === 'human_gate_responded' && ev.data) {
+        updateWfNodeStatus(ev.data.stepId, 'running');
+        updateWfStepRow(ev.data.stepId, 'running');
+        removeHumanGateCard(ev.data.hgKey);
+      }
       if (ev.type === 'output_chunk' && ev.data && ev.data.chunk) {
         appendWfStepOutput(ev);
       }
@@ -11744,7 +12719,7 @@ function updateWfStepRow(stepId, status) {
     if (status === 'running') {
       indicator.style.background = '#fbbf24';
       indicator.style.display = 'inline-block';
-    } else if (status === 'waiting') {
+    } else if (status === 'waiting' || status === 'waiting_human') {
       indicator.style.background = '#a78bfa';
       indicator.style.display = 'inline-block';
     } else {
@@ -15523,6 +16498,7 @@ function play8BitSound(type) {
 
 pollTimer = setInterval(refresh, 5000);
 connectDashboardSSE();
+startHumanGatePolling();
 document.addEventListener('visibilitychange', function() {
   if (document.hidden) {
     clearInterval(pollTimer);

@@ -6,6 +6,7 @@ import FeatureCard from '../../components/FeatureCard.astro';
 import InstallBox from '../../components/InstallBox.astro';
 import DownloadGrid from '../../components/DownloadGrid.astro';
 import { languages, ui, type Lang } from '../../i18n/ui';
+import { SITE } from '../../consts';
 
 export function getStaticPaths() {
   return Object.keys(languages)
@@ -15,8 +16,19 @@ export function getStaticPaths() {
 
 const { lang } = Astro.params as { lang: Lang };
 const s = ui[lang];
+
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'Tetora',
+  applicationCategory: 'DeveloperApplication',
+  operatingSystem: 'macOS, Linux, Windows',
+  description: 'AI Agent Orchestration Platform — workflows, taskboards, and multi-agent collaboration in a single binary.',
+  url: SITE,
+  offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+};
 ---
-<Base title="Tetora — AI Agent Orchestration Platform" lang={lang}>
+<Base title="Tetora — AI Agent Orchestration Platform" lang={lang} jsonLd={jsonLd}>
   <Header currentLang={lang} />
 
   <div class="hero">

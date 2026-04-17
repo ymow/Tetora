@@ -187,6 +187,25 @@ func truncStr(s string, n int) string {
 func (d *Dispatcher) dispatchTask(t TaskBoard) {
 	ctx := d.ctx
 
+	// Hard guard: max total executions per task (prevents infinite retry/reset loops).
+	maxExec := d.engine.config.MaxExecutionsOrDefault()
+	if t.ExecutionCount >= maxExec {
+		log.Warn("taskboard dispatch: max execution limit reached, moving to failed",
+			"id", t.ID, "title", t.Title, "executionCount", t.ExecutionCount, "max", maxExec)
+		d.engine.MoveTask(t.ID, "failed")
+		d.engine.AddComment(t.ID, "system",
+			fmt.Sprintf("[guard] Max execution limit (%d) reached. Task moved to failed to prevent infinite loop.", maxExec))
+		return
+	}
+	// Increment execution count atomically.
+	if err := db.Exec(d.engine.dbPath, fmt.Sprintf(
+		`UPDATE tasks SET execution_count = execution_count + 1 WHERE id = '%s'`,
+		db.Escape(t.ID),
+	)); err != nil {
+		log.Warn("taskboard dispatch: failed to increment execution_count, hard limit guard may be ineffective",
+			"id", t.ID, "error", err)
+	}
+
 	prompt := t.Title
 	if t.Description != "" {
 		prompt = t.Title + "\n\n" + t.Description
@@ -218,34 +237,49 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 	// Execution rules injection.
 	prompt += "\n\n## Execution Rules\n"
 	prompt += "- You are running autonomously. Do NOT use plan mode or ask for confirmation.\n"
-	prompt += "- FIRST: Write your execution plan as a checklist to your todo.md file.\n"
+	todoFile := fmt.Sprintf("todos/%s.md", t.ID)
+	prompt += fmt.Sprintf("- FIRST: Write your execution plan as a checklist to your %s file (create the todos/ directory if needed).\n", todoFile)
 	prompt += "- THEN: Execute each item, checking them off as you go.\n"
 	prompt += "- Log major milestones by calling taskboard_comment.\n"
-	prompt += "- Your todo.md persists across retries — if items exist, continue from where you left off.\n"
-	prompt += "- Before starting: identify what is OUT OF SCOPE and note it in your todo.md. Prevent scope creep.\n"
+	prompt += fmt.Sprintf("- Your %s persists across retries — if items exist, continue from where you left off.\n", todoFile)
+	prompt += fmt.Sprintf("- Before starting: identify what is OUT OF SCOPE and note it in your %s. Prevent scope creep.\n", todoFile)
 	prompt += "- Use precise language in all outputs. Forbidden: 'should work', 'probably', 'might need', 'I think', 'seems to'. State facts or unknowns explicitly.\n"
 	prompt += "- Before marking task complete: verify that a reviewer can understand your changes without asking clarifying questions. If not, add missing context.\n"
+	prompt += fmt.Sprintf("\n## ⚠️ Git Commit Message — Hard Requirement\n\nYour commit message MUST be **exactly** the following string (copy verbatim, no changes):\n\n```\n[%s] %s\n```\n\nDo NOT paraphrase. Do NOT translate. Do NOT convert between Traditional/Simplified Chinese or any other script. The characters above are the only acceptable commit message. Any deviation will be rejected in review.\n", t.ID, t.Title)
 
-	// Inject agent's existing todo.md for retry awareness.
-	todoPath := filepath.Join(d.cfg.AgentsDir, t.Assignee, "todo.md")
-	if todoContent, err := os.ReadFile(todoPath); err == nil && len(bytes.TrimSpace(todoContent)) > 0 {
-		prompt += "\n\n## Your Previous Progress (todo.md)\n"
-		prompt += string(todoContent)
-		prompt += "\n\nContinue from where you left off. Update your todo.md as you complete items.\n"
+	// Inject per-task todo for retry awareness.
+	// Path: agents/{agent}/todos/{taskId}.md — isolated per task to prevent cross-task clobbering.
+	// Guard: task IDs are server-generated (task-{unix_nano}) but validate to prevent path traversal.
+	if !strings.Contains(t.ID, "/") && !strings.Contains(t.ID, "..") {
+		todoDir := filepath.Join(d.cfg.AgentsDir, t.Assignee, "todos")
+		todoPath := filepath.Join(todoDir, t.ID+".md")
+		if err := os.MkdirAll(todoDir, 0755); err != nil {
+			log.Warn("taskboard dispatch: failed to create todos dir", "task", t.ID, "error", err)
+		}
+		if todoContent, err := os.ReadFile(todoPath); err == nil && len(bytes.TrimSpace(todoContent)) > 0 {
+			prompt += fmt.Sprintf("\n\n## Your Previous Progress (%s)\n", todoFile)
+			prompt += string(todoContent)
+			prompt += "\n\nContinue from where you left off. Update your progress file as you complete items.\n"
+		}
 	}
 
 	// On retry, all comments (including system) are already injected above.
 
 	taskID := t.ID
 	task := dispatch.Task{
-		Name:   t.Title,
-		Prompt: prompt,
-		Agent:  t.Assignee,
-		Source: "taskboard",
+		Name:           t.Title,
+		Prompt:         prompt,
+		Agent:          t.Assignee,
+		Source:         "taskboard",
+		AllowDangerous: t.AllowDangerous,
 		OnStart: func() {
-			if _, err := d.engine.MoveTask(taskID, "doing"); err != nil {
-				log.Warn("taskboard dispatch: failed to move task to doing on start", "id", taskID, "error", err)
-			}
+			// Status already set to 'doing' by scan() CAS claim.
+			// Touch updated_at to refresh stuck-detection timestamp.
+			db.Exec(d.engine.dbPath, fmt.Sprintf(
+				`UPDATE tasks SET updated_at = '%s' WHERE id = '%s'`,
+				db.Escape(time.Now().UTC().Format(time.RFC3339)),
+				db.Escape(taskID),
+			))
 		},
 	}
 	if d.deps.FillDefaults != nil {
@@ -301,6 +335,17 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 
 	// Worktree isolation.
 	var worktreeDir string
+	// releaseLock is non-nil when a session lock was acquired for a worktree.
+	// It must be called before postTaskWorktree so Remove() doesn't see a live
+	// PID and refuse the cleanup. The defer below acts as a safety net for
+	// early returns and panics.
+	var releaseLock func()
+	defer func() {
+		if releaseLock != nil {
+			releaseLock()
+		}
+	}()
+
 	if d.engine.config.GitWorktree && projectWorkdir != "" && d.deps.Worktrees != nil {
 		d.cleanStaleLock(projectWorkdir, t.ID)
 
@@ -321,6 +366,13 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 				log.Info("worktree: task running in isolation", "task", t.ID, "path", wtDir)
 				d.engine.AddComment(t.ID, "system",
 					fmt.Sprintf("[worktree] Running in isolated worktree: %s", wtDir))
+
+				// Create() already wrote the session lock. Capture a release function
+				// so the lock is removed before postTaskWorktree — Remove() refuses to
+				// delete a worktree whose PID is still alive. The outer defer acts as
+				// a safety net for early returns and panics.
+				lockPath := filepath.Join(wtDir, SessionLockFile)
+				releaseLock = func() { os.Remove(lockPath) } //nolint:errcheck
 			}
 		}
 	}
@@ -507,7 +559,6 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 
 	// Post-dispatch coordination: finding + release claim + resolve blockers.
 	if coordDir != "" && coord.KnownAgents[finalAgent] {
-		summary := truncStr(result.Output, 500)
 		var artifacts []string
 		if result.OutputFile != "" {
 			artifacts = []string{result.OutputFile}
@@ -518,7 +569,7 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 			TaskID:     t.ID,
 			Agent:      finalAgent,
 			RecordedAt: time.Now().UTC(),
-			Summary:    summary,
+			Summary:    result.Output,
 			Artifacts:  artifacts,
 		}); err != nil {
 			log.Warn("coord: failed to write finding", "task", t.ID, "err", err)
@@ -527,8 +578,8 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 			log.Warn("coord: failed to release claim", "task", t.ID, "err", err)
 		}
 		resolution := "Task completed"
-		if summary != "" {
-			resolution = truncStr(summary, 100)
+		if result.Output != "" {
+			resolution = truncStr(result.Output, 100)
 		}
 		if err := coord.ResolveBlockersFor(coordDir, t.ID, finalAgent, resolution); err != nil {
 			log.Warn("coord: failed to resolve blockers", "task", t.ID, "err", err)
@@ -537,12 +588,18 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 
 	// Determine target status.
 	newStatus := "done"
+	isContextCanceled := strings.Contains(result.Error, "context canceled") || ctx.Err() == context.Canceled
 	switch {
 	case result.Status == "success":
 		// keep "done"
 	case result.Status == "cancelled":
 		newStatus = "failed"
 		d.engine.AddComment(t.ID, "system", "[auto-flag] Task was cancelled (not retryable).")
+	case isContextCanceled:
+		// Daemon shutdown or parent context cancellation — retryable without burning a retry.
+		newStatus = "todo"
+		d.engine.AddComment(t.ID, "system",
+			"[auto-reset] Task interrupted by context cancellation (daemon shutdown or client disconnect). Reset to todo for re-dispatch.")
 	default:
 		newStatus = "failed"
 	}
@@ -735,11 +792,28 @@ func (d *Dispatcher) dispatchTask(t TaskBoard) {
 	// Post-task workspace git.
 	d.postTaskWorkspaceGit(t)
 
+	// Release session lock before worktree cleanup. Remove() refuses to delete a
+	// worktree whose lock is still held (the lock PID — this process — is alive),
+	// so the lock must be released here. The agent has already exited at this point.
+	if releaseLock != nil {
+		releaseLock()
+		releaseLock = nil
+	}
+
 	// Post-task worktree merge/cleanup.
 	d.postTaskWorktree(t, projectWorkdir, worktreeDir, newStatus)
 
 	// Post-task problem scan.
 	d.postTaskProblemScan(t, result.Output, newStatus)
+
+	// Clean up per-task todo file on final completion.
+	// Keep the file on failed/review so retries can resume from it.
+	if newStatus == "done" && !strings.Contains(t.ID, "/") && !strings.Contains(t.ID, "..") {
+		cleanTodoPath := filepath.Join(d.cfg.AgentsDir, t.Assignee, "todos", t.ID+".md")
+		if err := os.Remove(cleanTodoPath); err != nil && !os.IsNotExist(err) {
+			log.Warn("taskboard dispatch: failed to remove task todo", "task", t.ID, "error", err)
+		}
+	}
 
 	if newStatus == "done" || newStatus == "review" {
 		d.checkParentRollup(t.ID)

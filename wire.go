@@ -39,6 +39,7 @@ import (
 	"tetora/internal/automation/insights"
 	"tetora/internal/circuit"
 	"tetora/internal/classify"
+	"tetora/internal/cli"
 	"tetora/internal/config"
 	"tetora/internal/cost"
 	"tetora/internal/cron"
@@ -1786,6 +1787,10 @@ func newSearchService(cfg *Config) (*SearchService, error) {
 }
 
 func newVoiceEngine(cfg *Config) *VoiceEngine {
+	dbPath := cfg.HistoryDB
+	auditFn := func(action, source, detail string) {
+		audit.Log(dbPath, action, source, detail, "")
+	}
 	return voice.NewVoiceEngine(voice.VoiceConfig{
 		STT: voice.STTConfig{
 			Enabled:  cfg.Voice.STT.Enabled,
@@ -1796,13 +1801,18 @@ func newVoiceEngine(cfg *Config) *VoiceEngine {
 			Language: cfg.Voice.STT.Language,
 		},
 		TTS: voice.TTSConfig{
-			Enabled:  cfg.Voice.TTS.Enabled,
-			Provider: cfg.Voice.TTS.Provider,
-			Model:    cfg.Voice.TTS.Model,
-			Endpoint: cfg.Voice.TTS.Endpoint,
-			APIKey:   cfg.Voice.TTS.APIKey,
-			Voice:    cfg.Voice.TTS.Voice,
-			Format:   cfg.Voice.TTS.Format,
+			Enabled:   cfg.Voice.TTS.Enabled,
+			Provider:  cfg.Voice.TTS.Provider,
+			Providers: cfg.Voice.TTS.Providers,
+			Model:     cfg.Voice.TTS.Model,
+			Endpoint:  cfg.Voice.TTS.Endpoint,
+			APIKey:    cfg.Voice.TTS.APIKey,
+			FalAPIKey: cfg.Voice.TTS.FalAPIKey,
+			Voice:     cfg.Voice.TTS.Voice,
+			Format:    cfg.Voice.TTS.Format,
+			VibeVoice: voice.VibeVoiceConfig{
+				Endpoint: cfg.Voice.TTS.VibeVoice.Endpoint,
+			},
 		},
 		Wake: voice.VoiceWakeConfig{
 			Enabled:   cfg.Voice.Wake.Enabled,
@@ -1816,7 +1826,7 @@ func newVoiceEngine(cfg *Config) *VoiceEngine {
 			APIKey:   cfg.Voice.Realtime.APIKey,
 			Voice:    cfg.Voice.Realtime.Voice,
 		},
-	})
+	}, auditFn)
 }
 
 var _ interface {
@@ -2198,7 +2208,7 @@ func toolOAuthAuthorize(ctx context.Context, cfg *Config, input json.RawMessage)
 	if redirectURL == "" {
 		base := cfg.OAuth.RedirectBase
 		if base == "" {
-			base = "http://localhost" + cfg.ListenAddr
+			base = "http://" + cfg.ListenAddr
 		}
 		redirectURL = base + "/api/oauth/" + args.Service + "/callback"
 	}
@@ -2217,7 +2227,7 @@ func toolOAuthAuthorize(ctx context.Context, cfg *Config, input json.RawMessage)
 
 	authorizeURL := fmt.Sprintf("%s/api/oauth/%s/authorize", strings.TrimRight(cfg.OAuth.RedirectBase, "/"), args.Service)
 	if cfg.OAuth.RedirectBase == "" {
-		authorizeURL = fmt.Sprintf("http://localhost%s/api/oauth/%s/authorize", cfg.ListenAddr, args.Service)
+		authorizeURL = fmt.Sprintf("http://%s/api/oauth/%s/authorize", cfg.ListenAddr, args.Service)
 	}
 
 	return fmt.Sprintf("To connect %s, visit this URL:\n%s\n\nThe authorization flow will handle CSRF protection and token exchange automatically.", args.Service, authorizeURL), nil
@@ -2718,7 +2728,7 @@ func setMCPConfig(cfg *Config, configPath, name string, config json.RawMessage) 
 		return fmt.Errorf("create mcp dir: %w", err)
 	}
 	path := filepath.Join(mcpDir, name+".json")
-	if err := os.WriteFile(path, config, 0o644); err != nil {
+	if err := os.WriteFile(path, config, 0o600); err != nil {
 		return fmt.Errorf("write mcp file %q: %w", path, err)
 	}
 
@@ -3632,7 +3642,7 @@ func generateMCPBridgeConfig(cfg *Config) error {
 	}
 
 	configPath := filepath.Join(mcpDir, "bridge.json")
-	if err := os.WriteFile(configPath, data, 0o644); err != nil {
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
@@ -4404,7 +4414,7 @@ func saveMemoryAccessLog(cfg *Config, accessLog map[string]string) {
 	if err != nil {
 		return
 	}
-	os.WriteFile(filepath.Join(dir, ".access.json"), data, 0o644)
+	os.WriteFile(filepath.Join(dir, ".access.json"), data, 0o600)
 }
 
 // initMemoryDB is a no-op kept for backward compatibility.
@@ -4433,8 +4443,9 @@ func buildTieredPrompt(cfg *Config, task *Task, agentName string, complexity cla
 		ResolveWorkspace:       resolveWorkspace,
 		BuildReflectionContext: buildReflectionContext,
 		LoadWritingStyle:       loadWritingStyle,
-		BuildSkillsPrompt:      buildSkillsPrompt,
-		InjectWorkspaceContent: injectWorkspaceContent,
+		BuildSkillsPrompt:        buildSkillsPrompt,
+		CollectSkillAllowedTools: collectSkillAllowedTools,
+		InjectWorkspaceContent:   injectWorkspaceContent,
 		EstimateDirSize:        estimateDirSize,
 	})
 }
@@ -4958,24 +4969,26 @@ func toolSearchTools(ctx context.Context, cfg *Config, input json.RawMessage) (s
 		return "[]", nil
 	}
 
-	query := strings.ToLower(args.Query)
-	var results []map[string]string
+	registry := cfg.Runtime.ToolRegistry.(*ToolRegistry)
+	results := registry.SearchBM25(ctx, args.Query, args.Limit)
 
-	for _, t := range cfg.Runtime.ToolRegistry.(*ToolRegistry).List() {
-		nameMatch := strings.Contains(strings.ToLower(t.Name), query)
-		descMatch := strings.Contains(strings.ToLower(t.Description), query)
-		if nameMatch || descMatch {
-			results = append(results, map[string]string{
-				"name":        t.Name,
-				"description": t.Description,
-			})
-			if len(results) >= args.Limit {
-				break
-			}
-		}
+	type toolResult struct {
+		Name        string  `json:"name"`
+		Description string  `json:"description"`
+		BM25Score   float64 `json:"bm25_score,omitempty"`
+		FinalScore  float64 `json:"final_score,omitempty"`
+	}
+	out := make([]toolResult, 0, len(results))
+	for _, r := range results {
+		out = append(out, toolResult{
+			Name:        r.Tool.Name,
+			Description: r.Tool.Description,
+			BM25Score:   r.BM25Score,
+			FinalScore:  r.FinalScore,
+		})
 	}
 
-	b, _ := json.Marshal(results)
+	b, _ := json.Marshal(out)
 	return string(b), nil
 }
 
@@ -5282,7 +5295,7 @@ func setBudgetPaused(configPath string, paused bool) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(configPath, append(out, '\n'), 0o644)
+	return os.WriteFile(configPath, append(out, '\n'), 0o600)
 }
 
 type CostEstimate = estimate.CostEstimate
@@ -8786,6 +8799,10 @@ func buildSkillsPrompt(cfg *Config, task Task, complexity classify.Complexity) s
 	return skill.BuildSkillsPrompt(toSkillAppConfig(cfg), toSkillTask(task), complexity)
 }
 
+func collectSkillAllowedTools(cfg *Config, task Task) []string {
+	return skill.CollectSkillAllowedTools(toSkillAppConfig(cfg), toSkillTask(task))
+}
+
 func skillMatchesContext(s SkillConfig, role, prompt, source string) bool {
 	return skill.SkillMatchesContext(s, role, prompt, source)
 }
@@ -9493,7 +9510,13 @@ func (r *telegramRuntime) AgentModels() map[string]string {
 }
 
 func (r *telegramRuntime) UpdateAgentModelByName(agent, model string) (old string, err error) {
-	return updateAgentModel(r.cfg, agent, model)
+	inferredProvider := ""
+	if presetName, ok := provider.InferProviderFromModelWithPref(model, r.cfg.ClaudeProvider); ok {
+		_ = ensureProvider(r.cfg, presetName)
+		inferredProvider = presetName
+	}
+	res, err := updateAgentModel(r.cfg, agent, model, inferredProvider)
+	return res.OldModel, err
 }
 
 func (r *telegramRuntime) DefaultSmartDispatchAgent() string {
@@ -9709,12 +9732,20 @@ func (r *messagingRuntime) QueryCostStats() (today, week, month float64) {
 }
 
 func (r *messagingRuntime) UpdateAgentModel(agent, model string) error {
-	_, err := updateAgentModel(r.cfg, agent, model)
+	inferredProvider := ""
+	if presetName, ok := provider.InferProviderFromModelWithPref(model, r.cfg.ClaudeProvider); ok {
+		_ = ensureProvider(r.cfg, presetName)
+		inferredProvider = presetName
+	}
+	_, err := updateAgentModel(r.cfg, agent, model, inferredProvider)
 	return err
 }
 
 func (r *messagingRuntime) MaybeCompactSession(sessionID string, msgCount int, tokenCount float64) {
-	maybeCompactSession(r.cfg, r.cfg.HistoryDB, sessionID, msgCount, int(tokenCount), r.sem, r.childSem)
+	// chKey and agentName are not available in the generic messaging runtime path;
+	// pass empty strings — fresh-session compaction will still archive the session,
+	// but the memory key will be less channel-specific.
+	maybeCompactSession(r.cfg, r.cfg.HistoryDB, sessionID, "", "", msgCount, int(tokenCount), r.sem, r.childSem, nil)
 }
 
 func (r *messagingRuntime) UpdateSessionTitle(sessionID, title string) {
@@ -9914,7 +9945,7 @@ func (r *telegramRuntime) RecordAndCompact(sessID string, msgCount int, tokensIn
 		updateSessionStats(dbPath, sessID, result.CostUSD, int(result.TokensIn), int(result.TokensOut), 1) //nolint:errcheck
 	}
 
-	maybeCompactSession(r.cfg, dbPath, sessID, msgCount+2, int(tokensIn), r.sem, r.childSem)
+	maybeCompactSession(r.cfg, dbPath, sessID, "", "", msgCount+2, int(tokensIn), r.sem, r.childSem, nil)
 }
 
 // --- UUID ---
@@ -10071,6 +10102,8 @@ func cleanupZombieSessions(dbPath string)         { session.CleanupZombieSession
 
 func createSession(dbPath string, s Session) error            { return session.CreateSession(dbPath, s) }
 func addSessionMessage(dbPath string, msg SessionMessage) error { return session.AddSessionMessage(dbPath, msg) }
+func createSessionCtx(ctx context.Context, dbPath string, s Session) error { return session.CreateSessionCtx(ctx, dbPath, s) }
+func addSessionMessageCtx(ctx context.Context, dbPath string, msg SessionMessage) error { return session.AddSessionMessageCtx(ctx, dbPath, msg) }
 
 // correctionSem limits concurrent correction-detection goroutines.
 var correctionSem = make(chan struct{}, 4)
@@ -10102,6 +10135,14 @@ func updateSessionStatus(dbPath, sessionID, status string) error {
 	return session.UpdateSessionStatus(dbPath, sessionID, status)
 }
 
+func updateSessionStatsCtx(ctx context.Context, dbPath, sessionID string, costDelta float64, tokensInDelta, tokensOutDelta, msgCountDelta int) error {
+	return session.UpdateSessionStatsCtx(ctx, dbPath, sessionID, costDelta, tokensInDelta, tokensOutDelta, msgCountDelta)
+}
+
+func updateSessionStatusCtx(ctx context.Context, dbPath, sessionID, status string) error {
+	return session.UpdateSessionStatusCtx(ctx, dbPath, sessionID, status)
+}
+
 func updateSessionTitle(dbPath, sessionID, title string) error {
 	return session.UpdateSessionTitle(dbPath, sessionID, title)
 }
@@ -10114,6 +10155,10 @@ func querySessions(dbPath string, q SessionQuery) ([]Session, int, error) {
 
 func querySessionByID(dbPath, id string) (*Session, error) {
 	return session.QuerySessionByID(dbPath, id)
+}
+
+func querySessionByIDCtx(ctx context.Context, dbPath, id string) (*Session, error) {
+	return session.QuerySessionByIDCtx(ctx, dbPath, id)
 }
 
 func querySessionsByPrefix(dbPath, prefix string) ([]Session, error) {
@@ -10159,6 +10204,10 @@ func getOrCreateChannelSession(dbPath, source, chKey, role, title string) (*Sess
 
 func archiveChannelSession(dbPath, chKey string) error {
 	return session.ArchiveChannelSession(dbPath, chKey)
+}
+
+func findLastArchivedChannelSession(dbPath, chKey string) (*Session, error) {
+	return session.FindLastArchivedChannelSession(dbPath, chKey)
 }
 
 // --- Row Parsers ---
@@ -10224,6 +10273,7 @@ func compactSession(ctx context.Context, cfg *Config, dbPath, sessionID string, 
 	summaryPrompt := fmt.Sprintf(
 		`Summarize this conversation history into a concise context summary (max 500 words).
 Focus on key topics discussed, decisions made, and important information.
+IMPORTANT: Preserve all URLs, file paths, code snippets, and specific identifiers exactly as they appear — do not paraphrase or omit them.
 Output ONLY the summary text, no headers or formatting.
 
 Conversation (%d messages):
@@ -10271,13 +10321,105 @@ Conversation (%d messages):
 
 	newCount := keep + 1
 	updateSQL := fmt.Sprintf(
-		`UPDATE sessions SET message_count = %d, updated_at = '%s' WHERE id = '%s'`,
+		`UPDATE sessions SET message_count = %d, total_tokens_in = 0, updated_at = '%s' WHERE id = '%s'`,
 		newCount, db.Escape(now), db.Escape(sessionID))
 	if err := db.Exec(dbPath, updateSQL); err != nil {
 		log.Warn("session count update failed", "session", sessionID, "error", err)
 	}
 
-	log.Info("session compacted", "session", sessionID[:8], "before", len(msgs), "after", newCount, "kept", keep)
+	log.Info("session compacted", "session", sessionID[:min(8, len(sessionID))], "before", len(msgs), "after", newCount, "kept", keep)
+	return nil
+}
+
+// compactSessionFresh is the "fresh-session" compaction strategy.
+// Unlike compactSession (which truncates messages in-place), this:
+//  1. Summarises the full conversation and saves to workspace/memory/
+//  2. Archives the Claude CLI session (next request creates a clean JSONL — no cache write accumulation)
+//  3. executeRoute auto-injects the summary into the new session via system prompt
+func compactSessionFresh(ctx context.Context, cfg *Config, dbPath, sessionID, chKey, agentName string, sem, childSem chan struct{}) error {
+	if dbPath == "" {
+		return nil
+	}
+
+	sess, err := querySessionByID(dbPath, sessionID)
+	if err != nil || sess == nil {
+		return err
+	}
+
+	msgs, err := querySessionMessages(dbPath, sessionID)
+	if err != nil {
+		return err
+	}
+	if len(msgs) < 5 {
+		return nil // too short to summarise
+	}
+
+	// Build summarisation input — cap per-message to avoid exceeding context.
+	var lines []string
+	for _, m := range msgs {
+		content := m.Content
+		if len(content) > 800 {
+			content = content[:800] + "…"
+		}
+		lines = append(lines, fmt.Sprintf("[%s] %s", m.Role, content))
+	}
+
+	summaryPrompt := fmt.Sprintf(
+		`You are summarising a conversation to preserve context across session boundaries.
+The conversation occurred between a user and an AI assistant (agent: %s).
+Write a compact summary (300–500 words) covering:
+1. Main tasks requested and their outcomes
+2. Decisions made or conclusions reached
+3. Key entities: file paths, URLs, IDs, code identifiers — copy VERBATIM, do not paraphrase
+4. Unfinished work or open questions
+5. User's apparent preferences or constraints observed during this session
+
+Output ONLY the summary. No headers, no markdown lists unless the original content used them.
+
+Conversation (%d messages, %d input-tokens):
+%s`,
+		agentName, len(msgs), sess.TotalTokensIn,
+		strings.Join(lines, "\n"))
+
+	coordinator := cfg.SmartDispatch.Coordinator
+	task := Task{
+		Prompt:  summaryPrompt,
+		Timeout: "90s",
+		Budget:  0.3,
+		Source:  "compact_fresh",
+	}
+	fillDefaults(cfg, &task)
+	if rc, ok := cfg.Agents[coordinator]; ok && rc.Model != "" {
+		task.Model = rc.Model
+	}
+
+	result := runSingleTask(ctx, cfg, task, sem, childSem, coordinator)
+	if result.Status != "success" {
+		return fmt.Errorf("compaction summary failed: %s", result.Error)
+	}
+
+	summaryText := strings.TrimSpace(result.Output)
+
+	// Persist summary to workspace memory, keyed by agent + channel so the new
+	// session can find it on the next executeRoute call.
+	keyPart := chKey
+	if keyPart == "" {
+		keyPart = sessionID
+	}
+	memKey := "session_compact_" + sanitizeKey(agentName+"_"+keyPart)
+	if err := setMemory(cfg, agentName, memKey, summaryText); err != nil {
+		return fmt.Errorf("compactSessionFresh: memory write failed, aborting archive: %w", err)
+	}
+
+	// Archive the session. On the next message, getOrCreateChannelSession creates
+	// a new session with a blank Claude CLI JSONL, eliminating cache write accumulation.
+	if err := updateSessionStatus(dbPath, sessionID, "archived"); err != nil {
+		return fmt.Errorf("archive session: %w", err)
+	}
+
+	log.Info("session compacted (fresh-session)",
+		"session", sessionID[:min(8, len(sessionID))], "agent", agentName,
+		"msgs", len(msgs), "tokens", sess.TotalTokensIn, "memKey", memKey)
 	return nil
 }
 
@@ -10344,7 +10486,8 @@ func compactionRecordSuccess(sessionID string) {
 }
 
 // maybeCompactSession triggers compaction if the session exceeds thresholds.
-func maybeCompactSession(cfg *Config, dbPath, sessionID string, msgCount, tokensIn int, sem, childSem chan struct{}) {
+// chKey and agentName are required when cfg.Session.Compaction.Strategy == "fresh-session".
+func maybeCompactSession(cfg *Config, dbPath, sessionID, chKey, agentName string, msgCount, tokensIn int, sem, childSem chan struct{}, notifyFn func(string)) {
 	msgThreshold := cfg.Session.CompactAfterOrDefault()
 	tokenThreshold := cfg.Session.CompactTokensOrDefault()
 	tokenTriggered := tokensIn > tokenThreshold
@@ -10355,6 +10498,34 @@ func maybeCompactSession(cfg *Config, dbPath, sessionID string, msgCount, tokens
 		log.Debug("session compaction skipped (backoff)", "session", sessionID)
 		return
 	}
+
+	// Notify mode: alert the user instead of auto-compacting.
+	if cfg.Session.Compaction.Mode == "notify" {
+		msg := fmt.Sprintf("⚠️ **Context approaching limit** (~%dk tokens). Use `/compact` to manually compact the session.", tokensIn/1000)
+		log.Info("session compaction notify", "session", sessionID, "tokensIn", tokensIn)
+		if notifyFn != nil {
+			notifyFn(msg)
+		}
+		compactionRecordSuccess(sessionID)
+		return
+	}
+
+	strategy := cfg.Session.Compaction.Strategy
+	if strategy == "fresh-session" {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			if err := compactSessionFresh(ctx, cfg, dbPath, sessionID, chKey, agentName, sem, childSem); err != nil {
+				log.Warn("session compaction (fresh) failed", "session", sessionID, "error", err)
+				compactionRecordFailure(sessionID)
+			} else {
+				compactionRecordSuccess(sessionID)
+			}
+		}()
+		return
+	}
+
+	// Default: inline compaction (truncate session_messages in place).
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
@@ -10440,6 +10611,83 @@ func recordSessionActivity(dbPath string, task Task, result TaskResult, role str
 		existing, _ := querySessionByID(dbPath, sessionID)
 		if existing == nil || existing.ChannelKey == "" {
 			updateSessionStatus(dbPath, sessionID, "completed")
+		}
+	}()
+}
+
+// recordSessionActivityCtx is like recordSessionActivity but respects context cancellation.
+func recordSessionActivityCtx(ctx context.Context, dbPath string, task Task, result TaskResult, role string) {
+	if dbPath == "" {
+		return
+	}
+	go func() {
+		sessionID := result.SessionID
+		if sessionID == "" {
+			sessionID = task.SessionID
+		}
+		if sessionID == "" {
+			return
+		}
+		now := time.Now().Format(time.RFC3339)
+
+		title := task.Prompt
+		if len(title) > 100 {
+			title = title[:100]
+		}
+
+		if err := createSessionCtx(ctx, dbPath, Session{
+			ID:        sessionID,
+			Agent:     role,
+			Source:    task.Source,
+			Status:    "active",
+			Title:     title,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}); err != nil {
+			log.Warn("create session failed", "session", sessionID, "error", err)
+		}
+
+		if err := addSessionMessageCtx(ctx, dbPath, SessionMessage{
+			SessionID: sessionID,
+			Role:      "user",
+			Content:   truncateStr(task.Prompt, 5000),
+			TaskID:    task.ID,
+			CreatedAt: now,
+		}); err != nil {
+			log.Warn("add user message failed", "session", sessionID, "error", err)
+		}
+
+		msgRole := "assistant"
+		content := truncateStr(result.Output, 5000)
+		if result.Status != "success" {
+			msgRole = "system"
+			errMsg := result.Error
+			if errMsg == "" {
+				errMsg = result.Status
+			}
+			content = fmt.Sprintf("[%s] %s", result.Status, truncateStr(errMsg, 2000))
+		}
+		if err := addSessionMessageCtx(ctx, dbPath, SessionMessage{
+			SessionID: sessionID,
+			Role:      msgRole,
+			Content:   content,
+			CostUSD:   result.CostUSD,
+			TokensIn:  result.TokensIn,
+			TokensOut: result.TokensOut,
+			Model:     result.Model,
+			TaskID:    task.ID,
+			CreatedAt: now,
+		}); err != nil {
+			log.Warn("add assistant message failed", "session", sessionID, "error", err)
+		}
+
+		if err := updateSessionStatsCtx(ctx, dbPath, sessionID, result.CostUSD, result.TokensIn, result.TokensOut, 2); err != nil {
+			log.Warn("update session stats failed", "session", sessionID, "error", err)
+		}
+
+		existing, _ := querySessionByIDCtx(ctx, dbPath, sessionID)
+		if existing == nil || existing.ChannelKey == "" {
+			updateSessionStatusCtx(ctx, dbPath, sessionID, "completed")
 		}
 	}()
 }
@@ -10978,8 +11226,115 @@ func providersChanged(oldCfg, newCfg *Config) bool {
 	return string(oldJSON) != string(newJSON)
 }
 
+// ensureProvider creates a provider entry from a preset if it doesn't already
+// exist in cfg.Providers, persists it to config.json, and registers it in the
+// runtime provider registry so it can be used immediately without restart.
+func ensureProvider(cfg *Config, presetName string) error {
+	if _, exists := cfg.Providers[presetName]; exists {
+		return nil
+	}
+
+	preset, ok := provider.GetPreset(presetName)
+	if !ok {
+		return fmt.Errorf("unknown provider preset %q", presetName)
+	}
+
+	apiKeyRef := ""
+	if preset.RequiresKey {
+		apiKeyRef = "$" + strings.ToUpper(presetName) + "_API_KEY"
+	}
+
+	defaultModel := ""
+	if len(preset.Models) > 0 {
+		defaultModel = preset.Models[0]
+	}
+
+	pc := config.ProviderConfig{
+		Type:    preset.Type,
+		BaseURL: preset.BaseURL,
+		APIKey:  apiKeyRef,
+		Model:   defaultModel,
+	}
+
+	if cfg.Providers == nil {
+		cfg.Providers = make(map[string]config.ProviderConfig)
+	}
+	cfg.Providers[presetName] = pc
+
+	providersJSON, err := json.Marshal(cfg.Providers)
+	if err != nil {
+		return fmt.Errorf("marshal providers: %w", err)
+	}
+	if err := cli.UpdateConfigField(findConfigPath(), "providers", providersJSON); err != nil {
+		return fmt.Errorf("persist providers: %w", err)
+	}
+
+	resolvedKey := config.ResolveEnvRef(apiKeyRef, "providers."+presetName+".apiKey")
+
+	if cfg.Runtime.ProviderRegistry != nil {
+		reg := cfg.Runtime.ProviderRegistry.(*providerRegistry)
+		switch preset.Type {
+		case "anthropic":
+			reg.Register(presetName, anthropicprovider.New(presetName, preset.BaseURL, resolvedKey, defaultModel))
+		case "codex-cli":
+			path := pc.Path
+			if path == "" {
+				path = "codex"
+			}
+			reg.Register(presetName, &provider.CodexProvider{BinaryPath: path})
+		default: // "openai-compatible" and others
+			reg.Register(presetName, &provider.OpenAIProvider{
+				Name_:        presetName,
+				BaseURL:      preset.BaseURL,
+				APIKey:       resolvedKey,
+				DefaultModel: defaultModel,
+				IsLocal:      provider.IsLocalEndpoint(preset.BaseURL),
+			})
+		}
+	}
+
+	log.Info("auto-created provider from preset", "provider", presetName, "type", preset.Type)
+	return nil
+}
+
 // --- initProviders creates provider instances from config ---
 // Stays in root because it depends on Config and root-level Docker/Tmux adapters.
+
+// resolveClaudeBinary returns the path to the claude binary.
+// Priority: explicit path → common locations → login shell detection → "claude" (relies on PATH).
+//
+// Common locations are checked first because login shell detection via `zsh -l` only
+// sources .zprofile, not .zshrc — so PATH additions in .zshrc (e.g. ~/.local/bin) are
+// invisible to the login shell in a launchd/systemd daemon context.
+func resolveClaudeBinary(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	// Check well-known install locations directly before spawning a shell.
+	// npm global installs land in ~/.local/bin; brew in /opt/homebrew/bin.
+	if home, err := os.UserHomeDir(); err == nil {
+		for _, candidate := range []string{
+			filepath.Join(home, ".local/bin/claude"),
+			"/opt/homebrew/bin/claude",
+			"/usr/local/bin/claude",
+		} {
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
+		}
+	}
+	// Ask the user's login shell — covers fnm, nvm, and other version managers
+	// that modify PATH via .zprofile / .bash_profile.
+	for _, shell := range []string{"/bin/zsh", "/bin/bash"} {
+		out, err := exec.Command(shell, "-l", "-c", "which claude").Output()
+		if err == nil {
+			if p := strings.TrimSpace(string(out)); p != "" {
+				return p
+			}
+		}
+	}
+	return "claude"
+}
 
 func initProviders(cfg *Config) *provider.Registry {
 	reg := provider.NewRegistry()
@@ -10987,13 +11342,12 @@ func initProviders(cfg *Config) *provider.Registry {
 	for name, pc := range cfg.Providers {
 		switch pc.Type {
 		case "claude-cli":
-			path := pc.Path
-			if path == "" {
-				path = cfg.ClaudePath
-			}
-			if path == "" {
-				path = "claude"
-			}
+			path := resolveClaudeBinary(func() string {
+				if pc.Path != "" {
+					return pc.Path
+				}
+				return cfg.ClaudePath
+			}())
 			reg.Register(name, &provider.ClaudeProvider{
 				BinaryPath:    path,
 				DockerEnabled: cfg.Docker.Enabled,
@@ -11009,6 +11363,7 @@ func initProviders(cfg *Config) *provider.Registry {
 				BaseURL:      pc.BaseURL,
 				APIKey:       pc.APIKey,
 				DefaultModel: pc.Model,
+				IsLocal:      provider.IsLocalEndpoint(pc.BaseURL),
 			})
 
 		case "claude-api":
@@ -11027,10 +11382,7 @@ func initProviders(cfg *Config) *provider.Registry {
 			if pc.Type == "claude-tmux" {
 				log.Warn("provider type 'claude-tmux' is deprecated in v3, use 'claude-code' instead", "name", name)
 			}
-			path := pc.Path
-			if path == "" {
-				path = "/usr/local/bin/claude"
-			}
+			path := resolveClaudeBinary(pc.Path)
 			reg.Register(name, &provider.ClaudeProvider{
 				BinaryPath:    path,
 				DockerEnabled: cfg.Docker.Enabled,
@@ -11038,13 +11390,12 @@ func initProviders(cfg *Config) *provider.Registry {
 			})
 
 		case "terminal-claude":
-			path := pc.Path
-			if path == "" {
-				path = cfg.ClaudePath
-			}
-			if path == "" {
-				path = "/usr/local/bin/claude"
-			}
+			path := resolveClaudeBinary(func() string {
+				if pc.Path != "" {
+					return pc.Path
+				}
+				return cfg.ClaudePath
+			}())
 			reg.Register(name, &provider.TerminalProvider{
 				BinaryPath:     path,
 				DefaultWorkdir: cfg.DefaultWorkdir,
@@ -11072,6 +11423,19 @@ func initProviders(cfg *Config) *provider.Registry {
 				path = "codex"
 			}
 			reg.Register(name, &provider.CodexProvider{BinaryPath: path})
+
+		case "qwen-cli":
+			path := pc.Path
+			if path == "" {
+				path = "qwen"
+			}
+			reg.Register(name, &provider.TerminalProvider{
+				BinaryPath:     path,
+				DefaultWorkdir: cfg.DefaultWorkdir,
+				Profile:        newProfileAdapter(tmux.NewClaudeProfile()),
+				Tmux:           tmuxOpsAdapter{},
+				Workers:        newWorkerTrackerAdapter(tmux.NewSupervisor()),
+			})
 		}
 	}
 
@@ -11115,17 +11479,37 @@ func initProviders(cfg *Config) *provider.Registry {
 // Stays in root because it depends on Config, Task, and SSEEvent.
 
 func resolveProviderName(cfg *Config, task Task, agentName string) string {
+	// Priority 1: Task-level override (highest priority)
 	if task.Provider != "" {
 		return task.Provider
 	}
-	if agentName != "" {
-		if rc, ok := cfg.Agents[agentName]; ok && rc.Provider != "" {
-			return rc.Provider
+
+	// Priority 2: Active provider override (CLI/API session-level override)
+	if cfg.ActiveProviderStore != nil && cfg.ActiveProviderStore.HasActiveOverride() {
+		activeState := cfg.ActiveProviderStore.Get()
+		if activeState.ProviderName != "" {
+			return activeState.ProviderName
 		}
 	}
+
+	// Priority 3: Agent-level provider
+	if agentName != "" {
+		if rc, ok := cfg.Agents[agentName]; ok && rc.Provider != "" {
+			// If agent uses "auto", fall through to global default
+			if rc.Provider == "auto" {
+				// Continue to default resolution
+			} else {
+				return rc.Provider
+			}
+		}
+	}
+
+	// Priority 4: Global default provider
 	if cfg.DefaultProvider != "" {
 		return cfg.DefaultProvider
 	}
+
+	// Fallback: legacy default
 	return "claude"
 }
 
@@ -11134,6 +11518,18 @@ func buildProviderCandidates(cfg *Config, task Task, agentName string) []string 
 	seen := map[string]bool{primary: true}
 	candidates := []string{primary}
 
+	// If active provider override is set, only use global fallback providers
+	if cfg.ActiveProviderStore != nil && cfg.ActiveProviderStore.HasActiveOverride() {
+		for _, fb := range cfg.FallbackProviders {
+			if !seen[fb] {
+				seen[fb] = true
+				candidates = append(candidates, fb)
+			}
+		}
+		return candidates
+	}
+
+	// Normal flow: use agent-level and global fallback providers
 	if agentName != "" {
 		if rc, ok := cfg.Agents[agentName]; ok {
 			for _, fb := range rc.FallbackProviders {
@@ -11159,6 +11555,23 @@ func buildProviderCandidates(cfg *Config, task Task, agentName string) []string 
 // The eventCh is bridged into the provider.Request.OnEvent callback.
 func buildProviderRequest(cfg *Config, task Task, agentName, providerName string, eventCh chan<- SSEEvent) provider.Request {
 	model := task.Model
+
+	// If active provider has an explicit model override (not "auto"), use it.
+	if cfg.ActiveProviderStore != nil && cfg.ActiveProviderStore.HasActiveOverride() {
+		activeState := cfg.ActiveProviderStore.Get()
+		if activeState.Model != "" && activeState.Model != "auto" {
+			model = activeState.Model
+		}
+	}
+
+	// Resolve "auto" model to the provider's default model.
+	if model == "" || model == "auto" {
+		if pc, ok := cfg.Providers[providerName]; ok && pc.Model != "" {
+			model = pc.Model
+		} else if cfg.DefaultModel != "" && cfg.DefaultModel != "auto" {
+			model = cfg.DefaultModel
+		}
+	}
 	if model == "" {
 		if pc, ok := cfg.Providers[providerName]; ok && pc.Model != "" {
 			model = pc.Model
@@ -11210,6 +11623,7 @@ func buildProviderRequest(cfg *Config, task Task, agentName, providerName string
 		Resume:         task.Resume,
 		PersistSession: task.PersistSession,
 		Docker:         docker,
+		AllowedTools:   task.AllowedTools,
 		OnEvent:        onEvent,
 		AgentName:      agentName,
 	}
@@ -11236,7 +11650,7 @@ func executeWithProvider(ctx context.Context, cfg *Config, task Task, agentName 
 			if !cb.Allow() {
 				log.DebugCtx(ctx, "circuit open, skipping provider", "provider", providerName)
 				if i == 0 && len(candidates) > 1 {
-					publishFailoverEvent(eventCh, task.ID, providerName, candidates[i+1], "circuit open")
+					publishFailoverEventAgent(eventCh, task.ID, agentName, providerName, candidates[i+1], "circuit open")
 				}
 				continue
 			}
@@ -11268,7 +11682,7 @@ func executeWithProvider(ctx context.Context, cfg *Config, task Task, agentName 
 
 				if i < len(candidates)-1 {
 					next := candidates[i+1]
-					publishFailoverEvent(eventCh, task.ID, providerName, next, errMsg)
+					publishFailoverEventAgent(eventCh, task.ID, agentName, providerName, next, errMsg)
 					log.InfoCtx(ctx, "failing over to next provider", "from", providerName, "to", next)
 					continue
 				}
@@ -11304,21 +11718,25 @@ func executeWithProvider(ctx context.Context, cfg *Config, task Task, agentName 
 	}
 }
 
-// publishFailoverEvent sends a provider_failover SSE event if eventCh is available.
+// publishFailoverEventAgent sends a provider_failover SSE event if eventCh is available.
 // The send is non-blocking to avoid blocking executeWithProvider on a full channel.
-func publishFailoverEvent(eventCh chan<- SSEEvent, taskID, from, to, reason string) {
+func publishFailoverEventAgent(eventCh chan<- SSEEvent, taskID, agent, from, to, reason string) {
 	if eventCh == nil {
 		return
+	}
+	data := map[string]any{
+		"from":   from,
+		"to":     to,
+		"reason": reason,
+	}
+	if agent != "" {
+		data["agent"] = agent
 	}
 	select {
 	case eventCh <- SSEEvent{
 		Type:   "provider_failover",
 		TaskID: taskID,
-		Data: map[string]any{
-			"from":   from,
-			"to":     to,
-			"reason": reason,
-		},
+		Data:   data,
 	}:
 	default:
 	}
@@ -11343,6 +11761,7 @@ func newDockerRunner(cfg DockerConfig) provider.DockerRunner {
 func (d *dockerRunnerAdapter) BuildCmd(ctx context.Context, binaryPath, workdir string, args, addDirs []string, mcpPath string) *exec.Cmd {
 	dockerArgs := sandbox.RewriteDockerArgs(args, addDirs, mcpPath)
 	envVars := sandbox.DockerEnvFilter(d.cfg)
+	envVars = append(envVars, "TETORA_SOURCE=agent_dispatch") // enable sub-agent dispatch bypass inside container
 	return sandbox.BuildDockerCmd(ctx, d.cfg, workdir, binaryPath, dockerArgs, addDirs, mcpPath, envVars)
 }
 

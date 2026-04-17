@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -476,6 +477,52 @@ func TestWrapWithContext(t *testing.T) {
 	}
 }
 
+func TestFindLastArchivedChannelSession(t *testing.T) {
+	skipIfNoSQLite(t)
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	InitSessionDB(dbPath)
+
+	now := time.Now().Format(time.RFC3339)
+
+	// Nothing yet — should return nil.
+	sess, err := FindLastArchivedChannelSession(dbPath, "discord:test")
+	if err != nil {
+		t.Fatalf("FindLastArchivedChannelSession: %v", err)
+	}
+	if sess != nil {
+		t.Error("expected nil for nonexistent archived session")
+	}
+
+	// Active session — should NOT be returned.
+	CreateSession(dbPath, Session{
+		ID: "active-001", Agent: "龍蝦", Source: "discord", Status: "active",
+		ChannelKey: "discord:test", CreatedAt: now, UpdatedAt: now,
+	})
+	sess, _ = FindLastArchivedChannelSession(dbPath, "discord:test")
+	if sess != nil {
+		t.Error("expected nil: active session should not be returned")
+	}
+
+	// Archive it — now it should be returned.
+	UpdateSessionStatus(dbPath, "active-001", "archived")
+	sess, err = FindLastArchivedChannelSession(dbPath, "discord:test")
+	if err != nil {
+		t.Fatalf("FindLastArchivedChannelSession: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("expected archived session, got nil")
+	}
+	if sess.ID != "active-001" {
+		t.Errorf("session ID = %q, want %q", sess.ID, "active-001")
+	}
+
+	// Different channel key — should not cross-match.
+	sess2, _ := FindLastArchivedChannelSession(dbPath, "discord:other")
+	if sess2 != nil {
+		t.Error("expected nil for different channel key")
+	}
+}
+
 func TestArchiveChannelSession(t *testing.T) {
 	skipIfNoSQLite(t)
 	dbPath := filepath.Join(t.TempDir(), "test.db")
@@ -610,5 +657,39 @@ func TestQuerySessionsByPrefix(t *testing.T) {
 	}
 	if len(matches3) != 0 {
 		t.Errorf("expected 0 matches for prefix 'cccc', got %d", len(matches3))
+	}
+}
+
+func TestQuerySessionByIDCtxCancellation(t *testing.T) {
+	skipIfNoSQLite(t)
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	if err := InitSessionDB(dbPath); err != nil {
+		t.Fatalf("InitSessionDB: %v", err)
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	CreateSession(dbPath, Session{
+		ID: "ctx-cancel-001", Agent: "黒曜", Source: "test", Status: "active",
+		Title: "Ctx cancellation test", CreatedAt: now, UpdatedAt: now,
+	})
+
+	// Cancel the context before calling QuerySessionByIDCtx.
+	// exec.CommandContext sends SIGKILL on cancel, so the sqlite3 subprocess
+	// should terminate immediately rather than blocking.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	_, err := QuerySessionByIDCtx(ctx, dbPath, "ctx-cancel-001")
+	elapsed := time.Since(start)
+
+	// Must return within 2s budget; a leaked process would block much longer.
+	if elapsed > 2*time.Second {
+		t.Fatalf("blocked for %v with cancelled ctx (budget: 2s)", elapsed)
+	}
+	// exec.CommandContext wraps the kill in *exec.ExitError, so context.Canceled
+	// is not preserved in the error chain. Just assert err != nil.
+	if err == nil {
+		t.Error("expected error with cancelled context, got nil")
 	}
 }

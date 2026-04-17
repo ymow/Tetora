@@ -1,12 +1,9 @@
 package messaging
 
-// TruncateStr truncates a string to maxLen, appending "..." if truncated.
+import "tetora/internal/text"
+
+// TruncateStr truncates a string to maxLen runes, appending "..." if truncated.
+// Delegates to the canonical rune-aware implementation in internal/text.
 func TruncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	if maxLen <= 3 {
-		return s[:maxLen]
-	}
-	return s[:maxLen-3] + "..."
+	return text.TruncateStr(s, maxLen)
 }

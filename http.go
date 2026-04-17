@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -93,7 +94,7 @@ func authMiddleware(cfg *Config, secMon *securityMonitor, next http.Handler) htt
 
 		// Skip auth for health check, metrics, dashboard, Slack events, WhatsApp webhook, Discord interactions, LINE webhook, Teams webhook, Signal webhook, Google Chat webhook, and iMessage webhook.
 		p := r.URL.Path
-		if p == "/healthz" || p == "/metrics" || p == "/dashboard" || strings.HasPrefix(p, "/dashboard/") || p == "/slack/events" || p == "/api/whatsapp/webhook" || p == "/api/discord/interactions" || strings.HasPrefix(p, "/api/line/") || strings.HasPrefix(p, "/api/teams/") || strings.HasPrefix(p, "/api/signal/") || strings.HasPrefix(p, "/api/gchat/") || strings.HasPrefix(p, "/api/imessage/") || p == "/api/docs" || p == "/api/spec" || strings.HasPrefix(p, "/hooks/") || isHooksPath(p) || (strings.HasPrefix(p, "/api/oauth/") && strings.HasSuffix(p, "/callback")) || strings.HasPrefix(p, "/api/callbacks/") {
+		if p == "/" || p == "/healthz" || p == "/metrics" || p == "/dashboard" || strings.HasPrefix(p, "/dashboard/") || p == "/slack/events" || p == "/api/whatsapp/webhook" || p == "/api/discord/interactions" || strings.HasPrefix(p, "/api/line/") || strings.HasPrefix(p, "/api/teams/") || strings.HasPrefix(p, "/api/signal/") || strings.HasPrefix(p, "/api/gchat/") || strings.HasPrefix(p, "/api/imessage/") || p == "/api/docs" || p == "/api/spec" || strings.HasPrefix(p, "/hooks/") || isHooksPath(p) || (strings.HasPrefix(p, "/api/oauth/") && strings.HasSuffix(p, "/callback")) || strings.HasPrefix(p, "/api/callbacks/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -1208,8 +1209,9 @@ func startHTTPServer(s *Server) *http.Server {
 				}, http.StatusAccepted, nil
 			}
 
-			// Sync mode.
-			result := runSingleTask(r.Context(), cfg, task, s.sem, s.childSem, sess.Agent)
+			// Sync mode — decouple from HTTP lifecycle.
+			taskCtx := trace.WithID(context.Background(), trace.IDFromContext(r.Context()))
+			result := runSingleTask(taskCtx, cfg, task, s.sem, s.childSem, sess.Agent)
 			taskStart := time.Now().Add(-time.Duration(result.DurationMs) * time.Millisecond)
 			recordHistory(cfg.HistoryDB, task.ID, task.Name, task.Source, sess.Agent, task, result,
 				taskStart.Format(time.RFC3339), time.Now().Format(time.RFC3339), result.OutputFile)
@@ -1549,7 +1551,7 @@ func startHTTPServer(s *Server) *http.Server {
 		ResumeWorkflow: func(ctx context.Context, runID string) {
 			wfTraceID := trace.IDFromContext(ctx)
 			go func() {
-				run, err := resumeWorkflow(trace.WithID(context.Background(), wfTraceID), cfg, runID, s.state, s.sem, s.childSem)
+				run, err := resumeWorkflow(trace.WithID(context.Background(), wfTraceID), cfg, runID, s.state, s.sem, s.childSem, nil)
 				if err != nil {
 					log.Warn("workflow resume failed", "originalRunID", runID, "error", err)
 				} else {
@@ -1858,6 +1860,90 @@ func startHTTPServer(s *Server) *http.Server {
 			})
 		},
 	})
+	httpapi.RegisterHumanGateRoutes(mux, httpapi.HumanGateDeps{
+		HistoryDB: func() string { return cfg.HistoryDB },
+		QueryHumanGates: func(status string) []map[string]any {
+			where := ""
+			if status != "" {
+				where = fmt.Sprintf(" WHERE status='%s'", db.Escape(status))
+			}
+			rows, err := db.Query(cfg.HistoryDB, fmt.Sprintf(
+				`SELECT key, run_id as runId, step_id as stepId, workflow_name as workflowName,
+				        subtype, COALESCE(prompt,'') as prompt, COALESCE(assignee,'') as assignee, status,
+				        COALESCE(decision,'') as action, COALESCE(response,'') as response,
+				        COALESCE(responded_by,'') as respondedBy, COALESCE(timeout_at,'') as timeoutAt,
+				        COALESCE(created_at,'') as createdAt, COALESCE(completed_at,'') as completedAt
+				 FROM workflow_human_gates%s ORDER BY created_at DESC`, where))
+			if err != nil || rows == nil {
+				return []map[string]any{}
+			}
+			return rows
+		},
+		CountHumanGates: func() int {
+			return countPendingHumanGates(cfg.HistoryDB)
+		},
+		QueryHumanGateByKey: func(key string) map[string]any {
+			rows, err := db.Query(cfg.HistoryDB, fmt.Sprintf(
+				`SELECT key, run_id as runId, step_id as stepId, workflow_name as workflowName,
+				        subtype, COALESCE(prompt,'') as prompt, COALESCE(assignee,'') as assignee, status,
+				        COALESCE(decision,'') as action, COALESCE(response,'') as response,
+				        COALESCE(responded_by,'') as respondedBy, COALESCE(timeout_at,'') as timeoutAt,
+				        COALESCE(created_at,'') as createdAt, COALESCE(completed_at,'') as completedAt
+				 FROM workflow_human_gates WHERE key='%s' LIMIT 1`, db.Escape(key)))
+			if err != nil || len(rows) == 0 {
+				return nil
+			}
+			return rows[0]
+		},
+		RespondHumanGate: func(key, action, response, respondedBy string) error {
+			if callbackMgr == nil {
+				// No live workflow manager — write directly to DB so the gate
+				// is picked up when the workflow resumes.
+				if action == "reject" || action == "rejected" {
+					rejectHumanGate(cfg.HistoryDB, key, response, respondedBy)
+				} else {
+					completeHumanGate(cfg.HistoryDB, key, action, response, respondedBy)
+				}
+				return nil
+			}
+			// Build the callback body the workflow executor expects.
+			bodyJSON, _ := json.Marshal(map[string]string{
+				"action":      action,
+				"response":    response,
+				"respondedBy": respondedBy,
+			})
+			dr := callbackMgr.Deliver(key, CallbackResult{Body: string(bodyJSON)})
+			if dr == DeliverNoEntry {
+				// Workflow not currently waiting — write DB so resume picks it up.
+				if action == "reject" || action == "rejected" {
+					rejectHumanGate(cfg.HistoryDB, key, response, respondedBy)
+				} else {
+					completeHumanGate(cfg.HistoryDB, key, action, response, respondedBy)
+				}
+			}
+			return nil
+		},
+		RetryHumanGate: func(key string, overrideVars map[string]string) (string, error) {
+			return retryFromHumanGate(context.Background(), cfg, key, overrideVars, s.state, s.sem, s.childSem)
+		},
+		CancelHumanGate: func(key, reason, cancelledBy string) error {
+			if callbackMgr == nil {
+				cancelHumanGate(cfg.HistoryDB, key)
+				return nil
+			}
+			bodyJSON, _ := json.Marshal(map[string]string{
+				"action":      "cancelled",
+				"response":    reason,
+				"respondedBy": cancelledBy,
+			})
+			dr := callbackMgr.Deliver(key, CallbackResult{Body: string(bodyJSON)})
+			if dr == DeliverNoEntry {
+				// Workflow not currently waiting — write DB directly.
+				cancelHumanGate(cfg.HistoryDB, key)
+			}
+			return nil
+		},
+	})
 	httpapi.RegisterAgentRoleRoutes(mux, httpapi.AgentRoleDeps{
 		ListArchetypes: func() []httpapi.ArchetypeInfo {
 			out := make([]httpapi.ArchetypeInfo, len(builtinArchetypes))
@@ -1879,6 +1965,7 @@ func startHTTPServer(s *Server) *http.Server {
 				ri := httpapi.AgentInfo{
 					Name:           name,
 					Model:          rc.Model,
+					Provider:       rc.Provider,
 					PermissionMode: rc.PermissionMode,
 					SoulFile:       rc.SoulFile,
 					Description:    rc.Description,
@@ -1908,6 +1995,7 @@ func startHTTPServer(s *Server) *http.Server {
 			result := map[string]any{
 				"name":           name,
 				"model":          rc.Model,
+				"provider":       rc.Provider,
 				"permissionMode": rc.PermissionMode,
 				"soulFile":       rc.SoulFile,
 				"description":    rc.Description,
@@ -1944,7 +2032,7 @@ func startHTTPServer(s *Server) *http.Server {
 			cfg.Agents[name] = rc
 			return nil
 		},
-		UpdateAgent: func(name, model, permMode, desc, soulFile, soulContent string) error {
+		UpdateAgent: func(name, model, permMode, desc, soulFile, soulContent, providerName string) error {
 			cfg := s.cfg
 			rc := cfg.Agents[name]
 			if model != "" {
@@ -1958,6 +2046,9 @@ func startHTTPServer(s *Server) *http.Server {
 			}
 			if soulFile != "" {
 				rc.SoulFile = soulFile
+			}
+			if providerName != "" {
+				rc.Provider = providerName
 			}
 			if soulContent != "" {
 				if err := writeSoulFile(cfg, name, soulContent); err != nil {
@@ -2341,6 +2432,9 @@ func startHTTPServer(s *Server) *http.Server {
 	mux.HandleFunc("/api/locales/", handleLocaleGet)
 	mux.HandleFunc("/api/locales", handleLocalesList)
 
+	// Root redirect to dashboard.
+	mux.HandleFunc("/", handleRootRedirect)
+
 	// Dashboard.
 	mux.HandleFunc("/dashboard/office-bg.webp", handleOfficeBg)
 	mux.HandleFunc("/dashboard/sprites/", handleSprite)
@@ -2723,12 +2817,21 @@ var docsList = []httpapi.DocsPageEntry{
 	{Name: "Taskboard", File: "docs/taskboard.md", Description: "Kanban & Auto-Dispatch"},
 	{Name: "Hooks", File: "docs/hooks.md", Description: "Claude Code Hooks"},
 	{Name: "MCP", File: "docs/mcp.md", Description: "Model Context Protocol"},
+	{Name: "Discord Commands", File: "docs/discord-commands.md", Description: "Chat Commands & Model Switching"},
 	{Name: "Discord Multitasking", File: "docs/discord-multitasking.md", Description: "Thread & Focus"},
 	{Name: "Troubleshooting", File: "docs/troubleshooting.md", Description: "Common Issues"},
 	{Name: "Changelog", File: "CHANGELOG.md", Description: "Release History"},
 	{Name: "Roadmap", File: "ROADMAP.md", Description: "Future Plans"},
 	{Name: "Contributing", File: "CONTRIBUTING.md", Description: "Contributor Guide"},
 	{Name: "Installation", File: "INSTALL.md", Description: "Setup Guide"},
+}
+
+func handleRootRedirect(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" {
+		http.Redirect(w, r, "/dashboard", http.StatusFound)
+		return
+	}
+	http.NotFound(w, r)
 }
 
 func handleDashboard(w http.ResponseWriter, r *http.Request) {
@@ -3766,7 +3869,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if err := os.WriteFile(configPath, append(out, '\n'), 0o644); err != nil {
+		if err := os.WriteFile(configPath, append(out, '\n'), 0o600); err != nil {
 			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -3939,6 +4042,149 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		}
 	})
 
+	// --- Inference Mode (cloud/local toggle) ---
+	mux.HandleFunc("/api/inference-mode", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			cfg2 := s.Cfg()
+			mode := cfg2.InferenceMode
+			if mode == "" {
+				mode = "mixed"
+			}
+			// Count agents by mode.
+			cloud, local := 0, 0
+			for _, ac := range cfg2.Agents {
+				p := ac.Provider
+				if p == "" {
+					p = cfg2.DefaultProvider
+				}
+				if provider.IsLocalProvider(p) {
+					local++
+				} else {
+					cloud++
+				}
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"mode": mode, "cloud": cloud, "local": local, "total": cloud + local,
+			})
+
+		case http.MethodPost:
+			var req struct {
+				Mode string `json:"mode"` // "cloud" | "local" | "mixed"
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				jsonError(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if req.Mode != "cloud" && req.Mode != "local" && req.Mode != "mixed" {
+				jsonError(w, `mode must be "cloud", "local", or "mixed"`, http.StatusBadRequest)
+				return
+			}
+
+			cfg2 := s.Cfg()
+
+			// For "local" mode, verify Ollama is reachable and get available models.
+			var ollamaModels []string
+			if req.Mode == "local" {
+				ollamaPreset, _ := provider.GetPreset("ollama")
+				models, err := provider.FetchPresetModels(ollamaPreset)
+				if err != nil || len(models) == 0 {
+					jsonError(w, "Ollama is not reachable or has no models. Start it with: ollama serve", http.StatusServiceUnavailable)
+					return
+				}
+				ollamaModels = models
+			}
+
+			switched := 0
+			pinned := 0
+			var errors []string
+			updatedAgents := make(map[string]tetoraConfig.AgentConfig)
+
+			for name, ac := range cfg2.Agents {
+				// Skip agents with PinMode set.
+				if ac.PinMode != "" {
+					pinned++
+					continue
+				}
+
+				switch req.Mode {
+				case "local":
+					// Already on a local provider? Skip.
+					if provider.IsLocalProvider(ac.Provider) {
+						continue
+					}
+					// Save current cloud model.
+					ac.CloudModel = ac.Model
+					// Use agent's preferred local model, or first Ollama model.
+					if ac.LocalModel != "" {
+						ac.Model = ac.LocalModel
+					} else if len(ollamaModels) > 0 {
+						ac.Model = ollamaModels[0]
+					} else {
+						errors = append(errors, name+": no local model available")
+						continue
+					}
+					ac.Provider = "ollama"
+					switched++
+
+				case "cloud":
+					// Not on a local provider? Skip.
+					if !provider.IsLocalProvider(ac.Provider) {
+						continue
+					}
+					// Restore cloud model.
+					if ac.CloudModel != "" {
+						ac.Model = ac.CloudModel
+						// Infer provider from the cloud model name.
+						if preset, ok := provider.InferProviderFromModelWithPref(ac.CloudModel, cfg2.ClaudeProvider); ok {
+							ac.Provider = preset
+						} else {
+							ac.Provider = cfg2.DefaultProvider
+						}
+					} else {
+						// No saved cloud model — use defaults.
+						ac.Model = cfg2.DefaultModel
+						ac.Provider = cfg2.DefaultProvider
+					}
+					switched++
+
+				case "mixed":
+					// Just set the mode flag, don't change any models.
+				}
+
+				cfg2.Agents[name] = ac
+				updatedAgents[name] = ac
+			}
+
+			// Persist to config.json in a single atomic write.
+			configPath := findConfigPath()
+			modeStr := req.Mode
+			if modeStr == "mixed" {
+				modeStr = "" // empty = mixed in config
+			}
+			if err := tetoraConfig.SaveInferenceMode(configPath, modeStr, updatedAgents); err != nil {
+				jsonError(w, "save config: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			cfg2.InferenceMode = modeStr
+
+			signalSelfReload()
+			audit.Log(cfg.HistoryDB, "config.inference_mode", "dashboard",
+				fmt.Sprintf("mode=%s switched=%d pinned=%d", req.Mode, switched, pinned), "")
+
+			json.NewEncoder(w).Encode(map[string]any{
+				"mode":    req.Mode,
+				"switched": switched,
+				"pinned":  pinned,
+				"errors":  errors,
+			})
+
+		default:
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		}
+	})
+
 	// --- P18.2: OAuth 2.0 Framework ---
 	oauthMgr := newOAuthManager(cfg)
 	globalOAuthManager = oauthMgr // expose for Gmail/Calendar tools
@@ -4032,7 +4278,28 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		entries := make([]wsEntry, 0)
 		for _, e := range dirEntries {
 			name := e.Name()
-			if e.IsDir() {
+			entryPath := filepath.Join(targetDir, name)
+
+			// Follow symlinks once: use os.Stat for both isDir and metadata.
+			// For non-symlinks, fall back to DirEntry info (no extra syscall).
+			isDir := e.IsDir()
+			var size int64
+			var modTime string
+			if e.Type()&fs.ModeSymlink != 0 {
+				if info, err := os.Stat(entryPath); err == nil {
+					isDir = info.IsDir()
+					size = info.Size()
+					modTime = info.ModTime().Format(time.RFC3339)
+				}
+				// dangling symlink: isDir stays false, entry is silently skipped by ext check
+			} else {
+				if info, err := e.Info(); err == nil {
+					size = info.Size()
+					modTime = info.ModTime().Format(time.RFC3339)
+				}
+			}
+
+			if isDir {
 				if skipDirs[name] || strings.HasPrefix(name, ".") {
 					continue
 				}
@@ -4051,17 +4318,10 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 				relPath = name
 			}
 
-			var size int64
-			var modTime string
-			if info, err := e.Info(); err == nil {
-				size = info.Size()
-				modTime = info.ModTime().Format(time.RFC3339)
-			}
-
 			entries = append(entries, wsEntry{
 				Path:    relPath,
 				Name:    name,
-				IsDir:   e.IsDir(),
+				IsDir:   isDir,
 				Size:    size,
 				ModTime: modTime,
 			})
@@ -4672,6 +4932,9 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 
 		// Allow sub-agent dispatches to run concurrently with parent tasks.
 		// Only block duplicate batch dispatches from external callers.
+		// Note: X-Tetora-Source is an operational signal, not a security boundary.
+		// Any authenticated client can set it; the guard only prevents accidental
+		// double-dispatch, not unauthorized access.
 		isSubAgent := r.Header.Get("X-Tetora-Source") == "agent_dispatch"
 		if !isSubAgent {
 			cState.mu.Lock()
@@ -4726,6 +4989,26 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 			s.taskBoardDispatcher.ResetStuckDoing()
 		}
 
+		// Per-agent concurrency guard: reject if any target agent already has
+		// too many tasks in 'doing' state. Configurable via maxTasksPerAgent
+		// (default 1).
+		if s.taskBoardDispatcher != nil {
+			maxPerAgent := cfg.TaskBoard.AutoDispatch.MaxTasksPerAgentOrDefault()
+			for i, t := range tasks {
+				if t.Agent == "" {
+					continue
+				}
+				if n := s.taskBoardDispatcher.DoingTaskCountForAgent(t.Agent); n >= maxPerAgent {
+					log.Warn("dispatch: agent at per-agent concurrency limit",
+						"agent", t.Agent, "taskName", t.Name, "doing", n, "max", maxPerAgent)
+					jsonError(w, fmt.Sprintf(
+						"task[%d]: agent %q at concurrency limit (%d/%d active tasks)",
+						i, t.Agent, n, maxPerAgent), http.StatusConflict)
+					return
+				}
+			}
+		}
+
 		// Resolve per-client audit DB path.
 		auditDB := s.resolveHistoryDB(cfg, clientID)
 
@@ -4745,7 +5028,9 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 		audit.Log(auditDB, "dispatch", "http",
 			fmt.Sprintf("%d tasks (client=%s)", len(tasks), clientID), clientIP(r))
 
-		result := dispatch(r.Context(), cfg, tasks, cState, cSem, cChildSem)
+		// Decouple from HTTP request lifecycle so client disconnect doesn't kill in-flight tasks.
+		dispatchCtx := trace.WithID(context.Background(), trace.IDFromContext(r.Context()))
+		result := dispatch(dispatchCtx, cfg, tasks, cState, cSem, cChildSem, isSubAgent)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
@@ -5148,9 +5433,12 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 		actionAuditDB := s.resolveHistoryDB(cfg, actionClientID)
 		w.Header().Set("Content-Type", "application/json")
 
+		// Decouple from HTTP request lifecycle so client disconnect doesn't kill in-flight tasks.
+		actionCtx := trace.WithID(context.Background(), trace.IDFromContext(r.Context()))
+
 		switch action {
 		case "retry":
-			result, err := retryTask(r.Context(), cfg, taskID, actionState, actionSem, actionChildSem)
+			result, err := retryTask(actionCtx, cfg, taskID, actionState, actionSem, actionChildSem)
 			if err != nil {
 				jsonError(w, err.Error(), http.StatusNotFound)
 				return
@@ -5160,7 +5448,7 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 			json.NewEncoder(w).Encode(result)
 
 		case "reroute":
-			result, err := rerouteTask(r.Context(), cfg, taskID, actionState, actionSem, actionChildSem)
+			result, err := rerouteTask(actionCtx, cfg, taskID, actionState, actionSem, actionChildSem)
 			if err != nil {
 				status := http.StatusNotFound
 				if strings.Contains(err.Error(), "not enabled") {
@@ -5312,7 +5600,9 @@ func (s *Server) registerDispatchRoutes(mux *http.ServeMux) {
 		// Sync mode: block until complete.
 		syncClientID := getClientID(r)
 		syncState, syncSem, syncChildSem := s.resolveClientDispatch(syncClientID)
-		result := smartDispatch(r.Context(), cfg, body.Prompt, "http", syncState, syncSem, syncChildSem)
+		// Decouple from HTTP request lifecycle so client disconnect doesn't kill in-flight tasks.
+		syncCtx := trace.WithID(context.Background(), trace.IDFromContext(r.Context()))
+		result := smartDispatch(syncCtx, cfg, body.Prompt, "http", syncState, syncSem, syncChildSem)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
 	})
@@ -5454,18 +5744,23 @@ func triggerWebhookDispatch(ctx context.Context, cfg *Config, name string, whCfg
 	fillDefaults(cfg, &task)
 
 	// Run async.
+	bgCtx, bgCancel := context.WithTimeout(
+		trace.WithID(context.Background(), trace.IDFromContext(ctx)),
+		10*time.Minute,
+	)
 	go func() {
-		result := runSingleTask(ctx, cfg, task, sem, childSem, whCfg.Agent)
+		defer bgCancel()
+		result := runSingleTask(bgCtx, cfg, task, sem, childSem, whCfg.Agent)
 
 		// Record history.
 		start := time.Now().Add(-time.Duration(result.DurationMs) * time.Millisecond)
-		recordHistory(cfg.HistoryDB, task.ID, task.Name, task.Source, whCfg.Agent, task, result,
+		recordHistoryCtx(bgCtx, cfg.HistoryDB, task.ID, task.Name, task.Source, whCfg.Agent, task, result,
 			start.Format(time.RFC3339), time.Now().Format(time.RFC3339), result.OutputFile)
 
 		// Record session activity.
-		recordSessionActivity(cfg.HistoryDB, task, result, whCfg.Agent)
+		recordSessionActivityCtx(bgCtx, cfg.HistoryDB, task, result, whCfg.Agent)
 
-		log.InfoCtx(ctx, "incoming webhook task done", "name", name, "taskId", task.ID[:8],
+		log.InfoCtx(bgCtx, "incoming webhook task done", "name", name, "taskId", task.ID[:8],
 			"status", result.Status, "cost", result.CostUSD)
 	}()
 
@@ -5511,9 +5806,14 @@ func triggerWebhookWorkflow(ctx context.Context, cfg *Config, name string, whCfg
 	}
 
 	// Run async.
+	bgCtx, bgCancel := context.WithTimeout(
+		trace.WithID(context.Background(), trace.IDFromContext(ctx)),
+		10*time.Minute,
+	)
 	go func() {
-		run := executeWorkflow(ctx, cfg, wf, vars, state, sem, childSem)
-		log.InfoCtx(ctx, "incoming webhook workflow done", "name", name,
+		defer bgCancel()
+		run := executeWorkflow(bgCtx, cfg, wf, vars, state, sem, childSem)
+		log.InfoCtx(bgCtx, "incoming webhook workflow done", "name", name,
 			"workflow", whCfg.Workflow, "status", run.Status, "cost", run.TotalCost)
 	}()
 

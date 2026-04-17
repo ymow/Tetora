@@ -115,6 +115,7 @@ type Config struct {
 	KnowledgeDir          string                     `json:"knowledgeDir,omitempty"`
 	AgentsDir             string                     `json:"agentsDir,omitempty"`
 	WorkspaceDir          string                     `json:"workspaceDir,omitempty"`
+	AgentOutputBase       string                     `json:"agentOutputBase,omitempty"` // Base dir for agent outputs (~/.tetora/workspace/agents)
 	RuntimeDir            string                     `json:"runtimeDir,omitempty"`
 	VaultDir              string                     `json:"vaultDir,omitempty"`
 	Skills                []SkillConfig              `json:"skills,omitempty"`
@@ -124,6 +125,8 @@ type Config struct {
 	Logging               LoggingConfig              `json:"logging,omitempty"`
 	CircuitBreaker        CircuitBreakerConfig       `json:"circuitBreaker,omitempty"`
 	FallbackProviders     []string                   `json:"fallbackProviders,omitempty"`
+	InferenceMode         string                     `json:"inferenceMode,omitempty"` // "cloud" | "local" | "" (mixed)
+	ClaudeProvider        string                     `json:"claudeProvider,omitempty"` // "claude-code" | "anthropic" — how to run Claude models
 	SLA                   SLAConfig                  `json:"sla,omitempty"`
 	OfflineQueue          OfflineQueueConfig         `json:"offlineQueue,omitempty"`
 	Budgets               BudgetConfig               `json:"budgets,omitempty"`
@@ -211,6 +214,10 @@ type Config struct {
 	// are in root (package main). Root code sets these during startup and
 	// accesses them via typed helper functions.
 	Runtime RuntimeState `json:"-"`
+
+	// Active provider override store — enables dynamic provider switching
+	// without modifying individual agent configurations.
+	ActiveProviderStore *ActiveProviderStore `json:"-"`
 }
 
 // RuntimeState holds runtime service references that are set after config loading.

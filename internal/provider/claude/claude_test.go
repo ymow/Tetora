@@ -212,6 +212,29 @@ func TestBuildArgs_Streaming(t *testing.T) {
 	assertContainsSequence(t, argsNonStream, "--output-format", "json")
 }
 
+func TestBuildArgs_WithAllowedTools(t *testing.T) {
+	req := provider.Request{
+		Model:        "opus",
+		SessionID:    "s",
+		AllowedTools: []string{"Bash", "Read", "Grep"},
+	}
+	args := BuildArgs(req, false)
+	assertContainsSequence(t, args, "--allowedTools", "Bash,Read,Grep")
+}
+
+func TestBuildArgs_WithoutAllowedTools(t *testing.T) {
+	req := provider.Request{
+		Model:     "opus",
+		SessionID: "s",
+	}
+	args := BuildArgs(req, false)
+	for _, a := range args {
+		if a == "--allowedTools" {
+			t.Error("--allowedTools should not be present when AllowedTools is empty")
+		}
+	}
+}
+
 // --- shouldUseDocker tests ---
 
 func TestShouldUseDocker_TaskOverrideTrue(t *testing.T) {
@@ -245,6 +268,61 @@ func TestShouldUseDocker_ConfigDisabled(t *testing.T) {
 	req := provider.Request{}
 	if p.shouldUseDocker(req) {
 		t.Error("expected false when Docker not configured")
+	}
+}
+
+// --- isStaleSessionError tests ---
+
+func TestIsStaleSessionError_Match(t *testing.T) {
+	pr := &provider.Result{
+		IsError:   true,
+		Error:     "error_during_execution",
+		TokensIn:  0,
+		TokensOut: 0,
+	}
+	if !isStaleSessionError(pr) {
+		t.Error("expected true for error_during_execution with 0 tokens")
+	}
+}
+
+func TestIsStaleSessionError_NotAnError(t *testing.T) {
+	pr := &provider.Result{
+		IsError:   false,
+		TokensIn:  0,
+		TokensOut: 0,
+	}
+	if isStaleSessionError(pr) {
+		t.Error("expected false when IsError=false")
+	}
+}
+
+func TestIsStaleSessionError_DifferentSubtype(t *testing.T) {
+	pr := &provider.Result{
+		IsError:   true,
+		Error:     "api_error",
+		TokensIn:  0,
+		TokensOut: 0,
+	}
+	if isStaleSessionError(pr) {
+		t.Error("expected false for api_error (not error_during_execution)")
+	}
+}
+
+func TestIsStaleSessionError_NonZeroTokens(t *testing.T) {
+	pr := &provider.Result{
+		IsError:   true,
+		Error:     "error_during_execution",
+		TokensIn:  100,
+		TokensOut: 50,
+	}
+	if isStaleSessionError(pr) {
+		t.Error("expected false when tokens were consumed (error happened mid-execution)")
+	}
+}
+
+func TestIsStaleSessionError_Nil(t *testing.T) {
+	if isStaleSessionError(nil) {
+		t.Error("expected false for nil result")
 	}
 }
 

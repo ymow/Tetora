@@ -60,6 +60,7 @@ type Message struct {
 
 type Embed struct {
 	Title       string       `json:"title,omitempty"`
+	URL         string       `json:"url,omitempty"`
 	Description string       `json:"description,omitempty"`
 	Color       int          `json:"color,omitempty"`
 	Fields      []EmbedField `json:"fields,omitempty"`

@@ -1,5 +1,8 @@
 ---
 import '../styles/global.css';
+import { SITE, ACCENT_COLOR, OG_LOCALE_MAP } from '../consts';
+const LOCALES = ['en', 'zh-TW', 'ja', 'ko', 'es', 'fr', 'de', 'th', 'id', 'fil'] as const;
+
 interface Props {
   title: string;
   description?: string;
@@ -7,15 +10,41 @@ interface Props {
   ogUrl?: string;
   ogType?: string;
   lang?: string;
+  canonicalUrl?: string;
+  jsonLd?: Record<string, unknown> | Record<string, unknown>[];
+  alternates?: Array<{ lang: string; url: string }>;
 }
 const {
   title,
   description = 'Orchestrate AI agents with workflows, taskboards, and multi-agent collaboration.',
   ogImage = 'https://tetora.dev/banner.png',
-  ogUrl = 'https://tetora.dev',
+  ogUrl,
   ogType = 'website',
   lang = 'en',
+  canonicalUrl: canonicalUrlProp,
+  jsonLd,
+  alternates: alternatesProp,
 } = Astro.props;
+
+// Canonical: prefer explicit prop, fallback to current URL
+const canonicalUrl = canonicalUrlProp ?? `${SITE}${Astro.url.pathname}`;
+const ogUrlFinal = ogUrl ?? canonicalUrl;
+
+// hreflang: derive base path (strip lang prefix) then map to all locales
+const pathname = Astro.url.pathname;
+let basePath = pathname;
+for (const loc of LOCALES) {
+  if (pathname.startsWith(`/${loc}/`) || pathname === `/${loc}`) {
+    basePath = pathname.slice(loc.length + 1) || '/';
+    break;
+  }
+}
+const alternateUrls = alternatesProp ?? LOCALES.map(loc => ({
+  lang: loc,
+  url: loc === 'en' ? `${SITE}${basePath}` : `${SITE}/${loc}${basePath}`,
+}));
+const xDefaultUrl = alternateUrls.find(a => a.lang === 'en')?.url ?? `${SITE}${basePath}`;
+const ogLocale = OG_LOCALE_MAP[lang] ?? lang.replace('-', '_');
 ---
 <!DOCTYPE html>
 <html lang={lang}>
@@ -27,13 +56,57 @@ const {
   <meta property="og:title" content={title} />
   <meta property="og:description" content={description} />
   <meta property="og:type" content={ogType} />
-  <meta property="og:url" content={ogUrl} />
+  <meta property="og:url" content={ogUrlFinal} />
   <meta property="og:image" content={ogImage} />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content={title} />
+  <meta property="og:locale" content={ogLocale} />
+  <meta name="theme-color" content={ACCENT_COLOR} />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:image" content={ogImage} />
+  <link rel="canonical" href={canonicalUrl} />
+  {alternateUrls.map(({ lang: l, url }) => (
+    <link rel="alternate" hreflang={l} href={url} />
+  ))}
+  <link rel="alternate" hreflang="x-default" href={xDefaultUrl} />
   <link rel="icon" href="/favicon.png" type="image/png" />
+  {jsonLd && (
+    <script type="application/ld+json" set:html={JSON.stringify(
+      Array.isArray(jsonLd) ? { '@context': 'https://schema.org', '@graph': jsonLd.map(({ '@context': _, ...rest }) => rest) } : jsonLd
+    ).replace(/</g, '\\u003c')} />
+  )}
+  <script type="application/ld+json" set:html={JSON.stringify({
+    '@context': 'https://schema.org',
+    '@graph': [
+      {
+        '@type': 'WebSite',
+        '@id': 'https://tetora.dev/#website',
+        'url': 'https://tetora.dev/',
+        'name': 'Tetora',
+        'description': 'AI agent orchestration platform — deploy multi-agent workflows, schedule tasks, and manage agents.',
+        'publisher': { '@id': 'https://tetora.dev/#organization' },
+        'potentialAction': {
+          '@type': 'SearchAction',
+          'target': { '@type': 'EntryPoint', 'urlTemplate': 'https://tetora.dev/search?q={search_term_string}' },
+          'query-input': 'required name=search_term_string',
+        },
+      },
+      {
+        '@type': 'Organization',
+        '@id': 'https://tetora.dev/#organization',
+        'name': 'Tetora',
+        'url': 'https://tetora.dev/',
+        'logo': {
+          '@type': 'ImageObject',
+          'url': 'https://tetora.dev/tetora-logo.webp',
+          'width': 512,
+          'height': 512,
+        },
+        'sameAs': ['https://github.com/TakumaLee/Tetora'],
+      },
+    ],
+  }).replace(/</g, '\\u003c')} />
   <link rel="preconnect" href="https://www.googletagmanager.com" />
   <script is:inline>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','G-X6YR7HG68N');(window.requestIdleCallback||setTimeout)(function(){var s=document.createElement('script');s.src='https://www.googletagmanager.com/gtag/js?id=G-X6YR7HG68N';s.async=true;document.head.appendChild(s);});</script>
 </head>

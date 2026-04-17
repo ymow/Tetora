@@ -7,6 +7,23 @@ on:
     branches: [main]
 
 jobs:
+  dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rebuild dashboard.html
+        run: make dashboard
+
+      - name: Check dashboard.html is up to date
+        run: |
+          if ! git diff --exit-code dashboard.html; then
+            echo ""
+            echo "ERROR: dashboard.html is out of sync with dashboard/ sources."
+            echo "Run 'make dashboard' locally and commit the result."
+            exit 1
+          fi
+
   build:
     runs-on: ubuntu-latest
     steps:

@@ -61,6 +61,38 @@ func (wm *WorktreeManager) pathLock(path string) *sync.Mutex {
 // branchMetaFile is the filename written inside each worktree to record the branch name.
 const branchMetaFile = ".tetora-branch"
 
+// sessionLockFile aliases taskboard.SessionLockFile for use within this package.
+const sessionLockFile = taskboard.SessionLockFile
+
+// sessionWaitPollInterval and sessionWaitMaxDuration control how long Create()
+// waits for an active session to finish before proceeding with stale worktree
+// removal. Declared as vars (not consts) so tests can override them.
+var (
+	sessionWaitPollInterval = 5 * time.Second
+	sessionWaitMaxDuration  = 60 * time.Second
+)
+
+// AcquireSessionLock writes a session lock file inside wtDir containing the
+// current process PID. Returns a release function that removes the file.
+// The lock prevents Create() and Remove() from deleting the worktree while a
+// Claude session is active inside it. The release function is idempotent and
+// safe to call if the directory has already been removed by forceRemove.
+func AcquireSessionLock(wtDir string) func() {
+	lockPath := filepath.Join(wtDir, sessionLockFile)
+	data := fmt.Sprintf("%d\n", os.Getpid())
+	if err := os.WriteFile(lockPath, []byte(data), 0o644); err != nil {
+		log.Debug("worktree: failed to write session lock", "path", lockPath, "error", err)
+	}
+	return func() { os.Remove(lockPath) } //nolint:errcheck
+}
+
+// AcquireSessionLock implements WorktreeManageable. It is a method wrapper
+// around the package-level AcquireSessionLock so WorktreeManager satisfies
+// the interface without duplicating the implementation.
+func (wm *WorktreeManager) AcquireSessionLock(wtDir string) func() {
+	return AcquireSessionLock(wtDir)
+}
+
 // BuildBranchName generates a branch name from the configured convention.
 // Template vars: {type}, {agent}, {description}, {taskId}
 // Default convention: "{type}/{agent}-{description}"
@@ -167,6 +199,24 @@ func (wm *WorktreeManager) Create(repoDir, taskID, branch string) (string, error
 
 	// Remove stale worktree if directory already exists.
 	if _, err := os.Stat(wtDir); err == nil {
+		// Guard: wait for any active session to finish before removing the stale
+		// worktree. Deleting a worktree while a Claude session has its CWD inside
+		// it causes permanent Bash tool failure for that session.
+		if isSessionActive(wtDir) {
+			log.Warn("worktree: stale worktree has active session — waiting before removal",
+				"path", wtDir, "maxWait", sessionWaitMaxDuration)
+			deadline := time.Now().Add(sessionWaitMaxDuration)
+			for time.Now().Before(deadline) {
+				time.Sleep(sessionWaitPollInterval)
+				if !isSessionActive(wtDir) {
+					break
+				}
+			}
+			if isSessionActive(wtDir) {
+				return "", fmt.Errorf("worktree: active session still running in %s after %v; refusing to remove", wtDir, sessionWaitMaxDuration)
+			}
+			log.Info("worktree: stale session finished, proceeding with worktree removal", "path", wtDir)
+		}
 		log.Warn("worktree: removing stale worktree", "path", wtDir)
 		oldBranch := resolveBranch(wtDir)
 		wm.forceRemove(repoDir, wtDir, oldBranch)
@@ -186,6 +236,16 @@ func (wm *WorktreeManager) Create(repoDir, taskID, branch string) (string, error
 	// Write branch metadata so Remove/Merge can find the branch name.
 	writeBranchMeta(wtDir, branch)
 
+	// Write session lock immediately after creation so that a concurrent Create()
+	// call for the same taskID cannot delete this worktree before the caller has
+	// a chance to write its own lock. The caller is responsible for removing this
+	// file when the session ends (typically via os.Remove in a defer).
+	if err := os.WriteFile(filepath.Join(wtDir, sessionLockFile),
+		[]byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644); err != nil {
+		log.Debug("worktree: failed to write session lock after create",
+			"path", wtDir, "error", err)
+	}
+
 	log.Info("worktree: created", "task", taskID, "path", wtDir, "branch", branch, "base", baseBranch)
 	return wtDir, nil
 }
@@ -195,10 +255,22 @@ func (wm *WorktreeManager) Create(repoDir, taskID, branch string) (string, error
 // 2. force cleanup .git/worktrees metadata
 // 3. rm -rf worktree directory
 // 4. git worktree prune
+//
+// Remove refuses to delete a worktree that still has an active Claude session
+// (i.e. the session lock file is present and its PID is alive). Callers must
+// release the session lock (via the function returned by AcquireSessionLock)
+// before calling Remove, or the call will return an error.
 func (wm *WorktreeManager) Remove(repoDir, wtDir string) error {
 	mu := wm.pathLock(wtDir)
 	mu.Lock()
 	defer mu.Unlock()
+
+	// Guard: refuse to delete a worktree whose session lock is still held.
+	// Removing the CWD of a running Claude session permanently breaks the
+	// session's Bash tool. The caller must release its lock before Remove.
+	if isSessionActive(wtDir) {
+		return fmt.Errorf("worktree: active session in %s; release session lock before Remove", wtDir)
+	}
 
 	branch := resolveBranch(wtDir)
 	wm.forceRemove(repoDir, wtDir, branch)
@@ -295,11 +367,17 @@ func (wm *WorktreeManager) Merge(repoDir, wtDir, commitMsg string) (diffSummary 
 	diffSummary, _ = wm.diffStatUnlocked(wtDir, targetBranch, branch)
 
 	// Merge branch into target on the main repo (not the worktree).
-	if out, err := exec.Command("git", "-C", repoDir,
+	if out, mergeErr := exec.Command("git", "-C", repoDir,
 		"merge", "--no-ff", branch, "-m",
-		fmt.Sprintf("Merge %s into %s", branch, targetBranch)).CombinedOutput(); err != nil {
-		return diffSummary, fmt.Errorf("worktree: merge failed: %s: %w",
-			strings.TrimSpace(string(out)), err)
+		fmt.Sprintf("Merge %s into %s", branch, targetBranch)).CombinedOutput(); mergeErr != nil {
+		origErr := fmt.Errorf("worktree: merge failed: %s: %w",
+			strings.TrimSpace(string(out)), mergeErr)
+		if resolved, resolveErr := tryAutoResolveMetaConflict(repoDir); resolved {
+			log.Info("worktree: auto-resolved .tetora-branch conflict", "branch", branch, "task", taskID)
+		} else {
+			_ = resolveErr
+			return diffSummary, origErr
+		}
 	}
 
 	log.Info("worktree: merged", "branch", branch, "into", targetBranch, "task", taskID)
@@ -372,6 +450,15 @@ func (wm *WorktreeManager) Prune(repoDir string, maxAge time.Duration) (int, err
 	removed := 0
 	for _, info := range infos {
 		if info.CreatedAt.Before(cutoff) {
+			// Skip worktrees with a live session — removing them would permanently
+			// break the session's Bash tool. They will be cleaned up on the next
+			// prune cycle once the session completes.
+			if isSessionActive(info.Path) {
+				log.Warn("worktree: skipping prune — active session detected",
+					"path", info.Path,
+					"age", time.Since(info.CreatedAt).Round(time.Minute))
+				continue
+			}
 			log.Info("worktree: pruning expired", "path", info.Path,
 				"age", time.Since(info.CreatedAt).Round(time.Minute))
 			if err := wm.Remove(repoDir, info.Path); err != nil {
@@ -425,10 +512,59 @@ func (wm *WorktreeManager) MergeBranchOnly(repoDir, wtDir string) (diffSummary s
 	if out, mergeErr := exec.Command("git", "-C", repoDir,
 		"merge", "--no-ff", branch, "-m",
 		fmt.Sprintf("Merge %s into %s", branch, targetBranch)).CombinedOutput(); mergeErr != nil {
-		return diffSummary, fmt.Errorf("worktree: merge failed: %s: %w",
+		origErr := fmt.Errorf("worktree: merge failed: %s: %w",
 			strings.TrimSpace(string(out)), mergeErr)
+		if resolved, resolveErr := tryAutoResolveMetaConflict(repoDir); resolved {
+			log.Info("worktree: auto-resolved .tetora-branch conflict (branch-only)", "branch", branch, "task", taskID)
+		} else {
+			_ = resolveErr
+			return diffSummary, origErr
+		}
 	}
 
 	log.Info("worktree: merged (branch-only)", "branch", branch, "into", targetBranch, "task", taskID)
 	return diffSummary, nil
+}
+
+// tryAutoResolveMetaConflict checks if the only merge conflict is .tetora-branch
+// and resolves it by keeping ours (the target branch version).
+// Returns (true, nil) if resolved, (false, err) if conflicts involve other files.
+func tryAutoResolveMetaConflict(repoDir string) (resolved bool, err error) {
+	out, err := exec.Command("git", "-C", repoDir,
+		"diff", "--name-only", "--diff-filter=U").Output()
+	if err != nil {
+		return false, fmt.Errorf("worktree: failed to list conflicted files: %w", err)
+	}
+
+	conflicted := strings.Fields(strings.TrimSpace(string(out)))
+	if len(conflicted) != 1 || conflicted[0] != branchMetaFile {
+		// More than one conflict, or not the meta file — abort and report.
+		abortOut, abortErr := exec.Command("git", "-C", repoDir, "merge", "--abort").CombinedOutput()
+		if abortErr != nil {
+			return false, fmt.Errorf("worktree: merge --abort failed: %s: %w",
+				strings.TrimSpace(string(abortOut)), abortErr)
+		}
+		if len(conflicted) == 0 {
+			return false, fmt.Errorf("worktree: merge conflict with no conflicted files listed")
+		}
+		return false, fmt.Errorf("worktree: unresolvable conflicts in: %s", strings.Join(conflicted, ", "))
+	}
+
+	// Only .tetora-branch is conflicted — resolve by keeping ours.
+	if out, err := exec.Command("git", "-C", repoDir,
+		"checkout", "--ours", branchMetaFile).CombinedOutput(); err != nil {
+		return false, fmt.Errorf("worktree: checkout --ours %s failed: %s: %w",
+			branchMetaFile, strings.TrimSpace(string(out)), err)
+	}
+	if out, err := exec.Command("git", "-C", repoDir,
+		"add", branchMetaFile).CombinedOutput(); err != nil {
+		return false, fmt.Errorf("worktree: git add %s failed: %s: %w",
+			branchMetaFile, strings.TrimSpace(string(out)), err)
+	}
+	if out, err := exec.Command("git", "-C", repoDir,
+		"commit", "--no-edit").CombinedOutput(); err != nil {
+		return false, fmt.Errorf("worktree: commit after meta resolve failed: %s: %w",
+			strings.TrimSpace(string(out)), err)
+	}
+	return true, nil
 }

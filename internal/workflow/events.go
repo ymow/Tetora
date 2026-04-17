@@ -573,10 +573,10 @@ func InitCallbackTable(dbPath string) {
 	if dbPath == "" {
 		return
 	}
-	if _, err := db.Query(dbPath, CallbackTableSQL); err != nil {
+	if err := db.Exec(dbPath, CallbackTableSQL); err != nil {
 		log.Warn("init workflow_callbacks table failed", "error", err)
 	}
-	if _, err := db.Query(dbPath, CallbackStreamTableSQL); err != nil {
+	if err := db.Exec(dbPath, CallbackStreamTableSQL); err != nil {
 		log.Warn("init workflow_callback_stream table failed", "error", err)
 	}
 }
@@ -593,7 +593,7 @@ func RecordPendingCallback(dbPath, key, runID, stepID, mode, authMode, url, body
 		db.Escape(mode), db.Escape(authMode),
 		db.Escape(url), db.Escape(body), db.Escape(timeoutAt),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("record pending callback failed", "error", err, "key", key)
 	}
 }
@@ -662,7 +662,7 @@ func MarkPostSent(dbPath, key string) {
 		`UPDATE workflow_callbacks SET post_sent=1 WHERE key='%s'`,
 		db.Escape(key),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("mark post sent failed", "error", err, "key", key)
 	}
 }
@@ -678,7 +678,7 @@ func MarkCallbackDelivered(dbPath, key string, seq int, result CallbackResult) {
 		seq, db.Escape(result.Body), result.Status, db.Escape(result.ContentType),
 		db.Escape(key),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("mark callback delivered failed", "error", err, "key", key)
 	}
 }
@@ -692,7 +692,7 @@ func UpdateCallbackRunID(dbPath, key, newRunID string) {
 		`UPDATE workflow_callbacks SET run_id='%s' WHERE key='%s'`,
 		db.Escape(newRunID), db.Escape(key),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("update callback run_id failed", "error", err, "key", key)
 	}
 }
@@ -706,7 +706,7 @@ func ResetCallbackRecord(dbPath, key string) {
 		`UPDATE workflow_callbacks SET status='waiting', post_sent=0, seq=0, result_body=NULL, delivered_at=NULL WHERE key='%s'`,
 		db.Escape(key),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("reset callback record failed", "error", err, "key", key)
 	}
 }
@@ -736,7 +736,7 @@ func ClearPendingCallback(dbPath, key string) {
 		`UPDATE workflow_callbacks SET status='completed' WHERE key='%s'`,
 		db.Escape(key),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("clear pending callback failed", "error", err, "key", key)
 	}
 }
@@ -752,7 +752,7 @@ func AppendStreamingCallback(dbPath, key string, seq int, result CallbackResult)
 		db.Escape(key), seq, db.Escape(result.Body),
 		db.Escape(result.ContentType), db.Escape(result.RecvAt),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("append streaming callback failed", "error", err, "key", key, "seq", seq)
 	}
 }
@@ -789,7 +789,7 @@ func CleanupExpiredCallbacks(dbPath string) {
 	// Mark expired waiting callbacks as timeout.
 	sql := `UPDATE workflow_callbacks SET status='timeout'
 		WHERE status='waiting' AND timeout_at != '' AND timeout_at < datetime('now')`
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("cleanup expired callbacks failed", "error", err)
 	}
 
@@ -798,9 +798,333 @@ func CleanupExpiredCallbacks(dbPath string) {
 		SELECT key FROM workflow_callbacks WHERE status IN ('completed','delivered','timeout')
 		AND created_at < datetime('now', '-7 days')
 	)`
-	if _, err := db.Query(dbPath, sql2); err != nil {
+	if err := db.Exec(dbPath, sql2); err != nil {
 		log.Warn("cleanup old streaming records failed", "error", err)
 	}
+
+	// Mark expired waiting human gates as timeout.
+	sql3 := `UPDATE workflow_human_gates SET status='timeout', completed_at=datetime('now')
+		WHERE status='waiting' AND timeout_at != '' AND timeout_at < datetime('now')`
+	if err := db.Exec(dbPath, sql3); err != nil {
+		log.Warn("cleanup expired human gates failed", "error", err)
+	}
+
+	// Delete old completed/rejected/timeout gate history.
+	CleanupExpiredHumanGates(dbPath)
+}
+
+// CleanupExpiredHumanGates deletes completed, rejected, and timeout human gate
+// records whose completed_at is older than 30 days. Waiting records are never deleted.
+func CleanupExpiredHumanGates(dbPath string) {
+	if dbPath == "" {
+		return
+	}
+	sql := `DELETE FROM workflow_human_gates
+		WHERE status IN ('completed', 'rejected', 'timeout')
+		AND completed_at != '' AND completed_at < datetime('now', '-30 days')`
+	if err := db.Exec(dbPath, sql); err != nil {
+		log.Warn("cleanup expired human gates history failed", "error", err)
+	}
+}
+
+// =============================================================================
+// DB helpers — workflow_human_gates table
+// =============================================================================
+
+// HumanGateRecord represents a human gate entry in the DB.
+type HumanGateRecord struct {
+	Key          string
+	RunID        string
+	StepID       string
+	WorkflowName string // name of the workflow that created this gate
+	Subtype      string // "approval", "action", "input"
+	Prompt       string
+	Assignee     string
+	Status       string // "waiting", "completed", "timeout", "rejected"
+	Decision     string // approval: "approved" / "rejected"
+	Response     string // input: human's text response
+	RespondedBy  string            // identity of the human who responded (audit trail)
+	Options      []string          // custom option labels (parsed from JSON)
+	Context      map[string]string // gate card context (parsed from JSON)
+	TimeoutAt    string
+	CreatedAt    string
+	CompletedAt  string
+}
+
+const HumanGateTableSQL = `CREATE TABLE IF NOT EXISTS workflow_human_gates (
+	key TEXT PRIMARY KEY,
+	run_id TEXT NOT NULL,
+	step_id TEXT NOT NULL,
+	workflow_name TEXT NOT NULL DEFAULT '',
+	subtype TEXT NOT NULL,
+	prompt TEXT,
+	assignee TEXT,
+	status TEXT NOT NULL DEFAULT 'waiting',
+	decision TEXT,
+	response TEXT,
+	responded_by TEXT,
+	timeout_at TEXT,
+	created_at TEXT DEFAULT (datetime('now')),
+	completed_at TEXT,
+	options TEXT,
+	context TEXT
+)`
+
+// InitHumanGateTable creates the human gates table if it doesn't exist.
+func InitHumanGateTable(dbPath string) {
+	if dbPath == "" {
+		return
+	}
+	// Migration: add responded_by column if missing (existing installations).
+	if err := db.Exec(dbPath, `ALTER TABLE workflow_human_gates ADD COLUMN responded_by TEXT DEFAULT '';`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") && !strings.Contains(err.Error(), "no such table") {
+			log.Warn("workflow_human_gates migration failed", "error", err)
+		}
+	}
+	// Migration: add workflow_name column if missing.
+	if err := db.Exec(dbPath, `ALTER TABLE workflow_human_gates ADD COLUMN workflow_name TEXT NOT NULL DEFAULT '';`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") && !strings.Contains(err.Error(), "no such table") {
+			log.Warn("workflow_human_gates migration (workflow_name) failed", "error", err)
+		}
+	}
+	// Migration: add options column if missing.
+	if err := db.Exec(dbPath, `ALTER TABLE workflow_human_gates ADD COLUMN options TEXT DEFAULT '';`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") && !strings.Contains(err.Error(), "no such table") {
+			log.Warn("workflow_human_gates migration (options) failed", "error", err)
+		}
+	}
+	// Migration: add context column if missing.
+	if err := db.Exec(dbPath, `ALTER TABLE workflow_human_gates ADD COLUMN context TEXT DEFAULT '';`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") && !strings.Contains(err.Error(), "no such table") {
+			log.Warn("workflow_human_gates migration (context) failed", "error", err)
+		}
+	}
+	if err := db.Exec(dbPath, HumanGateTableSQL); err != nil {
+		log.Warn("init workflow_human_gates table failed", "error", err)
+	}
+}
+
+// RecordHumanGate inserts a new human gate record.
+func RecordHumanGate(dbPath, key, runID, stepID, workflowName, subtype, prompt, assignee, timeoutAt, options, context string) {
+	if dbPath == "" {
+		return
+	}
+	sql := fmt.Sprintf(
+		`INSERT OR REPLACE INTO workflow_human_gates (key, run_id, step_id, workflow_name, subtype, prompt, assignee, status, timeout_at, created_at, options, context)
+		 VALUES ('%s','%s','%s','%s','%s','%s','%s','waiting','%s',datetime('now'),'%s','%s')`,
+		db.Escape(key), db.Escape(runID), db.Escape(stepID), db.Escape(workflowName),
+		db.Escape(subtype), db.Escape(prompt), db.Escape(assignee),
+		db.Escape(timeoutAt), db.Escape(options), db.Escape(context),
+	)
+	if err := db.Exec(dbPath, sql); err != nil {
+		log.Warn("record human gate failed", "error", err, "key", key)
+	}
+}
+
+// humanGateSelectCols is the shared SELECT column list for workflow_human_gates queries.
+// Keep in sync with parseHumanGateRecord field mappings.
+const humanGateSelectCols = `key, run_id, step_id, COALESCE(workflow_name,'') as workflow_name, subtype, prompt, assignee, status, COALESCE(decision,'') as decision, COALESCE(response,'') as response, COALESCE(responded_by,'') as responded_by, COALESCE(timeout_at,'') as timeout_at, created_at, COALESCE(completed_at,'') as completed_at, COALESCE(options,'') as options, COALESCE(context,'') as context`
+
+// QueryHumanGate returns a human gate record by key.
+func QueryHumanGate(dbPath, key string) *HumanGateRecord {
+	if dbPath == "" {
+		return nil
+	}
+	sql := fmt.Sprintf(
+		`SELECT `+humanGateSelectCols+` FROM workflow_human_gates WHERE key='%s' LIMIT 1`,
+		db.Escape(key),
+	)
+	rows, err := db.Query(dbPath, sql)
+	if err != nil || len(rows) == 0 {
+		return nil
+	}
+	return parseHumanGateRecord(rows[0])
+}
+
+// QueryPendingHumanGatesByRun returns all waiting human gates for a run.
+func QueryPendingHumanGatesByRun(dbPath, runID string) []*HumanGateRecord {
+	if dbPath == "" {
+		return nil
+	}
+	sql := fmt.Sprintf(
+		`SELECT `+humanGateSelectCols+` FROM workflow_human_gates WHERE run_id='%s' AND status='waiting'`,
+		db.Escape(runID),
+	)
+	rows, err := db.Query(dbPath, sql)
+	if err != nil {
+		return nil
+	}
+	var records []*HumanGateRecord
+	for _, row := range rows {
+		records = append(records, parseHumanGateRecord(row))
+	}
+	return records
+}
+
+// QueryAllPendingHumanGates returns all human gates matching the given status (e.g. "waiting").
+// Pass an empty status to return all records regardless of status.
+func QueryAllPendingHumanGates(dbPath, status string) []*HumanGateRecord {
+	if dbPath == "" {
+		return nil
+	}
+	var where string
+	if status != "" {
+		where = fmt.Sprintf(" WHERE status='%s'", db.Escape(status))
+	}
+	sql := fmt.Sprintf(
+		`SELECT `+humanGateSelectCols+` FROM workflow_human_gates%s ORDER BY created_at DESC`,
+		where,
+	)
+	rows, err := db.Query(dbPath, sql)
+	if err != nil {
+		return nil
+	}
+	var records []*HumanGateRecord
+	for _, row := range rows {
+		records = append(records, parseHumanGateRecord(row))
+	}
+	return records
+}
+
+// CountPendingHumanGates returns the number of human gates with status='waiting'.
+func CountPendingHumanGates(dbPath string) int {
+	if dbPath == "" {
+		return 0
+	}
+	rows, err := db.Query(dbPath, `SELECT COUNT(*) as count FROM workflow_human_gates WHERE status='waiting'`)
+	if err != nil || len(rows) == 0 {
+		return 0
+	}
+	switch v := rows[0]["count"].(type) {
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		n, _ := strconv.Atoi(fmt.Sprintf("%v", rows[0]["count"]))
+		return n
+	}
+}
+
+// CompleteHumanGate marks a human gate as completed with decision and response.
+func CompleteHumanGate(dbPath, key, decision, response, respondedBy string) {
+	if dbPath == "" {
+		return
+	}
+	sql := fmt.Sprintf(
+		`UPDATE workflow_human_gates SET status='completed', decision='%s', response='%s', responded_by='%s', completed_at=datetime('now')
+		 WHERE key='%s' AND status='waiting'`,
+		db.Escape(decision), db.Escape(response), db.Escape(respondedBy), db.Escape(key),
+	)
+	if err := db.Exec(dbPath, sql); err != nil {
+		log.Warn("complete human gate failed", "error", err, "key", key)
+	}
+}
+
+// RejectHumanGate marks a human gate as rejected.
+func RejectHumanGate(dbPath, key, reason, respondedBy string) {
+	if dbPath == "" {
+		return
+	}
+	sql := fmt.Sprintf(
+		`UPDATE workflow_human_gates SET status='rejected', decision='rejected', response='%s', responded_by='%s', completed_at=datetime('now')
+		 WHERE key='%s' AND status='waiting'`,
+		db.Escape(reason), db.Escape(respondedBy), db.Escape(key),
+	)
+	if err := db.Exec(dbPath, sql); err != nil {
+		log.Warn("reject human gate failed", "error", err, "key", key)
+	}
+}
+
+// TimeoutHumanGate marks a human gate as timed out.
+func TimeoutHumanGate(dbPath, key string) {
+	if dbPath == "" {
+		return
+	}
+	sql := fmt.Sprintf(
+		`UPDATE workflow_human_gates SET status='timeout', completed_at=datetime('now')
+		 WHERE key='%s' AND status='waiting'`,
+		db.Escape(key),
+	)
+	if err := db.Exec(dbPath, sql); err != nil {
+		log.Warn("timeout human gate failed", "error", err, "key", key)
+	}
+}
+
+// CancelHumanGate marks a human gate as cancelled (workflow context cancelled).
+func CancelHumanGate(dbPath, key string) {
+	if dbPath == "" {
+		return
+	}
+	sql := fmt.Sprintf(
+		`UPDATE workflow_human_gates SET status='cancelled', completed_at=datetime('now')
+		 WHERE key='%s' AND status='waiting'`,
+		db.Escape(key),
+	)
+	if err := db.Exec(dbPath, sql); err != nil {
+		log.Warn("cancel human gate failed", "error", err, "key", key)
+	}
+}
+
+// ResetHumanGate resets a human gate for retry (back to waiting).
+func ResetHumanGate(dbPath, key string) {
+	if dbPath == "" {
+		return
+	}
+	sql := fmt.Sprintf(
+		`UPDATE workflow_human_gates SET status='waiting', decision='', response='', completed_at='', timeout_at=''
+		 WHERE key='%s'`,
+		db.Escape(key),
+	)
+	if err := db.Exec(dbPath, sql); err != nil {
+		log.Warn("reset human gate failed", "error", err, "key", key)
+	}
+}
+
+// UpdateHumanGateRunID updates the run_id for a human gate (used during recovery).
+func UpdateHumanGateRunID(dbPath, key, newRunID string) {
+	if dbPath == "" {
+		return
+	}
+	sql := fmt.Sprintf(
+		`UPDATE workflow_human_gates SET run_id='%s' WHERE key='%s'`,
+		db.Escape(newRunID), db.Escape(key),
+	)
+	if err := db.Exec(dbPath, sql); err != nil {
+		log.Warn("update human gate run_id failed", "error", err, "key", key)
+	}
+}
+
+func parseHumanGateRecord(row map[string]any) *HumanGateRecord {
+	r := &HumanGateRecord{
+		Key:          fmt.Sprintf("%v", row["key"]),
+		RunID:        fmt.Sprintf("%v", row["run_id"]),
+		StepID:       fmt.Sprintf("%v", row["step_id"]),
+		WorkflowName: fmt.Sprintf("%v", row["workflow_name"]),
+		Subtype:      fmt.Sprintf("%v", row["subtype"]),
+		Prompt:       fmt.Sprintf("%v", row["prompt"]),
+		Assignee:     fmt.Sprintf("%v", row["assignee"]),
+		Status:       fmt.Sprintf("%v", row["status"]),
+		Decision:     fmt.Sprintf("%v", row["decision"]),
+		Response:     fmt.Sprintf("%v", row["response"]),
+		RespondedBy:  fmt.Sprintf("%v", row["responded_by"]),
+		TimeoutAt:    fmt.Sprintf("%v", row["timeout_at"]),
+		CreatedAt:    fmt.Sprintf("%v", row["created_at"]),
+		CompletedAt:  fmt.Sprintf("%v", row["completed_at"]),
+	}
+	// parse options JSON array
+	if opts, ok := row["options"]; ok {
+		if s := fmt.Sprintf("%v", opts); s != "" && s != "<nil>" {
+			_ = json.Unmarshal([]byte(s), &r.Options)
+		}
+	}
+	// parse context JSON object
+	if ctxVal, ok := row["context"]; ok {
+		if s := fmt.Sprintf("%v", ctxVal); s != "" && s != "<nil>" {
+			_ = json.Unmarshal([]byte(s), &r.Context)
+		}
+	}
+	return r
 }
 
 // =============================================================================
@@ -829,7 +1153,7 @@ func InitTriggerRunsTable(dbPath string) {
 			log.Warn("workflow_trigger_runs migration failed", "error", err)
 		}
 	}
-	if _, err := db.Query(dbPath, TriggerRunsTableSQL); err != nil {
+	if err := db.Exec(dbPath, TriggerRunsTableSQL); err != nil {
 		log.Warn("init workflow_trigger_runs table failed", "error", err)
 	}
 }
@@ -850,7 +1174,7 @@ func RecordTriggerRun(dbPath, triggerName, workflowName, runID, status, startedA
 		db.Escape(finishedAt),
 		db.Escape(errMsg),
 	)
-	if _, err := db.Query(dbPath, sql); err != nil {
+	if err := db.Exec(dbPath, sql); err != nil {
 		log.Warn("record trigger run failed", "error", err)
 	}
 }

@@ -21,9 +21,10 @@ type Deps struct {
 	ResolveWorkspace       func(cfg *config.Config, agentName string) config.WorkspaceConfig
 	BuildReflectionContext func(dbPath, role string, limit int) string
 	LoadWritingStyle       func(cfg *config.Config) string
-	BuildSkillsPrompt      func(cfg *config.Config, task dispatch.Task, complexity classify.Complexity) string
-	InjectWorkspaceContent func(cfg *config.Config, task *dispatch.Task, agentName string)
-	EstimateDirSize        func(dir string) int
+	BuildSkillsPrompt          func(cfg *config.Config, task dispatch.Task, complexity classify.Complexity) string
+	CollectSkillAllowedTools   func(cfg *config.Config, task dispatch.Task) []string
+	InjectWorkspaceContent     func(cfg *config.Config, task *dispatch.Task, agentName string)
+	EstimateDirSize            func(dir string) int
 }
 
 // BuildTieredPrompt constructs a system prompt based on request complexity.
@@ -77,6 +78,21 @@ func BuildTieredPrompt(cfg *config.Config, task *dispatch.Task, agentName string
 			task.Workdir = ws.Dir
 		}
 		task.AddDirs = append(task.AddDirs, cfg.BaseDir)
+
+		// Inject workspace rules into system prompt for API providers that need
+		// explicit path guidance. Terminal/CLI providers (claude-code, codex-cli,
+		// qwen-cli, terminal-*) manage their own file context and do not need
+		// workspace rules injected into the prompt.
+		if needsWorkspaceRuleInjection(providerType) {
+			workspaceRule := buildWorkspaceRule(cfg, agentName)
+			if workspaceRule != "" {
+				if task.SystemPrompt != "" {
+					task.SystemPrompt += "\n\n" + workspaceRule
+				} else {
+					task.SystemPrompt = workspaceRule
+				}
+			}
+		}
 	}
 
 	// --- 3. Agent config overrides (always) ---
@@ -183,6 +199,24 @@ func BuildTieredPrompt(cfg *config.Config, task *dispatch.Task, agentName string
 		task.SystemPrompt += skillsPrompt
 	}
 
+	// --- 8.6. Skill extraction instruction (Standard/Complex only) ---
+	// Encourage agents to identify reusable procedures and extract them as skills.
+	if complexity != classify.Simple {
+		task.SystemPrompt += "\n\n## Skill Extraction\n" +
+			"After completing this task, if you identified a reusable procedure or workflow " +
+			"that could benefit future tasks, extract it as a skill using the create_skill tool. " +
+			"Write the skill definition to `~/.tetora/workspace/skills/learned/{skill-name}/SKILL.md` " +
+			"with YAML frontmatter (name, description, matcher keywords). " +
+			"Learned skills are reviewed before promotion to the active skill catalog."
+	}
+
+	// --- 8.7. Skill-derived AllowedTools ---
+	if deps.CollectSkillAllowedTools != nil {
+		if collected := deps.CollectSkillAllowedTools(cfg, *task); len(collected) > 0 {
+			task.AllowedTools = mergeDedup(task.AllowedTools, collected)
+		}
+	}
+
 	// --- 9. Workspace Content Injection ---
 	// Simple: skip entirely. Standard/Complex: call InjectWorkspaceContent.
 	if complexity != classify.Simple {
@@ -267,4 +301,69 @@ func TruncateToChars(s string, maxChars int) string {
 		cut = cut[:idx]
 	}
 	return cut + "\n\n[... truncated ...]"
+}
+
+// mergeDedup appends extra items to base, skipping duplicates.
+func mergeDedup(base, extra []string) []string {
+	seen := make(map[string]bool, len(base))
+	for _, s := range base {
+		seen[s] = true
+	}
+	result := append([]string{}, base...)
+	for _, s := range extra {
+		if !seen[s] {
+			seen[s] = true
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+// needsWorkspaceRuleInjection returns true if the provider type requires workspace
+// rules to be injected into the system prompt.
+//
+// API providers (anthropic, openai-compatible, google, groq) need explicit path
+// guidance because they don't manage their own file context.
+//
+// Terminal/CLI providers (claude-code, codex-cli, qwen-cli, terminal-*) run as
+// subprocesses and manage their own file context — they don't need rules injected.
+func needsWorkspaceRuleInjection(providerType string) bool {
+	// Terminal/CLI providers that manage their own file context.
+	terminalProviders := map[string]bool{
+		"claude-code": true,
+		"codex-cli":   true,
+		"qwen-cli":    true,
+	}
+
+	if terminalProviders[providerType] {
+		return false
+	}
+
+	// Any provider starting with "terminal-" is a CLI subprocess provider.
+	if strings.HasPrefix(providerType, "terminal-") {
+		return false
+	}
+
+	// All other providers are API providers that need workspace rules.
+	return true
+}
+
+// buildWorkspaceRule generates a workspace rule for the given agent.
+// Rule: "Save outputs to ~/.tetora/workspace/agents/{name}/outputs/"
+func buildWorkspaceRule(cfg *config.Config, agentName string) string {
+	if cfg.AgentOutputBase == "" {
+		return ""
+	}
+
+	outputDir := filepath.Join(cfg.AgentOutputBase, agentName, "outputs")
+
+	return fmt.Sprintf(`## Working Directory Rules
+1. **Code Edits**: Modify files in-place within the project structure.
+2. **New Artifacts**: Save all generated documents (reports, docs, plans, analysis) to:
+   **%s**
+3. **Cross-Project Review**: When reviewing external projects:
+   - READ from external directories is allowed.
+   - WRITE all notes, reviews, and reports to your output directory above.
+   - NEVER create loose files in external project directories.
+4. **NEVER** create temporary files in the project root directory.`, outputDir)
 }

@@ -353,9 +353,11 @@ function renderBoard() {
       if (t.costUsd > 0) badges += '<span class="kanban-badge kanban-badge-cost">$' + t.costUsd.toFixed(2) + '</span>';
       if (t.model) badges += '<span class="kanban-badge kanban-badge-model">' + esc(t.model) + '</span>';
       if (t.workflow && t.workflow !== 'none') badges += '<span class="kanban-badge kanban-badge-workflow">' + esc(t.workflow) + '</span>';
+      var shortId = esc(t.id.replace('task-', '').slice(-8));
       return '<div class="kanban-card" draggable="true" data-task-id="' + esc(t.id) + '" onclick="openTaskDetail(\'' + esc(t.id) + '\')" ondragstart="onCardDragStart(event)" ondragend="onCardDragEnd(event)">' +
         '<div class="kanban-card-title">' + esc(t.title) + '</div>' +
         (badges ? '<div class="kanban-card-badges">' + badges + '</div>' : '') +
+        '<div class="kanban-card-id" title="' + esc(t.id) + '">#' + shortId + '</div>' +
       '</div>';
     }).join('');
     return '<div class="kanban-column" data-status="' + status + '" ondragover="onColumnDragOver(event)" ondragleave="onColumnDragLeave(event)" ondrop="onColumnDrop(event)">' +
@@ -429,7 +431,16 @@ function filterBoard() {
 // --- Task Detail Modal ---
 
 async function openTaskDetail(taskId) {
+  history.pushState({taskId: taskId}, '', '#task/' + taskId);
+  await _showTaskDetail(taskId);
+}
+
+// Pure display function — no history manipulation.
+// Use this from popstate and initial hash loading.
+async function _showTaskDetail(taskId) {
   document.getElementById('td-id').value = taskId;
+  var idDisplay = document.getElementById('td-id-display');
+  if (idDisplay) idDisplay.textContent = taskId;
   try {
     var task = await fetchJSON('/api/tasks/' + taskId);
     document.getElementById('task-detail-title').textContent = task.title || 'Task Detail';
@@ -529,6 +540,9 @@ async function openTaskDetail(taskId) {
 function closeTaskDetail() {
   if (taskWfSSE) { taskWfSSE.close(); taskWfSSE = null; }
   document.getElementById('task-detail-modal').classList.remove('open');
+  if (location.hash.startsWith('#task/')) {
+    history.pushState(null, '', location.pathname + location.search);
+  }
 }
 
 async function deleteTask() {
@@ -1328,9 +1342,11 @@ async function loadTaskWfProgress(task) {
     var run = data.run || data;
     renderTaskWfProgress(run);
 
-    if (run.status === 'running') {
+    if (run.status === 'running' || run.status === 'waiting') {
       subscribeTaskWfSSE(runId);
     }
+    // Load inline human gate cards for this run.
+    renderInlineTaskGates(runId);
   } catch(e) {
     container.style.display = 'none';
   }
@@ -1422,6 +1438,12 @@ function subscribeTaskWfSSE(runId) {
       }
       if (ev.type === 'step_completed' && ev.data) {
         updateTaskWfStep(ev.data.stepId, ev.data.status, ev.data.durationMs);
+      }
+      if (ev.type === 'human_gate_waiting' && ev.data) {
+        addInlineHgCard(ev.data);
+      }
+      if (ev.type === 'human_gate_responded' && ev.data) {
+        removeInlineHgCard(ev.data.hgKey);
       }
       if (ev.type === 'workflow_completed') {
         if (taskWfSSE) { taskWfSSE.close(); taskWfSSE = null; }
@@ -1515,4 +1537,304 @@ async function retryTaskWorkflowFresh() {
     toast('Reset failed: ' + (e.message || e));
   }
 }
+
+// ============================================================
+// Human Gates — "Waiting for You" panel
+// ============================================================
+
+var hgPollTimer = null;
+
+function startHumanGatePolling() {
+  refreshHumanGates();
+  if (hgPollTimer) clearInterval(hgPollTimer);
+  hgPollTimer = setInterval(refreshHumanGates, 30000);
+}
+
+async function refreshHumanGates() {
+  try {
+    var gates = await fetchJSON('/api/human-gates?status=waiting');
+    var list = Array.isArray(gates) ? gates : [];
+    renderHumanGatesPanel(list, 'human-gates-panel', 'human-gates-list', 'hg-panel-badge');
+    renderHumanGatesPanel(list, 'human-gates-panel-tasks', 'human-gates-list-tasks', 'hg-panel-badge-tasks');
+    updateHumanGatesBadge(list.length);
+  } catch(e) {}
+}
+
+function renderHumanGatesPanel(gates, panelId, listId, badgeId) {
+  var panel = document.getElementById(panelId);
+  var list = document.getElementById(listId);
+  var badge = document.getElementById(badgeId);
+  if (!panel || !list) return;
+  if (badge) badge.textContent = gates.length;
+  if (gates.length === 0) {
+    panel.style.display = 'none';
+    return;
+  }
+  var sorted = gates.slice().sort(function(a, b) {
+    return (a.createdAt || '').localeCompare(b.createdAt || '');
+  });
+  panel.style.display = '';
+  list.innerHTML = sorted.map(function(g) { return buildHgCardHtml(g, 'hg-dash-card-'); }).join('');
+}
+
+function buildHgCardHtml(hg, cardPrefix) {
+  var key = hg.key || '';
+  var subtype = hg.subtype || 'approval';
+  var prompt = hg.prompt || '';
+  var workflowName = hg.workflowName || '';
+  var stepId = hg.stepId || '';
+  var createdAt = hg.createdAt || '';
+  var prefix = cardPrefix || 'hg-dash-card-';
+
+  var icons = { approval: '&#x1F510;', action: '&#x2705;', input: '&#x270F;&#xFE0F;' };
+  var icon = icons[subtype] || '&#x23F3;';
+  var waitTime = hgWaitTime(createdAt);
+  var inputId = prefix + escAttr(key) + '-input';
+
+  var actionsHtml = '';
+  if (subtype === 'approval') {
+    actionsHtml =
+      '<div class="hg-comment-row"><textarea class="hg-comment" id="' + inputId + '" placeholder="Comment (optional)..." rows="2"></textarea></div>' +
+      '<div class="hg-btn-row">' +
+      '<button class="btn btn-primary hg-btn-approve" onclick="hgApprove(\'' + escAttr(key) + '\',\'' + escAttr(prefix) + '\')">Approve</button>' +
+      ' <button class="btn hg-btn-reject" onclick="hgReject(\'' + escAttr(key) + '\',\'' + escAttr(prefix) + '\')">Reject</button>' +
+      '</div>';
+  } else if (subtype === 'action') {
+    actionsHtml =
+      '<div class="hg-comment-row"><textarea class="hg-comment" id="' + inputId + '" placeholder="Note (optional)..." rows="2"></textarea></div>' +
+      '<div class="hg-btn-row">' +
+      '<button class="btn btn-primary hg-btn-done" onclick="hgComplete(\'' + escAttr(key) + '\',\'' + escAttr(prefix) + '\')">Mark Done</button>' +
+      '</div>';
+  } else {
+    actionsHtml =
+      '<div class="hg-comment-row"><input class="hg-input" id="' + inputId + '" type="text" placeholder="Your response..."></div>' +
+      '<div class="hg-btn-row">' +
+      '<button class="btn btn-primary hg-btn-submit" onclick="hgSubmit(\'' + escAttr(key) + '\',\'' + escAttr(prefix) + '\')">Submit</button>' +
+      '</div>';
+  }
+
+  return '<div class="hg-card" id="' + escAttr(prefix) + escAttr(key) + '">' +
+    '<div class="hg-card-header">' +
+    '<span class="hg-icon">' + icon + '</span>' +
+    '<div class="hg-meta">' +
+    '<strong class="hg-wf-name">' + esc(workflowName || stepId) + '</strong>' +
+    (stepId && workflowName ? '<span class="hg-step-id">' + esc(stepId) + '</span>' : '') +
+    '</div>' +
+    '<span class="badge badge-warn hg-subtype-badge">' + esc(subtype) + '</span>' +
+    (waitTime ? '<span class="hg-wait-time">' + esc(waitTime) + '</span>' : '') +
+    '</div>' +
+    (prompt ? '<p class="hg-prompt">' + esc(prompt) + '</p>' : '') +
+    '<div class="hg-actions">' + actionsHtml + '</div>' +
+    '</div>';
+}
+
+function hgWaitTime(createdAt) {
+  if (!createdAt) return '';
+  var created = new Date(createdAt);
+  if (isNaN(created.getTime())) return '';
+  var diffMs = Date.now() - created.getTime();
+  if (diffMs < 60000) return Math.floor(diffMs / 1000) + 's ago';
+  if (diffMs < 3600000) return Math.floor(diffMs / 60000) + 'm ago';
+  if (diffMs < 86400000) return Math.floor(diffMs / 3600000) + 'h ago';
+  return Math.floor(diffMs / 86400000) + 'd ago';
+}
+
+function updateHumanGatesBadge(count) {
+  var navBadge = document.getElementById('hg-nav-badge');
+  if (navBadge) {
+    navBadge.textContent = count;
+    navBadge.style.display = count > 0 ? '' : 'none';
+  }
+}
+
+function hgGetInputVal(key, prefix) {
+  var inputId = (prefix || 'hg-dash-card-') + key + '-input';
+  var el = document.getElementById(inputId);
+  return el ? el.value : '';
+}
+
+function hgApprove(key, prefix)  { hgRespond(key, 'approve',  hgGetInputVal(key, prefix), prefix); }
+function hgReject(key, prefix)   { hgRespond(key, 'reject',   hgGetInputVal(key, prefix), prefix); }
+function hgComplete(key, prefix) { hgRespond(key, 'complete', hgGetInputVal(key, prefix), prefix); }
+function hgSubmit(key, prefix) {
+  var val = hgGetInputVal(key, prefix);
+  if (!val.trim()) { toast('Please enter a response'); return; }
+  hgRespond(key, 'submit', val, prefix);
+}
+
+async function hgRespond(key, action, response, prefix) {
+  var cardId = (prefix || 'hg-dash-card-') + key;
+  var card = document.getElementById(cardId);
+  if (card) {
+    card.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
+    card.style.opacity = '0.5';
+  }
+  try {
+    await fetchJSON('/api/human-gates/' + encodeURIComponent(key) + '/respond', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: action, response: response, respondedBy: 'takuma' }),
+    });
+    if (card) card.remove();
+    refreshHumanGates();
+    removeInlineHgCard(key);
+    toast('Gate responded: ' + action);
+  } catch(e) {
+    toast('Error: ' + (e.message || e));
+    if (card) {
+      card.querySelectorAll('button').forEach(function(b) { b.disabled = false; });
+      card.style.opacity = '';
+    }
+  }
+}
+
+// --- Inline gate cards in task detail modal ---
+
+async function renderInlineTaskGates(runId) {
+  var container = document.getElementById('td-hg-inline');
+  if (!container) return;
+  try {
+    var [waitingGates, rejectedGates] = await Promise.all([
+      fetchJSON('/api/human-gates?status=waiting'),
+      fetchJSON('/api/human-gates?status=rejected')
+    ]);
+    var allGates = (Array.isArray(waitingGates) ? waitingGates : []).concat(Array.isArray(rejectedGates) ? rejectedGates : []);
+    var runGates = allGates.filter(function(g) { return g.runId === runId; });
+    if (runGates.length === 0) {
+      container.style.display = 'none';
+      return;
+    }
+    container.style.display = '';
+    container.innerHTML =
+      '<div style="font-size:11px;color:#fbbf24;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">&#9203; Human Gate</div>' +
+      runGates.map(buildInlineHgCardHtml).join('');
+  } catch(e) {
+    container.style.display = 'none';
+  }
+}
+
+function buildInlineHgCardHtml(hg) {
+  var key = hg.key || '';
+  var subtype = hg.subtype || 'approval';
+  var prompt = hg.prompt || '';
+  var stepId = hg.stepId || '';
+  var status = hg.status || 'waiting';
+  var inputId = 'hg-inline-' + escAttr(key) + '-input';
+
+  var actionsHtml = '';
+  if (status === 'rejected') {
+    actionsHtml =
+      '<span class="badge badge-err" style="font-size:9px;margin-right:6px">rejected</span>' +
+      '<button class="gate-retry-btn" data-key="' + escAttr(key) + '" style="font-size:11px;padding:2px 8px;border:1px solid #fbbf24;background:transparent;color:#fbbf24;border-radius:4px;cursor:pointer">Retry</button>';
+  } else if (subtype === 'approval') {
+    actionsHtml =
+      '<textarea class="hg-comment" id="' + inputId + '" placeholder="Comment (optional)..." rows="1" style="font-size:11px;margin-bottom:4px;width:100%;box-sizing:border-box"></textarea>' +
+      '<button class="btn btn-primary" style="font-size:11px;padding:2px 8px" onclick="hgInlineApprove(\'' + escAttr(key) + '\')">Approve</button>' +
+      ' <button class="btn" style="font-size:11px;padding:2px 8px;border-color:var(--red);color:var(--red)" onclick="hgInlineReject(\'' + escAttr(key) + '\')">Reject</button>';
+  } else if (subtype === 'action') {
+    actionsHtml =
+      '<textarea class="hg-comment" id="' + inputId + '" placeholder="Note (optional)..." rows="1" style="font-size:11px;margin-bottom:4px;width:100%;box-sizing:border-box"></textarea>' +
+      '<button class="btn btn-primary" style="font-size:11px;padding:2px 8px" onclick="hgInlineComplete(\'' + escAttr(key) + '\')">Mark Done</button>';
+  } else {
+    actionsHtml =
+      '<input type="text" id="' + inputId + '" placeholder="Your response..." style="font-size:11px;margin-bottom:4px;width:100%;box-sizing:border-box">' +
+      '<button class="btn btn-primary" style="font-size:11px;padding:2px 8px" onclick="hgInlineSubmit(\'' + escAttr(key) + '\')">Submit</button>';
+  }
+
+  var badgeCls = status === 'rejected' ? 'badge-err' : 'badge-warn';
+  return '<div class="hg-inline-card" id="hg-inline-card-' + escAttr(key) + '">' +
+    '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">' +
+    '<span style="font-size:11px;font-weight:600">' + esc(stepId) + '</span>' +
+    '<span class="badge ' + badgeCls + '" style="font-size:9px">' + esc(subtype) + '</span>' +
+    '</div>' +
+    (prompt ? '<div style="font-size:12px;margin-bottom:6px;color:var(--text)">' + esc(prompt) + '</div>' : '') +
+    actionsHtml +
+    '</div>';
+}
+
+function addInlineHgCard(data) {
+  var container = document.getElementById('td-hg-inline');
+  if (!container) return;
+  var key = data.hgKey || data.key || '';
+  if (!key || document.getElementById('hg-inline-card-' + key)) return;
+  container.style.display = '';
+  if (!container.querySelector('.hg-inline-card')) {
+    container.innerHTML =
+      '<div style="font-size:11px;color:#fbbf24;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">&#9203; Human Gate</div>';
+  }
+  var div = document.createElement('div');
+  div.innerHTML = buildInlineHgCardHtml({
+    key: key, hgKey: key,
+    stepId: data.stepId, subtype: data.subtype, prompt: data.prompt,
+  });
+  container.appendChild(div.firstChild);
+}
+
+function removeInlineHgCard(key) {
+  var card = document.getElementById('hg-inline-card-' + key);
+  if (card) card.remove();
+  var container = document.getElementById('td-hg-inline');
+  if (container && !container.querySelector('.hg-inline-card')) {
+    container.style.display = 'none';
+  }
+}
+
+function hgInlineGetVal(key) {
+  var el = document.getElementById('hg-inline-' + key + '-input');
+  return el ? el.value : '';
+}
+
+function hgInlineApprove(key)  { hgInlineRespond(key, 'approve',  hgInlineGetVal(key)); }
+function hgInlineReject(key)   { hgInlineRespond(key, 'reject',   hgInlineGetVal(key)); }
+function hgInlineComplete(key) { hgInlineRespond(key, 'complete', hgInlineGetVal(key)); }
+function hgInlineSubmit(key) {
+  var val = hgInlineGetVal(key);
+  if (!val.trim()) { toast('Please enter a response'); return; }
+  hgInlineRespond(key, 'submit', val);
+}
+
+async function hgInlineRespond(key, action, response) {
+  var card = document.getElementById('hg-inline-card-' + key);
+  if (card) {
+    card.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
+    card.style.opacity = '0.5';
+  }
+  try {
+    await fetchJSON('/api/human-gates/' + encodeURIComponent(key) + '/respond', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: action, response: response, respondedBy: 'takuma' }),
+    });
+    removeInlineHgCard(key);
+    refreshHumanGates();
+    toast('Gate responded: ' + action);
+  } catch(e) {
+    toast('Error: ' + (e.message || e));
+    if (card) {
+      card.querySelectorAll('button').forEach(function(b) { b.disabled = false; });
+      card.style.opacity = '';
+    }
+  }
+}
+// ============================================================
+// End Human Gates
+// ============================================================
+
+// --- Task URL hash routing ---
+// Opens task detail when URL contains #task/{id}, supports browser back/forward.
+window.addEventListener('popstate', function(e) {
+  if (e.state && e.state.taskId) {
+    _showTaskDetail(e.state.taskId); // pure display — no pushState
+  } else {
+    document.getElementById('task-detail-modal').classList.remove('open');
+  }
+});
+
+(function initTaskHash() {
+  var hash = location.hash;
+  if (hash && hash.startsWith('#task/')) {
+    var taskId = hash.slice(6);
+    if (taskId) _showTaskDetail(taskId); // URL already set, just show
+  }
+})();
 

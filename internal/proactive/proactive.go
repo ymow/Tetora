@@ -722,30 +722,34 @@ func (e *Engine) deliverDiscord(rule config.ProactiveRule, content string) error
 }
 
 // saveReport persists a proactive report to the workspace/reports/ directory.
-// Files are saved as {date}/{rule-name}.md with latest always at {rule-name}-latest.md.
+// Files are saved as {date}/{rule-name}-{HHMM}.md with latest always at {rule-name}-latest.md.
+// A "triggered:" header is prepended so readers can determine when the alert fired
+// without relying on filesystem mtime (which becomes stale when files persist across days).
 func (e *Engine) saveReport(ruleName, content string) {
+	now := time.Now()
 	reportsDir := filepath.Join(e.cfg.WorkspaceDir, "reports")
-	dateDir := filepath.Join(reportsDir, time.Now().Format("2006-01-02"))
+	dateDir := filepath.Join(reportsDir, now.Format("2006-01-02"))
 
 	if err := os.MkdirAll(dateDir, 0o755); err != nil {
 		log.Error("saveReport: mkdir failed", "err", err)
 		return
 	}
 
-	ts := time.Now().Format("1504")
-	filename := fmt.Sprintf("%s-%s.md", ruleName, ts)
+	timestampedContent := fmt.Sprintf("triggered: %s\n\n%s", now.Format(time.RFC3339), content)
+
+	filename := fmt.Sprintf("%s-%s.md", ruleName, now.Format("1504"))
 
 	// Save dated report.
 	dated := filepath.Join(dateDir, filename)
-	if err := os.WriteFile(dated, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(dated, []byte(timestampedContent), 0o644); err != nil {
 		log.Error("saveReport: write dated failed", "err", err)
 		return
 	}
 
-	// Save latest symlink/file for easy agent access.
+	// Save latest file for easy agent access.
 	latest := filepath.Join(reportsDir, ruleName+"-latest.md")
 	_ = os.Remove(latest)
-	if err := os.WriteFile(latest, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(latest, []byte(timestampedContent), 0o644); err != nil {
 		log.Error("saveReport: write latest failed", "err", err)
 	}
 
@@ -1087,10 +1091,14 @@ func generateID(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
 }
 
-// truncate shortens s to maxLen, appending "..." if truncated.
+// truncate shortens s to maxLen runes, appending "..." if truncated.
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	if maxLen < 4 {
+		return string(runes[:maxLen])
+	}
+	return string(runes[:maxLen-3]) + "..."
 }

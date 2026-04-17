@@ -112,6 +112,22 @@ func ExtractChannelFromSource(source string) string {
 	return parts[0]
 }
 
+// CollectSkillAllowedTools aggregates AllowedTools from all matching skills (deduped).
+func CollectSkillAllowedTools(cfg *AppConfig, task TaskContext) []string {
+	skills := SelectSkills(cfg, task)
+	seen := make(map[string]bool)
+	var result []string
+	for _, s := range skills {
+		for _, t := range s.AllowedTools {
+			if !seen[t] {
+				seen[t] = true
+				result = append(result, t)
+			}
+		}
+	}
+	return result
+}
+
 // BuildSkillCatalog returns a compact markdown listing of ALL skills in the skill
 // store, grouped into executable vs doc-only (reference) categories. This gives
 // agents a complete map of available skills without injecting full documentation.
@@ -180,6 +196,27 @@ func BuildSkillCatalog(cfg *AppConfig) string {
 		}
 		sb.WriteString("\nTo use a reference skill, read its SKILL.md at ")
 		sb.WriteString("~/.tetora/workspace/skills/{name}/SKILL.md\n")
+	}
+
+	// --- Learned (pending review) section ---
+	var pendingLearned []SkillConfig
+	for _, s := range all {
+		if s.Learned {
+			pendingLearned = append(pendingLearned, s)
+		}
+	}
+	if len(pendingLearned) > 0 {
+		sb.WriteString("\nLearned (pending review):\n")
+		for _, s := range pendingLearned {
+			sb.WriteString("- **")
+			sb.WriteString(s.Name)
+			sb.WriteString("**")
+			if s.Description != "" {
+				sb.WriteString(": ")
+				sb.WriteString(truncate(s.Description))
+			}
+			sb.WriteString("\n")
+		}
 	}
 
 	return sb.String()

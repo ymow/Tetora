@@ -149,6 +149,9 @@ func (p *Provider) executeInternal(ctx context.Context, req provider.Request) (*
 
 	var tools []tool
 	for _, t := range req.Tools {
+		if t.DeferLoading {
+			continue // exclude deferred tools from the OpenAI request
+		}
 		tools = append(tools, tool{
 			Type: "function",
 			Function: function{

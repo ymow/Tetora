@@ -6,13 +6,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"tetora/internal/audit"
+	tetoraConfig "tetora/internal/config"
 	"tetora/internal/discord"
+	"tetora/internal/provider"
 	"tetora/internal/history"
 	"tetora/internal/log"
 	"tetora/internal/messaging"
@@ -21,6 +25,17 @@ import (
 	"tetora/internal/upload"
 	"tetora/internal/webhook"
 )
+
+// errNoSavedSession is the error string emitted when a provider cannot find the
+// session referenced by the stored session ID (e.g. after provider switch or
+// cross-machine config sync).
+const errNoSavedSession = "No saved session found"
+
+// errCouldNotProcessImage is returned by the Anthropic API when a vision request
+// fails (e.g. image from a CDN that requires auth, unsupported format, or a URL
+// that resolves to non-image content). The session file is likely in a broken
+// state after this error, so we archive it and start fresh.
+const errCouldNotProcessImage = "Could not process image"
 
 // --- Discord Bot ---
 
@@ -409,6 +424,12 @@ func (db *DiscordBot) handleMessage(msg discord.Message) {
 		return
 	}
 
+	// /compact: compact the current session directly without dispatching to an agent.
+	if text == "/compact" {
+		db.cmdCompactSession(msg)
+		return
+	}
+
 	// Terminal bridge: route text to active terminal session (before command handling).
 	if db.terminal != nil && db.terminal.handleTerminalInput(msg.ChannelID, text) {
 		return
@@ -484,6 +505,12 @@ func (db *DiscordBot) handleCommand(msg discord.Message, cmdText string) {
 		db.cmdCost(msg)
 	case "model":
 		db.cmdModel(msg, args)
+	case "local":
+		db.cmdLocal(msg, args)
+	case "cloud":
+		db.cmdCloud(msg, args)
+	case "mode":
+		db.cmdMode(msg)
 	case "new":
 		db.cmdNewSession(msg)
 	case "cancel":
@@ -596,38 +623,23 @@ func (db *DiscordBot) cmdCost(msg discord.Message) {
 func (db *DiscordBot) cmdModel(msg discord.Message, args string) {
 	parts := strings.Fields(args)
 
-	// !model → show current model for default role
+	// !model → grouped status display
 	if len(parts) == 0 {
-		agentName := db.cfg.SmartDispatch.DefaultAgent
-		if agentName == "" {
-			agentName = "default"
-		}
-		rc, ok := db.cfg.Agents[agentName]
-		if !ok {
-			db.sendMessage(msg.ChannelID, fmt.Sprintf("Agent `%s` not found.", agentName))
-			return
-		}
-		model := rc.Model
-		if model == "" {
-			model = db.cfg.DefaultModel
-		}
-		var fields []discord.EmbedField
-		for name, r := range db.cfg.Agents {
-			m := r.Model
-			if m == "" {
-				m = db.cfg.DefaultModel
-			}
-			fields = append(fields, discord.EmbedField{
-				Name: name, Value: "`" + m + "`", Inline: true,
-			})
-		}
-		db.sendEmbed(msg.ChannelID, discord.Embed{
-			Title: "Current Models", Color: 0x5865F2, Fields: fields,
-		})
+		db.cmdModelStatus(msg)
 		return
 	}
 
-	// !model <model> [agent] → set model
+	// !model pick [agent] → interactive picker
+	if parts[0] == "pick" {
+		agentName := ""
+		if len(parts) > 1 {
+			agentName = parts[1]
+		}
+		db.cmdModelPick(msg, agentName)
+		return
+	}
+
+	// !model <model> [agent] → set model (auto-switches provider)
 	model := parts[0]
 	agentName := db.cfg.SmartDispatch.DefaultAgent
 	if agentName == "" {
@@ -637,12 +649,552 @@ func (db *DiscordBot) cmdModel(msg discord.Message, args string) {
 		agentName = parts[1]
 	}
 
-	old, err := updateAgentModel(db.cfg, agentName, model)
+	// Infer provider from model name and auto-create if needed.
+	inferredProvider := ""
+	if presetName, ok := provider.InferProviderFromModelWithPref(model, db.cfg.ClaudeProvider); ok {
+		if err := ensureProvider(db.cfg, presetName); err != nil {
+			db.sendMessage(msg.ChannelID, fmt.Sprintf("Warning: could not auto-create provider `%s`: %v", presetName, err))
+		} else {
+			inferredProvider = presetName
+		}
+	}
+	// If prefix inference failed, check dynamic providers (Ollama, LM Studio).
+	if inferredProvider == "" {
+		for _, p := range provider.Presets {
+			if !p.Dynamic {
+				continue
+			}
+			models, err := provider.FetchPresetModels(p)
+			if err != nil {
+				continue
+			}
+			for _, m := range models {
+				// Match exact name or name without tag (e.g. "dolphin-mistral" matches "dolphin-mistral:latest").
+				if m == model || strings.TrimSuffix(m, ":latest") == model {
+					if err := ensureProvider(db.cfg, p.Name); err == nil {
+						inferredProvider = p.Name
+					}
+					break
+				}
+			}
+			if inferredProvider != "" {
+				break
+			}
+		}
+	}
+
+	res, err := updateAgentModel(db.cfg, agentName, model, inferredProvider)
 	if err != nil {
 		db.sendMessage(msg.ChannelID, fmt.Sprintf("Error: %v", err))
 		return
 	}
-	db.sendMessage(msg.ChannelID, fmt.Sprintf("**%s** model: `%s` → `%s`", agentName, old, model))
+
+	reply := fmt.Sprintf("**%s** model: `%s` → `%s`", agentName, res.OldModel, model)
+	if res.NewProvider != "" {
+		reply += fmt.Sprintf(" (provider: `%s` → `%s`)", res.OldProvider, res.NewProvider)
+		// Auto-start new session when provider changes — old session IDs are invalid.
+		db.autoNewSession(msg.ChannelID, res.OldProvider, res.NewProvider)
+	}
+	db.sendMessage(msg.ChannelID, reply)
+}
+
+// cmdModelStatus shows all agents grouped by Cloud / Local.
+func (db *DiscordBot) cmdModelStatus(msg discord.Message) {
+	type agentEntry struct {
+		name     string
+		model    string
+		provider string
+	}
+
+	var cloudAgents, localAgents []agentEntry
+	for name, ac := range db.cfg.Agents {
+		m := ac.Model
+		if m == "" {
+			m = db.cfg.DefaultModel
+		}
+		p := ac.Provider
+		if p == "" {
+			p = db.cfg.DefaultProvider
+		}
+		if p == "" {
+			p = "claude"
+		}
+		entry := agentEntry{name: name, model: m, provider: p}
+		if provider.IsLocalProvider(p) {
+			localAgents = append(localAgents, entry)
+		} else {
+			cloudAgents = append(cloudAgents, entry)
+		}
+	}
+
+	sort.Slice(cloudAgents, func(i, j int) bool { return cloudAgents[i].name < cloudAgents[j].name })
+	sort.Slice(localAgents, func(i, j int) bool { return localAgents[i].name < localAgents[j].name })
+
+	var fields []discord.EmbedField
+
+	if len(cloudAgents) > 0 {
+		var lines []string
+		for _, a := range cloudAgents {
+			lines = append(lines, fmt.Sprintf("`%s` — %s (%s)", a.name, a.model, a.provider))
+		}
+		fields = append(fields, discord.EmbedField{
+			Name:  fmt.Sprintf("☁ Cloud (%d)", len(cloudAgents)),
+			Value: strings.Join(lines, "\n"),
+		})
+	}
+
+	if len(localAgents) > 0 {
+		var lines []string
+		for _, a := range localAgents {
+			lines = append(lines, fmt.Sprintf("`%s` — %s (%s)", a.name, a.model, a.provider))
+		}
+		fields = append(fields, discord.EmbedField{
+			Name:  fmt.Sprintf("🏠 Local (%d)", len(localAgents)),
+			Value: strings.Join(lines, "\n"),
+		})
+	}
+
+	mode := db.cfg.InferenceMode
+	if mode == "" {
+		mode = "mixed"
+	}
+
+	suffix := fmt.Sprintf("_%s_%d", msg.ChannelID, time.Now().UnixMilli())
+	db.sendEmbedWithComponents(msg.ChannelID, discord.Embed{
+		Title:  "Agent Models",
+		Color:  0x5865F2,
+		Fields: fields,
+		Footer: &discord.EmbedFooter{Text: fmt.Sprintf("Mode: %s | !model pick [agent] | !local | !cloud", mode)},
+	}, []discord.Component{
+		discordActionRow(
+			discordButton("model_pick_start"+suffix, "Pick Model", discord.ButtonStylePrimary),
+			discordButton("mode_local"+suffix, "Switch All Local", discord.ButtonStyleSuccess),
+			discordButton("mode_cloud"+suffix, "Switch All Cloud", discord.ButtonStyleSecondary),
+		),
+	})
+
+	// Register button callbacks.
+	db.interactions.register(&pendingInteraction{
+		CustomID:  "model_pick_start" + suffix,
+		ChannelID: msg.ChannelID,
+		UserID:    msg.Author.ID,
+		CreatedAt: time.Now(),
+		AllowedIDs: []string{msg.Author.ID},
+		Reusable:  true,
+		Callback: func(data discord.InteractionData) {
+			db.cmdModelPick(msg, "")
+		},
+	})
+	db.interactions.register(&pendingInteraction{
+		CustomID:  "mode_local" + suffix,
+		ChannelID: msg.ChannelID,
+		UserID:    msg.Author.ID,
+		CreatedAt: time.Now(),
+		AllowedIDs: []string{msg.Author.ID},
+		Callback: func(data discord.InteractionData) {
+			db.cmdLocal(msg, "")
+		},
+	})
+	db.interactions.register(&pendingInteraction{
+		CustomID:  "mode_cloud" + suffix,
+		ChannelID: msg.ChannelID,
+		UserID:    msg.Author.ID,
+		CreatedAt: time.Now(),
+		AllowedIDs: []string{msg.Author.ID},
+		Callback: func(data discord.InteractionData) {
+			db.cmdCloud(msg, "")
+		},
+	})
+}
+
+// cmdModelPick starts an interactive model picker flow.
+func (db *DiscordBot) cmdModelPick(msg discord.Message, agentName string) {
+	// Step 1: If no agent specified, show agent select menu.
+	if agentName == "" {
+		var options []discord.SelectOption
+		// Sort agent names for consistent display.
+		names := make([]string, 0, len(db.cfg.Agents))
+		for name := range db.cfg.Agents {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+
+		for _, name := range names {
+			ac := db.cfg.Agents[name]
+			m := ac.Model
+			if m == "" {
+				m = db.cfg.DefaultModel
+			}
+			p := ac.Provider
+			if p == "" {
+				p = db.cfg.DefaultProvider
+			}
+			desc := fmt.Sprintf("%s (%s)", m, p)
+			if len(desc) > 100 {
+				desc = desc[:100]
+			}
+			options = append(options, discord.SelectOption{
+				Label:       name,
+				Value:       name,
+				Description: desc,
+			})
+		}
+
+		// Discord limits to 25 options.
+		if len(options) > 25 {
+			options = options[:25]
+		}
+
+		customID := fmt.Sprintf("model_pick_agent_%d", time.Now().UnixMilli())
+		db.sendEmbedWithComponents(msg.ChannelID, discord.Embed{
+			Title: "Pick Model — Select Agent",
+			Color: 0x5865F2,
+		}, []discord.Component{
+			discordActionRow(discordSelectMenu(customID, "Select an agent...", options)),
+		})
+
+		db.interactions.register(&pendingInteraction{
+			CustomID:   customID,
+			ChannelID:  msg.ChannelID,
+			UserID:     msg.Author.ID,
+			CreatedAt:  time.Now(),
+			AllowedIDs: []string{msg.Author.ID},
+			Callback: func(data discord.InteractionData) {
+				if len(data.Values) > 0 {
+					db.cmdModelPickProvider(msg, data.Values[0])
+				}
+			},
+		})
+		return
+	}
+
+	// Agent specified — go directly to provider selection.
+	if _, ok := db.cfg.Agents[agentName]; !ok {
+		db.sendMessage(msg.ChannelID, fmt.Sprintf("Agent `%s` not found.", agentName))
+		return
+	}
+	db.cmdModelPickProvider(msg, agentName)
+}
+
+// cmdModelPickProvider shows provider selection buttons for an agent.
+func (db *DiscordBot) cmdModelPickProvider(msg discord.Message, agentName string) {
+	ts := fmt.Sprintf("%d", time.Now().UnixMilli())
+
+	var buttons []discord.Component
+	for _, preset := range provider.Presets {
+		if preset.Name == "custom" {
+			continue
+		}
+		customID := fmt.Sprintf("model_pick_prov_%s_%s_%s", agentName, preset.Name, ts)
+		style := discord.ButtonStyleSecondary
+		if provider.IsLocalProvider(preset.Name) {
+			style = discord.ButtonStyleSuccess // green for local
+		}
+		buttons = append(buttons, discordButton(customID, preset.DisplayName, style))
+
+		presetName := preset.Name // capture
+		db.interactions.register(&pendingInteraction{
+			CustomID:   customID,
+			ChannelID:  msg.ChannelID,
+			UserID:     msg.Author.ID,
+			CreatedAt:  time.Now(),
+			AllowedIDs: []string{msg.Author.ID},
+			Callback: func(data discord.InteractionData) {
+				db.cmdModelPickModel(msg, agentName, presetName)
+			},
+		})
+	}
+
+	// Discord allows max 5 buttons per action row.
+	var rows []discord.Component
+	for i := 0; i < len(buttons); i += 5 {
+		end := i + 5
+		if end > len(buttons) {
+			end = len(buttons)
+		}
+		rows = append(rows, discordActionRow(buttons[i:end]...))
+	}
+
+	ac := db.cfg.Agents[agentName]
+	currentModel := ac.Model
+	if currentModel == "" {
+		currentModel = db.cfg.DefaultModel
+	}
+
+	db.sendEmbedWithComponents(msg.ChannelID, discord.Embed{
+		Title:       fmt.Sprintf("Pick Model — %s", agentName),
+		Description: fmt.Sprintf("Current: `%s`\nSelect a provider:", currentModel),
+		Color:       0x5865F2,
+	}, rows)
+}
+
+// cmdModelPickModel shows model selection for a specific agent + provider.
+func (db *DiscordBot) cmdModelPickModel(msg discord.Message, agentName, presetName string) {
+	preset, ok := provider.GetPreset(presetName)
+	if !ok {
+		db.sendMessage(msg.ChannelID, fmt.Sprintf("Preset `%s` not found.", presetName))
+		return
+	}
+
+	// Fetch available models.
+	models, err := provider.FetchPresetModels(preset)
+	if err != nil {
+		db.sendMessage(msg.ChannelID, fmt.Sprintf("Cannot fetch models from `%s`: %v", presetName, err))
+		return
+	}
+	if len(models) == 0 {
+		models = preset.Models
+	}
+	if len(models) == 0 {
+		db.sendMessage(msg.ChannelID, fmt.Sprintf("No models available for `%s`.", preset.DisplayName))
+		return
+	}
+
+	// Build select menu options.
+	var options []discord.SelectOption
+	for _, m := range models {
+		if len(options) >= 25 {
+			break
+		}
+		options = append(options, discord.SelectOption{
+			Label: m,
+			Value: m,
+		})
+	}
+
+	customID := fmt.Sprintf("model_pick_model_%s_%s_%d", agentName, presetName, time.Now().UnixMilli())
+	db.sendEmbedWithComponents(msg.ChannelID, discord.Embed{
+		Title:       fmt.Sprintf("Pick Model — %s — %s", agentName, preset.DisplayName),
+		Description: "Select a model:",
+		Color:       0x5865F2,
+	}, []discord.Component{
+		discordActionRow(discordSelectMenu(customID, "Select model...", options)),
+	})
+
+	db.interactions.register(&pendingInteraction{
+		CustomID:   customID,
+		ChannelID:  msg.ChannelID,
+		UserID:     msg.Author.ID,
+		CreatedAt:  time.Now(),
+		AllowedIDs: []string{msg.Author.ID},
+		Callback: func(data discord.InteractionData) {
+			if len(data.Values) == 0 {
+				return
+			}
+			selectedModel := data.Values[0]
+
+			// Auto-create provider if needed.
+			if err := ensureProvider(db.cfg, presetName); err != nil {
+				db.sendMessage(msg.ChannelID, fmt.Sprintf("Warning: could not auto-create provider `%s`: %v", presetName, err))
+			}
+
+			res, err := updateAgentModel(db.cfg, agentName, selectedModel, presetName)
+			if err != nil {
+				db.sendMessage(msg.ChannelID, fmt.Sprintf("Error: %v", err))
+				return
+			}
+
+			// Auto-start new session when provider changes.
+			if res.NewProvider != "" {
+				db.autoNewSession(msg.ChannelID, res.OldProvider, res.NewProvider)
+			}
+
+			db.sendEmbed(msg.ChannelID, discord.Embed{
+				Title: "Model Updated",
+				Color: 0x57F287, // green
+				Fields: []discord.EmbedField{
+					{Name: "Agent", Value: agentName, Inline: true},
+					{Name: "Model", Value: fmt.Sprintf("`%s` → `%s`", res.OldModel, selectedModel), Inline: true},
+					{Name: "Provider", Value: fmt.Sprintf("`%s` → `%s`", res.OldProvider, presetName), Inline: true},
+				},
+			})
+		},
+	})
+}
+
+// cmdLocal switches agents to local models (Ollama).
+func (db *DiscordBot) cmdLocal(msg discord.Message, args string) {
+	// Check Ollama is reachable.
+	ollamaPreset, _ := provider.GetPreset("ollama")
+	ollamaModels, err := provider.FetchPresetModels(ollamaPreset)
+	if err != nil || len(ollamaModels) == 0 {
+		db.sendMessage(msg.ChannelID, "Ollama is not reachable or has no models.\nStart it with: `ollama serve`")
+		return
+	}
+
+	// Ensure ollama provider exists.
+	if err := ensureProvider(db.cfg, "ollama"); err != nil {
+		db.sendMessage(msg.ChannelID, fmt.Sprintf("Error creating ollama provider: %v", err))
+		return
+	}
+
+	target := strings.TrimSpace(args)
+	switched := 0
+	pinned := 0
+	updatedAgents := make(map[string]tetoraConfig.AgentConfig)
+
+	for name, ac := range db.cfg.Agents {
+		if target != "" && name != target {
+			continue
+		}
+		if ac.PinMode != "" {
+			pinned++
+			continue
+		}
+		if provider.IsLocalProvider(ac.Provider) {
+			continue // already local
+		}
+		ac.CloudModel = ac.Model
+		if ac.LocalModel != "" {
+			ac.Model = ac.LocalModel
+		} else {
+			ac.Model = ollamaModels[0]
+		}
+		ac.Provider = "ollama"
+		db.cfg.Agents[name] = ac
+		updatedAgents[name] = ac
+		switched++
+	}
+
+	if switched == 0 && target != "" {
+		db.sendMessage(msg.ChannelID, fmt.Sprintf("Agent `%s` not found or already on local.", target))
+		return
+	}
+
+	// Persist.
+	configPath := findConfigPath()
+	if err := tetoraConfig.SaveInferenceMode(configPath, "local", updatedAgents); err != nil {
+		db.sendMessage(msg.ChannelID, fmt.Sprintf("Error saving config: %v", err))
+		return
+	}
+	db.cfg.InferenceMode = "local"
+
+	desc := fmt.Sprintf("Switched **%d** agents to local (Ollama)\nUsing model: `%s`", switched, ollamaModels[0])
+	if pinned > 0 {
+		desc += fmt.Sprintf("\n%d agents pinned (unchanged)", pinned)
+	}
+
+	db.sendEmbed(msg.ChannelID, discord.Embed{
+		Title:       "🏠 Local Mode",
+		Description: desc,
+		Color:       0x57F287,
+	})
+}
+
+// cmdCloud switches agents back to cloud models.
+func (db *DiscordBot) cmdCloud(msg discord.Message, args string) {
+	target := strings.TrimSpace(args)
+	switched := 0
+	pinned := 0
+	updatedAgents := make(map[string]tetoraConfig.AgentConfig)
+
+	for name, ac := range db.cfg.Agents {
+		if target != "" && name != target {
+			continue
+		}
+		if ac.PinMode != "" {
+			pinned++
+			continue
+		}
+		if !provider.IsLocalProvider(ac.Provider) {
+			continue // already on cloud
+		}
+		if ac.CloudModel != "" {
+			ac.Model = ac.CloudModel
+			if preset, ok := provider.InferProviderFromModelWithPref(ac.CloudModel, db.cfg.ClaudeProvider); ok {
+				ac.Provider = preset
+			} else {
+				ac.Provider = db.cfg.DefaultProvider
+			}
+		} else {
+			ac.Model = db.cfg.DefaultModel
+			ac.Provider = db.cfg.DefaultProvider
+		}
+		db.cfg.Agents[name] = ac
+		updatedAgents[name] = ac
+		switched++
+	}
+
+	if switched == 0 && target != "" {
+		db.sendMessage(msg.ChannelID, fmt.Sprintf("Agent `%s` not found or already on cloud.", target))
+		return
+	}
+
+	configPath := findConfigPath()
+	if err := tetoraConfig.SaveInferenceMode(configPath, "", updatedAgents); err != nil {
+		db.sendMessage(msg.ChannelID, fmt.Sprintf("Error saving config: %v", err))
+		return
+	}
+	db.cfg.InferenceMode = ""
+
+	desc := fmt.Sprintf("Restored **%d** agents to cloud models", switched)
+	if pinned > 0 {
+		desc += fmt.Sprintf("\n%d agents pinned (unchanged)", pinned)
+	}
+
+	db.sendEmbed(msg.ChannelID, discord.Embed{
+		Title:       "☁ Cloud Mode",
+		Description: desc,
+		Color:       0x5865F2,
+	})
+}
+
+// cmdMode shows current inference mode summary.
+func (db *DiscordBot) cmdMode(msg discord.Message) {
+	cloud, local := 0, 0
+	for _, ac := range db.cfg.Agents {
+		p := ac.Provider
+		if p == "" {
+			p = db.cfg.DefaultProvider
+		}
+		if provider.IsLocalProvider(p) {
+			local++
+		} else {
+			cloud++
+		}
+	}
+
+	mode := db.cfg.InferenceMode
+	if mode == "" {
+		mode = "mixed"
+	}
+
+	modeSuffix := fmt.Sprintf("_%s_%d", msg.ChannelID, time.Now().UnixMilli())
+	db.sendEmbedWithComponents(msg.ChannelID, discord.Embed{
+		Title: "Inference Mode",
+		Color: 0x5865F2,
+		Fields: []discord.EmbedField{
+			{Name: "Mode", Value: mode, Inline: true},
+			{Name: "Cloud", Value: fmt.Sprintf("%d agents", cloud), Inline: true},
+			{Name: "Local", Value: fmt.Sprintf("%d agents", local), Inline: true},
+		},
+	}, []discord.Component{
+		discordActionRow(
+			discordButton("mode_local_cmd"+modeSuffix, "Switch All Local", discord.ButtonStyleSuccess),
+			discordButton("mode_cloud_cmd"+modeSuffix, "Switch All Cloud", discord.ButtonStyleSecondary),
+		),
+	})
+
+	db.interactions.register(&pendingInteraction{
+		CustomID:   "mode_local_cmd" + modeSuffix,
+		ChannelID:  msg.ChannelID,
+		UserID:     msg.Author.ID,
+		CreatedAt:  time.Now(),
+		AllowedIDs: []string{msg.Author.ID},
+		Callback: func(data discord.InteractionData) {
+			db.cmdLocal(msg, "")
+		},
+	})
+	db.interactions.register(&pendingInteraction{
+		CustomID:   "mode_cloud_cmd" + modeSuffix,
+		ChannelID:  msg.ChannelID,
+		UserID:     msg.Author.ID,
+		CreatedAt:  time.Now(),
+		AllowedIDs: []string{msg.Author.ID},
+		Callback: func(data discord.InteractionData) {
+			db.cmdCloud(msg, "")
+		},
+	})
 }
 
 func (db *DiscordBot) cmdCancel(msg discord.Message) {
@@ -753,6 +1305,52 @@ func (db *DiscordBot) cmdEnd(msg discord.Message) {
 	db.sendMessage(msg.ChannelID, fmt.Sprintf("Unlocked from **%s**. Smart dispatch resumed.", agent))
 }
 
+// checkSessionReset inspects the existing channel session and archives it if
+// context overflow or idle timeout is detected. Returns a non-empty reason
+// string if a reset was performed (caller should nil out the session pointer).
+func (db *DiscordBot) checkSessionReset(ctx context.Context, existing *Session, chKey string) string {
+	if existing == nil {
+		return ""
+	}
+	dbPath := db.cfg.HistoryDB
+
+	maxTokens := db.cfg.Session.MaxContextTokensOrDefault()
+	if existing.ContextSize > maxTokens {
+		if err := archiveChannelSession(dbPath, chKey); err != nil {
+			log.WarnCtx(ctx, "discord session archive error (context overflow)", "error", err)
+		}
+		return fmt.Sprintf("_Session reset: context reached %d tokens (limit %d). Starting fresh — previous context carried forward._", existing.ContextSize, maxTokens)
+	}
+
+	idleTimeout := db.cfg.Session.IdleTimeoutOrDefault()
+	if existing.UpdatedAt != "" {
+		if updatedAt, err := time.Parse(time.RFC3339, existing.UpdatedAt); err == nil {
+			if idle := time.Since(updatedAt); idle > idleTimeout {
+				if err := archiveChannelSession(dbPath, chKey); err != nil {
+					log.WarnCtx(ctx, "discord session archive error (idle timeout)", "error", err)
+				}
+				return fmt.Sprintf("_Session reset: idle for %d min (limit %d min). Starting fresh._", int(idle.Minutes()), int(idleTimeout.Minutes()))
+			}
+		}
+	}
+
+	return ""
+}
+
+// autoNewSession archives the current channel session when provider changes,
+// since session/thread IDs from one provider are invalid in another.
+func (db *DiscordBot) autoNewSession(channelID, oldProvider, newProvider string) {
+	if oldProvider == newProvider || oldProvider == "" || newProvider == "" {
+		return
+	}
+	dbPath := db.cfg.HistoryDB
+	if dbPath == "" {
+		return
+	}
+	chKey := channelSessionKey("discord", channelID)
+	_ = archiveChannelSession(dbPath, chKey) // best-effort
+}
+
 func (db *DiscordBot) cmdNewSession(msg discord.Message) {
 	dbPath := db.cfg.HistoryDB
 	if dbPath == "" {
@@ -767,6 +1365,38 @@ func (db *DiscordBot) cmdNewSession(msg discord.Message) {
 	db.sendMessage(msg.ChannelID, "New session started.")
 }
 
+func (db *DiscordBot) cmdCompactSession(msg discord.Message) {
+	dbPath := db.cfg.HistoryDB
+	if dbPath == "" {
+		db.sendMessage(msg.ChannelID, "History DB not configured.")
+		return
+	}
+	chKey := channelSessionKey("discord", msg.ChannelID)
+	sess, err := findChannelSession(dbPath, chKey)
+	if err != nil || sess == nil {
+		db.sendMessage(msg.ChannelID, "No active session to compact.")
+		return
+	}
+	db.sendMessage(msg.ChannelID, "Compacting session...")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	if globalPresence != nil {
+		globalPresence.StartTyping(ctx, "compact_"+msg.ChannelID)
+		defer globalPresence.StopTyping("compact_" + msg.ChannelID)
+	}
+	var compactErr error
+	if db.cfg.Session.Compaction.Strategy == "fresh-session" {
+		compactErr = compactSessionFresh(ctx, db.cfg, dbPath, sess.ID, chKey, sess.Agent, db.sem, db.childSem)
+	} else {
+		compactErr = compactSession(ctx, db.cfg, dbPath, sess.ID, false, db.sem, db.childSem)
+	}
+	if compactErr != nil {
+		db.sendMessage(msg.ChannelID, fmt.Sprintf("Compact failed: %v", compactErr))
+		return
+	}
+	db.sendMessage(msg.ChannelID, "Session compacted.")
+}
+
 func (db *DiscordBot) cmdHelp(msg discord.Message) {
 	db.sendEmbed(msg.ChannelID, discord.Embed{
 		Title:       "Tetora Help",
@@ -777,6 +1407,10 @@ func (db *DiscordBot) cmdHelp(msg discord.Message) {
 			{Name: "!jobs", Value: "List cron jobs"},
 			{Name: "!cost", Value: "Show cost summary"},
 			{Name: "!model [model] [agent]", Value: "Show/switch model"},
+			{Name: "!model pick [agent]", Value: "Interactive model picker"},
+			{Name: "!local [agent]", Value: "Switch to local models (Ollama)"},
+			{Name: "!cloud [agent]", Value: "Switch back to cloud models"},
+			{Name: "!mode", Value: "Show inference mode summary"},
 			{Name: "!new", Value: "Start a new session (clear context)"},
 			{Name: "!cancel", Value: "Cancel all running tasks"},
 			{Name: "!chat <agent>", Value: "Lock this channel to an agent (skip dispatch)"},
@@ -829,7 +1463,7 @@ func (db *DiscordBot) cmdApprove(msg discord.Message, args string) {
 
 // handleDirectRoute dispatches a message directly to a known agent without smart routing.
 func (db *DiscordBot) handleDirectRoute(msg discord.Message, prompt string, agent string) {
-	route := RouteResult{Agent: agent, Method: "default", Confidence: "high"}
+	route := RouteResult{Agent: agent, Method: "explicit", Confidence: "high"}
 	db.executeRoute(msg, prompt, route)
 }
 
@@ -837,9 +1471,31 @@ func (db *DiscordBot) handleDirectRoute(msg discord.Message, prompt string, agen
 
 func (db *DiscordBot) handleRoute(msg discord.Message, prompt string) {
 	ctx := trace.WithID(context.Background(), trace.NewID("discord"))
-	route := routeTask(ctx, db.cfg, RouteRequest{Prompt: prompt, Source: "discord"})
+	route := routeTask(ctx, db.cfg, RouteRequest{
+		Prompt:    prompt,
+		Source:    "discord",
+		ChannelID: msg.ChannelID,
+		GuildID:   msg.GuildID,
+		UserID:    msg.Author.ID,
+	})
 	log.InfoCtx(ctx, "discord route result", "prompt", truncate(prompt, 60), "agent", route.Agent, "method", route.Method)
 	db.executeRoute(msg, prompt, *route)
+}
+
+// archiveStaleSession detects a "No saved session found" error and, when found,
+// archives the session in the DB so the next request gets a fresh start.
+// Returns true if a stale session was detected (caller should send reset message).
+func archiveStaleSession(ctx context.Context, dbPath string, sess *Session, resultErr string) bool {
+	if !strings.Contains(resultErr, errNoSavedSession) {
+		return false
+	}
+	log.WarnCtx(ctx, "Auto-cleared stale session ID", "error", resultErr)
+	if sess != nil {
+		if err := updateSessionStatus(dbPath, sess.ID, "archived"); err != nil {
+			log.WarnCtx(ctx, "Failed to archive stale session", "sessionID", sess.ID, "error", err)
+		}
+	}
+	return true
 }
 
 // executeRoute runs a routed task through the full Discord execution pipeline
@@ -874,20 +1530,47 @@ func (db *DiscordBot) executeRoute(msg discord.Message, prompt string, route Rou
 		defer db.state.removeDiscordActivity(activityID)
 	}
 
-	// Update Discord activity with resolved agent.
+	// Channel session.
+	// Look up existing session once; reuse it directly when the agent matches
+	// to avoid a redundant DB read inside getOrCreateChannelSession.
+	chKey := channelSessionKey("discord", msg.ChannelID)
+	agent := route.Agent
+
+	existing, findErr := findChannelSession(dbPath, chKey)
+	if findErr != nil {
+		log.WarnCtx(ctx, "discord findChannelSession error", "error", findErr)
+	}
+
+	// Auto-reset: archive session if context overflow or idle timeout.
+	if resetReason := db.checkSessionReset(ctx, existing, chKey); resetReason != "" {
+		db.sendMessage(msg.ChannelID, resetReason)
+		existing = nil
+	}
+
+	// For non-deterministic routes (keyword/LLM), keep the existing session's
+	// agent to avoid constant session churn.
+	if route.Method != "binding" && route.Method != "explicit" && existing != nil {
+		agent = existing.Agent
+	}
+
+	var sess *Session
+	if existing != nil && existing.Agent == agent {
+		sess = existing
+	} else {
+		var err error
+		sess, err = getOrCreateChannelSession(dbPath, "discord", chKey, agent, "")
+		if err != nil {
+			log.ErrorCtx(ctx, "discord session error", "error", err)
+		}
+	}
+
+	// Update Discord activity with resolved agent (after session-stickiness override).
 	if db.state != nil {
 		db.state.mu.Lock()
 		if da, ok := db.state.discordActivities[activityID]; ok {
-			da.Agent = route.Agent
+			da.Agent = agent
 		}
 		db.state.mu.Unlock()
-	}
-
-	// Channel session.
-	chKey := channelSessionKey("discord", msg.ChannelID)
-	sess, err := getOrCreateChannelSession(dbPath, "discord", chKey, route.Agent, "")
-	if err != nil {
-		log.ErrorCtx(ctx, "discord session error", "error", err)
 	}
 
 	// Context-aware prompt.
@@ -901,6 +1584,14 @@ func (db *DiscordBot) executeRoute(msg discord.Message, prompt string, route Rou
 		providerName := resolveProviderName(db.cfg, Task{Agent: route.Agent}, route.Agent)
 		if !providerHasNativeSession(providerName) && !canResume {
 			sessionCtx := buildSessionContext(dbPath, sess.ID, db.cfg.Session.ContextMessagesOrDefault())
+			// New session with no history — carry forward context from the archived predecessor.
+			if sessionCtx == "" {
+				if prev, err := findLastArchivedChannelSession(dbPath, chKey); err == nil && prev != nil {
+					sessionCtx = buildSessionContext(dbPath, prev.ID, db.cfg.Session.ContextMessagesOrDefault())
+					log.InfoCtx(ctx, "auto-continuing from archived session",
+						"prevSession", prev.ID[:8], "channel", chKey)
+				}
+			}
 			contextPrompt = wrapWithContext(sessionCtx, prompt)
 		}
 		now := time.Now().Format(time.RFC3339)
@@ -952,6 +1643,19 @@ func (db *DiscordBot) executeRoute(msg discord.Message, prompt string, route Rou
 	if task.Agent != "" {
 		if soulPrompt, err := loadAgentPrompt(db.cfg, task.Agent); err == nil && soulPrompt != "" {
 			task.SystemPrompt = soulPrompt
+		}
+	}
+	// Fresh-session compaction: inject the previous session's summary into the system prompt.
+	// Use delete-after-inject so the summary is only injected once regardless of message count.
+	if db.cfg.Session.Compaction.Strategy == "fresh-session" {
+		memKey := "session_compact_" + sanitizeKey(agent+"_"+chKey)
+		if summary, err := getMemory(db.cfg, agent, memKey); err == nil && summary != "" {
+			task.SystemPrompt += "\n\n## Previous Session Summary\n" + summary
+			log.InfoCtx(ctx, "injected session compact summary", "agent", agent, "memKey", memKey)
+			if err2 := deleteMemory(db.cfg, agent, memKey); err2 != nil {
+				log.WarnCtx(ctx, "failed to clear compact summary after injection, overwriting with tombstone", "memKey", memKey, "error", err2)
+				_ = setMemory(db.cfg, agent, memKey, "")
+			}
 		}
 	}
 	// Discord tasks run unattended — default to bypassPermissions if not set by agent.
@@ -1163,7 +1867,7 @@ func (db *DiscordBot) executeRoute(msg discord.Message, prompt string, route Rou
 			})
 		}
 
-		maybeCompactSession(db.cfg, dbPath, sess.ID, sess.MessageCount+2, sess.TotalTokensIn+result.TokensIn, db.sem, db.childSem)
+		maybeCompactSession(db.cfg, dbPath, sess.ID, chKey, agent, sess.MessageCount+2, sess.TotalTokensIn+result.TokensIn, db.sem, db.childSem, func(s string) { db.sendMessage(msg.ChannelID, s) })
 	}
 
 	if result.Status == "success" {
@@ -1184,6 +1888,26 @@ func (db *DiscordBot) executeRoute(msg discord.Message, prompt string, route Rou
 	// Send slot pressure warning before response if present.
 	if result.SlotWarning != "" {
 		db.sendMessage(msg.ChannelID, result.SlotWarning)
+	}
+
+	// Auto-recover from stale session errors (provider switch or machine migration).
+	if result.Status != "success" && archiveStaleSession(ctx, dbPath, sess, result.Error) {
+		db.sendMessage(msg.ChannelID, "♻️ **System Reset**: Detected environment change (Provider/Migration). Starting new session...")
+		return
+	}
+
+	// Auto-recover from broken sessions caused by image processing failures.
+	// The Claude CLI session history is likely in a corrupted state (orphaned tool use),
+	// so archive the session to force a fresh start on the next message.
+	if result.Status != "success" && strings.Contains(result.Error, errCouldNotProcessImage) {
+		log.WarnCtx(ctx, "Auto-cleared session after image processing failure", "error", result.Error)
+		if sess != nil {
+			if err := updateSessionStatus(dbPath, sess.ID, "archived"); err != nil {
+				log.WarnCtx(ctx, "Failed to archive broken session", "sessionID", sess.ID, "error", err)
+			}
+		}
+		db.sendMessage(msg.ChannelID, "⚠️ **Image Error**: Could not process an image in your message (e.g. from a social media link). Session has been reset — please try again.")
+		return
 	}
 
 	// Send response embed.
@@ -1216,10 +1940,23 @@ func (db *DiscordBot) sendRouteResponse(channelID string, route *RouteResult, re
 			output = strings.Join(parts, "\n")
 		}
 
-		// Send output as plain text messages (split into 2000-char chunks).
-		// For very long outputs, truncate the middle to preserve the conclusion.
+		// Persist full output to disk before sending, so it can be retrieved
+		// even if Discord drops or truncates the message.
+		if result.Status == "success" && strings.TrimSpace(output) != "" && db.cfg.BaseDir != "" {
+			outDir := filepath.Join(db.cfg.BaseDir, "outputs")
+			if err := os.MkdirAll(outDir, 0o755); err == nil {
+				outPath := filepath.Join(outDir,
+					fmt.Sprintf("%s_%s.txt", task.ID, time.Now().Format("20060102-150405")))
+				if err := os.WriteFile(outPath, []byte(output), 0o644); err != nil {
+					log.Warn("discord: failed to save output file", "task", task.ID, "err", err)
+				}
+			}
+		}
+
+		// Send output as plain text messages (split into 1900-char chunks).
+		// Hard cap at 16000 chars (~8 messages) to prevent Discord flooding.
 		const maxChunk = 1900 // leave room for markdown formatting
-		const maxTotal = 5700 // 3 messages max — Discord rate-limits beyond this
+		const maxTotal = 16000
 		if len(output) > maxTotal {
 			// Keep beginning (context) + end (conclusion), separated by "...".
 			headSize := maxTotal * 2 / 5
@@ -1850,6 +2587,14 @@ func (db *DiscordBot) handleThreadRoute(msg discord.Message, prompt string, bind
 		providerName := resolveProviderName(db.cfg, Task{Agent: role}, role)
 		if !providerHasNativeSession(providerName) {
 			sessionCtx := buildSessionContext(dbPath, sess.ID, db.cfg.Session.ContextMessagesOrDefault())
+			// New session with no history — carry forward context from the archived predecessor.
+			if sessionCtx == "" && sess.MessageCount == 0 {
+				if prev, err := findLastArchivedChannelSession(dbPath, sessionID); err == nil && prev != nil {
+					sessionCtx = buildSessionContext(dbPath, prev.ID, db.cfg.Session.ContextMessagesOrDefault())
+					log.InfoCtx(ctx, "auto-continuing from archived session",
+						"prevSession", prev.ID[:8], "channel", sessionID)
+				}
+			}
 			contextPrompt = wrapWithContext(sessionCtx, prompt)
 		}
 		now := time.Now().Format(time.RFC3339)
@@ -1910,7 +2655,7 @@ func (db *DiscordBot) handleThreadRoute(msg discord.Message, prompt string, bind
 			Model: result.Model, TaskID: task.ID, CreatedAt: now,
 		})
 		updateSessionStats(dbPath, sess.ID, result.CostUSD, result.TokensIn, result.TokensOut, 1)
-		maybeCompactSession(db.cfg, dbPath, sess.ID, sess.MessageCount+2, sess.TotalTokensIn+result.TokensIn, db.sem, db.childSem)
+		maybeCompactSession(db.cfg, dbPath, sess.ID, sessionID, role, sess.MessageCount+2, sess.TotalTokensIn+result.TokensIn, db.sem, db.childSem, func(s string) { db.sendMessage(msg.ChannelID, s) })
 	}
 
 	if result.Status == "success" {

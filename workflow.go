@@ -14,6 +14,7 @@ import (
 
 	dtypes "tetora/internal/dispatch"
 	"tetora/internal/db"
+	discord "tetora/internal/discord"
 	"tetora/internal/log"
 	"tetora/internal/version"
 	iwf "tetora/internal/workflow"
@@ -39,7 +40,7 @@ type WorkflowRun struct {
 // StepRunResult tracks the execution of one step.
 type StepRunResult struct {
 	StepID     string  `json:"stepId"`
-	Status     string  `json:"status"` // "pending", "running", "success", "error", "skipped", "timeout"
+	Status     string  `json:"status"` // "pending", "running", "success", "error", "skipped", "timeout", "cancelled"
 	Output     string  `json:"output,omitempty"`
 	Error      string  `json:"error,omitempty"`
 	StartedAt  string  `json:"startedAt,omitempty"`
@@ -81,9 +82,10 @@ type workflowExecutor struct {
 	mu       sync.Mutex
 
 	// Git worktree isolation (populated when workflow.GitWorktree is true).
-	worktreeDir string           // active worktree path (empty = no isolation)
-	repoDir     string           // original repo dir (for merge/cleanup)
-	worktreeMgr *WorktreeManager // worktree manager reference
+	worktreeDir         string           // active worktree path (empty = no isolation)
+	repoDir             string           // original repo dir (for merge/cleanup)
+	worktreeMgr         *WorktreeManager // worktree manager reference
+	releaseWorktreeLock func()           // releases .tetora-active session lock; nil until lock acquired
 
 	// Resume state: non-nil when resuming a previous run. Carries completed step results.
 	resumeState map[string]*StepRunResult
@@ -239,6 +241,9 @@ func (e *workflowExecutor) setupWorktree() {
 	e.worktreeDir = wtDir
 	e.repoDir = repoDir
 	e.worktreeMgr = wm
+	// Acquire session lock so Prune and Remove see this worktree as active and
+	// refuse to delete it while DAG steps are running inside it.
+	e.releaseWorktreeLock = acquireSessionLock(wtDir)
 	log.Info("workflow worktree: created",
 		"workflow", w.Name, "runID", e.run.ID[:8], "path", wtDir, "branch", branch)
 }
@@ -295,6 +300,12 @@ func (e *workflowExecutor) finalizeRun(dagErr error, startTime time.Time, outerC
 
 	// Worktree finalization.
 	if e.worktreeDir != "" && e.worktreeMgr != nil {
+		// Release the session lock before any cleanup so that Remove() does not
+		// see a live PID and refuse. The DAG has already completed at this point.
+		if e.releaseWorktreeLock != nil {
+			e.releaseWorktreeLock()
+			e.releaseWorktreeLock = nil
+		}
 		if run.Status == "success" {
 			diffSummary, mergeErr := e.worktreeMgr.MergeBranchOnly(e.repoDir, e.worktreeDir)
 			if mergeErr != nil {
@@ -619,8 +630,9 @@ func isResumableStatus(status string) bool {
 }
 
 // resumeWorkflow creates a new run that skips already-completed steps from a previous run.
+// extraVars (if non-nil) are merged into the new run's Variables, overriding originals.
 func resumeWorkflow(ctx context.Context, cfg *Config, originalRunID string,
-	state *dispatchState, sem, childSem chan struct{}) (*WorkflowRun, error) {
+	state *dispatchState, sem, childSem chan struct{}, extraVars map[string]string) (*WorkflowRun, error) {
 
 	// Load the original run.
 	originalRun, err := queryWorkflowRunByID(cfg.HistoryDB, originalRunID)
@@ -651,6 +663,11 @@ func resumeWorkflow(ctx context.Context, cfg *Config, originalRunID string,
 		Variables:    originalRun.Variables,
 		StepResults:  make(map[string]*StepRunResult),
 		ResumedFrom:  originalRunID,
+	}
+
+	// Merge extra variables (override_variables, recovery keys, etc.).
+	for k, v := range extraVars {
+		run.Variables[k] = v
 	}
 
 	// Build resume state and initialize step results.
@@ -769,6 +786,40 @@ func resumeWorkflow(ctx context.Context, cfg *Config, originalRunID string,
 	}
 
 	return run, nil
+}
+
+// retryFromHumanGate resets a rejected human gate and resumes the workflow.
+// It returns the new run ID or an error.
+func retryFromHumanGate(ctx context.Context, cfg *Config, gateKey string,
+	overrideVars map[string]string, state *dispatchState, sem, childSem chan struct{}) (string, error) {
+
+	// Look up the gate.
+	gate := queryHumanGate(cfg.HistoryDB, gateKey)
+	if gate == nil {
+		return "", fmt.Errorf("gate not found: %s", gateKey)
+	}
+	if gate.Status != "rejected" {
+		return "", fmt.Errorf("gate %s has status %q, only rejected gates can be retried", gateKey, gate.Status)
+	}
+
+	// Reset gate to "waiting" (clears decision, response, completed_at, timeout_at).
+	resetHumanGate(cfg.HistoryDB, gateKey)
+
+	// Build extra variables: override_variables + recovery key for gate reuse.
+	extraVars := make(map[string]string)
+	for k, v := range overrideVars {
+		extraVars[k] = v
+	}
+	extraVars["__hg_key_"+gate.StepID] = gate.Key
+
+	// Resume the workflow from the gate's run (which should be in "error" status).
+	run, err := resumeWorkflow(ctx, cfg, gate.RunID, state, sem, childSem, extraVars)
+	if err != nil {
+		return "", fmt.Errorf("resume workflow for gate retry: %w", err)
+	}
+
+	log.Info("human gate retry started", "gateKey", gateKey, "originalRunID", gate.RunID[:8], "newRunID", run.ID[:8])
+	return run.ID, nil
 }
 
 // executeStep runs a single step with retry logic.
@@ -891,6 +942,14 @@ func (e *workflowExecutor) runStepOnce(ctx context.Context, step *WorkflowStep, 
 			result.Status = "success"
 			result.Output = fmt.Sprintf("[DRY-RUN] Would call external URL: %s (callback mode: %s)", step.ExternalURL, step.CallbackMode)
 			return
+		case "human":
+			subtype := step.HumanSubtype
+			if subtype == "" {
+				subtype = "approval"
+			}
+			result.Status = "success"
+			result.Output = fmt.Sprintf("[DRY-RUN] Would wait for human %s (assignee: %s)", subtype, step.HumanAssignee)
+			return
 		case "notify":
 			msg := resolveTemplate(step.NotifyMsg, wCtx)
 			result.Status = "success"
@@ -933,6 +992,8 @@ func (e *workflowExecutor) runStepOnce(ctx context.Context, step *WorkflowStep, 
 		e.runNotifyStep(step, result, wCtx)
 	case "external":
 		e.runExternalStep(ctx, step, result)
+	case "human":
+		e.runHumanStep(ctx, step, result)
 	default:
 		result.Status = "error"
 		result.Error = fmt.Sprintf("unknown step type: %s", step.Type)
@@ -972,7 +1033,10 @@ func (e *workflowExecutor) runDispatchStep(ctx context.Context, step *WorkflowSt
 	})
 
 	// Enable streaming when broker is available.
-	task.SSEBroker = e.broker
+	// Only assign when non-nil to avoid typed-nil interface trap.
+	if e.broker != nil {
+		task.SSEBroker = e.broker
+	}
 	task.WorkflowRunID = e.run.ID
 
 	// Execute using runSingleTask (respects semaphore).
@@ -1259,7 +1323,10 @@ func (e *workflowExecutor) runHandoffStep(ctx context.Context, step *WorkflowSte
 	updateHandoffStatus(e.cfg.HistoryDB, handoffID, "active")
 
 	// Enable streaming when broker is available.
-	task.SSEBroker = e.broker
+	// Only assign when non-nil to avoid typed-nil interface trap.
+	if e.broker != nil {
+		task.SSEBroker = e.broker
+	}
 	task.WorkflowRunID = e.run.ID
 
 	// Execute.
@@ -1653,10 +1720,16 @@ func (e *workflowExecutor) publishEvent(eventType string, data map[string]any) {
 	if e.broker == nil {
 		return
 	}
-	e.broker.PublishMulti([]string{
+	topics := []string{
 		"workflow:" + e.run.ID,
 		"workflow:" + e.workflow.Name,
-	}, SSEEvent{
+	}
+	// Broadcast human gate events to the dashboard feed so the
+	// "Waiting for You" panel can update in real time.
+	if eventType == "human_gate_waiting" || eventType == "human_gate_responded" {
+		topics = append(topics, SSEDashboardKey)
+	}
+	e.broker.PublishMulti(topics, SSEEvent{
 		Type:   eventType,
 		TaskID: e.run.ID,
 		Data:   data,
@@ -1919,7 +1992,35 @@ func queryStreamingCallbacks(dbPath, key string) []CallbackResult {
 	return iwf.QueryStreamingCallbacks(dbPath, key)
 }
 
-func cleanupExpiredCallbacks(dbPath string) { iwf.CleanupExpiredCallbacks(dbPath) }
+func cleanupExpiredCallbacks(dbPath string)     { iwf.CleanupExpiredCallbacks(dbPath) }
+func cleanupExpiredHumanGates(dbPath string)    { iwf.CleanupExpiredHumanGates(dbPath) }
+
+// --- Human gate DB wrappers ---
+
+type HumanGateRecord = iwf.HumanGateRecord
+
+func initHumanGateTable(dbPath string)   { iwf.InitHumanGateTable(dbPath) }
+func recordHumanGate(dbPath, key, runID, stepID, workflowName, subtype, prompt, assignee, timeoutAt, options, context string) {
+	iwf.RecordHumanGate(dbPath, key, runID, stepID, workflowName, subtype, prompt, assignee, timeoutAt, options, context)
+}
+func queryHumanGate(dbPath, key string) *HumanGateRecord       { return iwf.QueryHumanGate(dbPath, key) }
+func queryPendingHumanGatesByRun(dbPath, runID string) []*HumanGateRecord {
+	return iwf.QueryPendingHumanGatesByRun(dbPath, runID)
+}
+func queryAllPendingHumanGates(dbPath, status string) []*HumanGateRecord {
+	return iwf.QueryAllPendingHumanGates(dbPath, status)
+}
+func countPendingHumanGates(dbPath string) int { return iwf.CountPendingHumanGates(dbPath) }
+func completeHumanGate(dbPath, key, decision, response, respondedBy string) {
+	iwf.CompleteHumanGate(dbPath, key, decision, response, respondedBy)
+}
+func rejectHumanGate(dbPath, key, reason, respondedBy string) {
+	iwf.RejectHumanGate(dbPath, key, reason, respondedBy)
+}
+func timeoutHumanGate(dbPath, key string)                      { iwf.TimeoutHumanGate(dbPath, key) }
+func cancelHumanGate(dbPath, key string)                       { iwf.CancelHumanGate(dbPath, key) }
+func resetHumanGate(dbPath, key string)                        { iwf.ResetHumanGate(dbPath, key) }
+func updateHumanGateRunID(dbPath, key, newRunID string)        { iwf.UpdateHumanGateRunID(dbPath, key, newRunID) }
 
 func recordTriggerRun(dbPath, triggerName, workflowName, runID, status, startedAt, finishedAt, errMsg string) {
 	iwf.RecordTriggerRun(dbPath, triggerName, workflowName, runID, status, startedAt, finishedAt, errMsg)
@@ -2307,25 +2408,458 @@ func (e *workflowExecutor) runExternalStep(ctx context.Context, step *WorkflowSt
 }
 
 // =============================================================================
+// runHumanStep — root-only: accesses callbackMgr singleton for channel wait
+// =============================================================================
+
+// runHumanStep executes a human gate step: write DB, wait for human response via callback.
+func (e *workflowExecutor) runHumanStep(ctx context.Context, step *WorkflowStep, result *StepRunResult) {
+	if callbackMgr == nil {
+		result.Status = "error"
+		result.Error = "callback manager not initialized"
+		return
+	}
+
+	// Resolve templates.
+	prompt := e.resolveTemplateWithFields(step.HumanPrompt)
+	assignee := e.resolveTemplateWithFields(step.HumanAssignee)
+
+	subtype := step.HumanSubtype
+	if subtype == "" {
+		subtype = "approval"
+	}
+
+	// Generate key.
+	hgKey := fmt.Sprintf("hg-%s-%s", e.run.ID, step.ID)
+
+	// Check for recovery-injected key.
+	if recoveredKey, ok := e.wCtx.Input["__hg_key_"+step.ID]; ok && recoveredKey != "" {
+		hgKey = recoveredKey
+	}
+
+	// Parse timeout (default 72h).
+	timeout := 72 * time.Hour
+	if step.HumanTimeout != "" {
+		if d, err := parseDurationWithDays(step.HumanTimeout); err == nil {
+			timeout = d
+		}
+	}
+
+	// Check DB state for resume/completed.
+	existing := queryHumanGate(callbackMgr.DBPath(), hgKey)
+	if existing != nil {
+		switch existing.Status {
+		case "completed":
+			// Already completed — apply result directly.
+			applyHumanGateResult(subtype, existing.Decision, existing.Response, step, result)
+			log.Info("human gate already completed, skipping", "step", step.ID, "key", hgKey)
+			return
+		case "rejected":
+			result.Status = "error"
+			result.Error = fmt.Sprintf("human gate rejected: %s", existing.Response)
+			log.Info("human gate already rejected, skipping", "step", step.ID, "key", hgKey)
+			return
+		case "cancelled":
+			result.Status = "cancelled"
+			result.Error = "human gate cancelled by operator"
+			log.Info("human gate already cancelled, skipping", "step", step.ID, "key", hgKey)
+			return
+		case "timeout":
+			// Previous timeout — reset for retry.
+			resetHumanGate(callbackMgr.DBPath(), hgKey)
+			log.Info("human gate retrying (reset old timeout)", "step", step.ID, "key", hgKey)
+		case "waiting":
+			// Resume — skip DB write, go straight to wait.
+			// Recalculate remaining timeout from DB so recovery doesn't restart the full timer.
+			if existing.TimeoutAt != "" {
+				if t, err := time.Parse("2006-01-02 15:04:05", existing.TimeoutAt); err == nil {
+					if remaining := time.Until(t); remaining > 0 {
+						timeout = remaining
+					} else {
+						timeout = time.Millisecond // already expired, fire immediately
+					}
+				}
+			}
+			log.Info("human gate resuming (already waiting)", "step", step.ID, "key", hgKey, "remaining", timeout.String())
+		}
+	}
+
+	// If this is a recovered key, update the DB record to reference the new run ID.
+	if _, ok := e.wCtx.Input["__hg_key_"+step.ID]; ok {
+		updateHumanGateRunID(callbackMgr.DBPath(), hgKey, e.run.ID)
+	}
+
+	// Register channel BEFORE DB write to prevent race.
+	ch := callbackMgr.Register(hgKey, ctx, "single")
+	if ch == nil {
+		result.Status = "error"
+		result.Error = fmt.Sprintf("failed to register human gate channel (key collision): %s", hgKey)
+		return
+	}
+	defer callbackMgr.Unregister(hgKey)
+
+	timeoutAt := time.Now().Add(timeout)
+
+	// Marshal options and context for DB storage.
+	optionsJSON := ""
+	if len(step.HumanOptions) > 0 {
+		if b, err := json.Marshal(step.HumanOptions); err == nil {
+			optionsJSON = string(b)
+		}
+	}
+	contextJSON := ""
+	if len(step.HumanContext) > 0 {
+		if b, err := json.Marshal(step.HumanContext); err == nil {
+			contextJSON = string(b)
+		}
+	}
+
+	// Write DB record (skip if already waiting from resume).
+	if existing == nil || existing.Status != "waiting" {
+		recordHumanGate(callbackMgr.DBPath(), hgKey, e.run.ID, step.ID, e.run.WorkflowName, subtype, prompt, assignee,
+			timeoutAt.UTC().Format("2006-01-02 15:04:05"), optionsJSON, contextJSON)
+	}
+
+	// Update run status to "waiting" and checkpoint.
+	e.mu.Lock()
+	e.run.Status = "waiting"
+	result.Status = "waiting_human"
+	e.mu.Unlock()
+	checkpointRun(e)
+
+	// Publish waiting event.
+	e.publishEvent("human_gate_waiting", map[string]any{
+		"runId":    e.run.ID,
+		"stepId":   step.ID,
+		"hgKey":    hgKey,
+		"subtype":  subtype,
+		"prompt":   prompt,
+		"assignee": assignee,
+		"timeout":  timeout.String(),
+	})
+
+	log.Info("human gate waiting", "step", step.ID, "key", hgKey, "subtype", subtype, "assignee", assignee, "timeout", timeout.String())
+
+	// Notify Discord that a gate is waiting (only on first activation, not on resume).
+	if existing == nil || existing.Status != "waiting" {
+		notifyDiscordHumanGateWaiting(e.cfg, subtype, prompt, assignee, e.run.WorkflowName, step.ID, hgKey, timeout.String())
+	}
+
+	// Wait for human response via callback channel.
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case cbResult, ok := <-ch:
+		if !ok {
+			result.Status = "error"
+			result.Error = "human gate channel closed unexpectedly"
+			return
+		}
+
+		// Parse the callback body as JSON to extract action/response/respondedBy.
+		// Accepts both "action" (canonical) and "decision" (legacy) field names.
+		var body struct {
+			Action      string `json:"action"`
+			Decision    string `json:"decision"`
+			Response    string `json:"response"`
+			RespondedBy string `json:"respondedBy"`
+		}
+		if err := json.Unmarshal([]byte(cbResult.Body), &body); err != nil {
+			// Treat raw body as response text.
+			body.Response = cbResult.Body
+			if subtype == "approval" {
+				body.Action = cbResult.Body // e.g. "approve" or "reject"
+			}
+		}
+		// Normalize: prefer "action", fall back to legacy "decision".
+		if body.Action == "" && body.Decision != "" {
+			body.Action = body.Decision
+		}
+
+		// Cancel — stop the step without completing.
+		if body.Action == "cancelled" {
+			cancelHumanGate(callbackMgr.DBPath(), hgKey)
+			result.Status = "cancelled"
+			result.Error = "human gate cancelled by operator"
+
+			e.publishEvent("human_gate_responded", map[string]any{
+				"runId":       e.run.ID,
+				"stepId":      step.ID,
+				"hgKey":       hgKey,
+				"action":      "cancelled",
+				"cancelledBy": body.RespondedBy,
+			})
+
+			e.mu.Lock()
+			e.run.Status = "running"
+			e.mu.Unlock()
+			checkpointRun(e)
+
+			log.Info("human gate cancelled", "step", step.ID, "key", hgKey, "cancelledBy", body.RespondedBy)
+			return
+		}
+
+		// Record completion in DB — use rejectHumanGate for approval rejections so
+		// DB status is "rejected" and the resume path (existing.Status == "rejected") matches.
+		if subtype == "approval" && (body.Action == "rejected" || body.Action == "reject") {
+			rejectHumanGate(callbackMgr.DBPath(), hgKey, body.Response, body.RespondedBy)
+		} else {
+			completeHumanGate(callbackMgr.DBPath(), hgKey, body.Action, body.Response, body.RespondedBy)
+		}
+
+		// Apply result based on subtype.
+		applyHumanGateResult(subtype, body.Action, body.Response, step, result)
+
+		// Publish responded event.
+		e.publishEvent("human_gate_responded", map[string]any{
+			"runId":       e.run.ID,
+			"stepId":      step.ID,
+			"hgKey":       hgKey,
+			"action":      body.Action,
+			"respondedBy": body.RespondedBy,
+		})
+
+		// Restore run status.
+		e.mu.Lock()
+		e.run.Status = "running"
+		e.mu.Unlock()
+		checkpointRun(e)
+
+		log.Info("human gate completed", "step", step.ID, "key", hgKey, "action", body.Action)
+
+	case <-timer.C:
+		// Timeout.
+		timeoutHumanGate(callbackMgr.DBPath(), hgKey)
+		applyHumanGateTimeout(step, result, timeout)
+
+		// Publish responded event (timeout).
+		e.publishEvent("human_gate_responded", map[string]any{
+			"runId":  e.run.ID,
+			"stepId": step.ID,
+			"hgKey":  hgKey,
+			"action": "timeout",
+		})
+
+		// Restore run status.
+		e.mu.Lock()
+		e.run.Status = "running"
+		e.mu.Unlock()
+		checkpointRun(e)
+
+		notifyDiscordHumanGateTimeout(e.cfg, subtype, e.run.WorkflowName, step.ID, step.HumanOnTimeout, timeout.String())
+		log.Warn("human gate timeout", "step", step.ID, "key", hgKey, "timeout", timeout.String())
+
+		// Discord notification already sent by notifyDiscordHumanGateTimeout above.
+
+	case <-ctx.Done():
+		// Mark gate as cancelled in DB so recovery skips it on restart.
+		cancelHumanGate(callbackMgr.DBPath(), hgKey)
+		result.Status = "cancelled"
+		result.Error = "workflow cancelled while waiting for human response"
+		e.mu.Lock()
+		e.run.Status = "running"
+		e.mu.Unlock()
+		checkpointRun(e)
+	}
+}
+
+// applyHumanGateResult maps human gate decision/response to step result.
+func applyHumanGateResult(subtype, decision, response string, step *WorkflowStep, result *StepRunResult) {
+	switch subtype {
+	case "approval":
+		if decision == "approved" || decision == "approve" {
+			result.Status = "success"
+			result.Output = fmt.Sprintf("approved: %s", response)
+		} else {
+			result.Status = "error"
+			result.Error = fmt.Sprintf("human gate rejected: %s", response)
+		}
+	case "action":
+		result.Status = "success"
+		result.Output = response
+		if result.Output == "" {
+			result.Output = "action completed"
+		}
+	case "input":
+		result.Status = "success"
+		if step.HumanInputKey != "" {
+			m := map[string]string{step.HumanInputKey: response}
+			if b, err := json.Marshal(m); err == nil {
+				result.Output = string(b)
+			} else {
+				result.Output = response
+			}
+		} else {
+			result.Output = response
+		}
+	default:
+		result.Status = "success"
+		result.Output = response
+	}
+}
+
+// applyHumanGateTimeout applies the timeout policy for a human gate step.
+func applyHumanGateTimeout(step *WorkflowStep, result *StepRunResult, timeout time.Duration) {
+	onTimeout := step.HumanOnTimeout
+	if onTimeout == "" {
+		onTimeout = "stop"
+	}
+	switch onTimeout {
+	case "skip":
+		result.Status = "skipped"
+		result.Error = fmt.Sprintf("human gate timeout after %s (skipped)", timeout)
+	case "approve":
+		result.Status = "success"
+		result.Output = fmt.Sprintf("auto-approved after timeout (%s)", timeout)
+	default: // "stop"
+		result.Status = "timeout"
+		result.Error = fmt.Sprintf("human gate timeout after %s", timeout)
+	}
+}
+
+// =============================================================================
+// Human Gate — Discord notifications
+// =============================================================================
+
+// resolveHumanAssigneeChannel returns the Discord channel ID to notify for a given assignee.
+// It first checks assigneeMap for an explicit mapping; if not found, returns fallback.
+func resolveHumanAssigneeChannel(assigneeMap map[string]string, assignee, fallback string) string {
+	if assignee != "" && len(assigneeMap) > 0 {
+		if ch, ok := assigneeMap[assignee]; ok && ch != "" {
+			return ch
+		}
+	}
+	return fallback
+}
+
+// humanGateDashboardURL builds the URL to the human-gates dashboard panel.
+// Uses cfg.Discord.DashboardBaseURL if set; otherwise falls back to http://<listenAddr>.
+func humanGateDashboardURL(cfg *Config) string {
+	base := cfg.Discord.DashboardBaseURL
+	if base == "" {
+		base = "http://" + cfg.ListenAddr
+	}
+	return strings.TrimRight(base, "/") + "/dashboard#human-gates-panel"
+}
+
+// notifyDiscordHumanGateWaiting sends a Discord embed when a human gate starts waiting.
+func notifyDiscordHumanGateWaiting(cfg *Config, subtype, prompt, assignee, workflowName, stepID, hgKey, timeoutStr string) {
+	bot, ok := cfg.Runtime.DiscordBot.(*DiscordBot)
+	if !ok || bot == nil {
+		return
+	}
+	ch := resolveHumanAssigneeChannel(cfg.Discord.HumanAssigneeMap, assignee, bot.notifyChannelID())
+	if ch == "" {
+		return
+	}
+
+	title := "⏳ Human Gate Waiting"
+	switch subtype {
+	case "approval":
+		title = "⏳ Approval Required"
+	case "input":
+		title = "⏳ Human Input Required"
+	case "action":
+		title = "⏳ Human Action Required"
+	}
+
+	promptSnippet := prompt
+	if runes := []rune(promptSnippet); len(runes) > 300 {
+		promptSnippet = string(runes[:297]) + "..."
+	}
+	if promptSnippet == "" {
+		promptSnippet = "(no prompt)"
+	}
+
+	dashboardURL := humanGateDashboardURL(cfg)
+	embed := discord.Embed{
+		Title:       title,
+		URL:         dashboardURL,
+		Description: promptSnippet,
+		Color:       0xFAA61A, // yellow-orange
+		Fields: []discord.EmbedField{
+			{Name: "Workflow", Value: workflowName, Inline: true},
+			{Name: "Step", Value: stepID, Inline: true},
+			{Name: "Type", Value: subtype, Inline: true},
+		},
+	}
+	if assignee != "" {
+		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Assignee", Value: assignee, Inline: true})
+	}
+	if timeoutStr != "" {
+		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Timeout", Value: timeoutStr, Inline: true})
+	}
+	if hgKey != "" {
+		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Gate Key", Value: "`" + hgKey + "`", Inline: false})
+	}
+	embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Dashboard", Value: dashboardURL, Inline: false})
+
+	bot.sendEmbed(ch, embed)
+}
+
+// notifyDiscordHumanGateTimeout sends a Discord embed when a human gate times out.
+func notifyDiscordHumanGateTimeout(cfg *Config, subtype, workflowName, stepID, onTimeout, timeoutStr string) {
+	bot, ok := cfg.Runtime.DiscordBot.(*DiscordBot)
+	if !ok || bot == nil {
+		return
+	}
+	ch := bot.notifyChannelID()
+	if ch == "" {
+		return
+	}
+
+	behavior := onTimeout
+	if behavior == "" {
+		behavior = "stop"
+	}
+
+	embed := discord.Embed{
+		Title:       "⏰ Human Gate Timeout",
+		Description: fmt.Sprintf("Gate timed out after %s → **%s**", timeoutStr, behavior),
+		Color:       0xED4245, // red
+		Fields: []discord.EmbedField{
+			{Name: "Workflow", Value: workflowName, Inline: true},
+			{Name: "Step", Value: stepID, Inline: true},
+			{Name: "Type", Value: subtype, Inline: true},
+			{Name: "On Timeout", Value: behavior, Inline: true},
+		},
+	}
+
+	bot.sendEmbed(ch, embed)
+}
+
+// =============================================================================
 // Recovery helpers — root-only (use dispatchState + executeWorkflow)
 // =============================================================================
 
-// recoverPendingWorkflows scans for workflows with pending external steps and resumes them.
+// recoverPendingWorkflows scans for workflows with pending external/human steps and resumes them.
 func recoverPendingWorkflows(cfg *Config, state *dispatchState, sem, childSem chan struct{}) {
 	if cfg.HistoryDB == "" || callbackMgr == nil {
 		return
 	}
 
-	// Find all unique run IDs with waiting callbacks.
-	sql := `SELECT DISTINCT run_id FROM workflow_callbacks WHERE status='waiting'`
-	rows, err := db.Query(cfg.HistoryDB, sql)
-	if err != nil || len(rows) == 0 {
+	// Collect all unique run IDs with waiting callbacks OR waiting human gates.
+	pendingRunIDs := make(map[string]bool)
+
+	cbRows, err := db.Query(cfg.HistoryDB, `SELECT DISTINCT run_id FROM workflow_callbacks WHERE status='waiting'`)
+	if err == nil {
+		for _, row := range cbRows {
+			pendingRunIDs[fmt.Sprintf("%v", row["run_id"])] = true
+		}
+	}
+
+	hgRows, err := db.Query(cfg.HistoryDB, `SELECT DISTINCT run_id FROM workflow_human_gates WHERE status='waiting'`)
+	if err == nil {
+		for _, row := range hgRows {
+			pendingRunIDs[fmt.Sprintf("%v", row["run_id"])] = true
+		}
+	}
+
+	if len(pendingRunIDs) == 0 {
 		return
 	}
 
-	for _, row := range rows {
-		runID := fmt.Sprintf("%v", row["run_id"])
-
+	for runID := range pendingRunIDs {
 		// Load the workflow run.
 		run, err := queryWorkflowRunByID(cfg.HistoryDB, runID)
 		if err != nil || run == nil {
@@ -2352,6 +2886,12 @@ func recoverPendingWorkflows(cfg *Config, state *dispatchState, sem, childSem ch
 			recoveryVars["__cb_key_"+cb.StepID] = cb.Key
 		}
 
+		// Collect pending human gate keys for this run.
+		pendingHumanGates := queryPendingHumanGatesByRun(cfg.HistoryDB, runID)
+		for _, hg := range pendingHumanGates {
+			recoveryVars["__hg_key_"+hg.StepID] = hg.Key
+		}
+
 		// Mark old run as superseded so it's not left orphaned.
 		markRunSuperseded := func(oldRunID string) {
 			sql := fmt.Sprintf(
@@ -2369,13 +2909,15 @@ func recoverPendingWorkflows(cfg *Config, state *dispatchState, sem, childSem ch
 
 // checkpointRun saves current workflow run state to DB.
 func checkpointRun(e *workflowExecutor) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	recordWorkflowRun(e.cfg.HistoryDB, e.run)
 }
 
-// hasWaitingExternalStep checks if any step result indicates a waiting external step.
+// hasWaitingExternalStep checks if any step result indicates a waiting external or human step.
 func hasWaitingExternalStep(results map[string]*StepRunResult) bool {
 	for _, r := range results {
-		if r.Status == "waiting" {
+		if r.Status == "waiting" || r.Status == "waiting_human" {
 			return true
 		}
 	}
@@ -2561,6 +3103,7 @@ func buildStepTask(s *WorkflowStep, wCtx *WorkflowContext, workflowName string) 
 		Timeout:        resolveTemplate(s.Timeout, wCtx),
 		Budget:         s.Budget,
 		PermissionMode: resolveTemplate(s.PermissionMode, wCtx),
+		AllowDangerous: s.AllowDangerous,
 		Source:         "workflow:" + workflowName,
 	}
 }

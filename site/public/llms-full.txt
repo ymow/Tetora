@@ -1,0 +1,70 @@
+# Tetora
+
+> Tetora is an open-source AI agent orchestration platform. Single binary, zero dependencies. Deploy on macOS, Linux, or Windows. Manage agents through Discord or a web Dashboard. Supports Claude (official claude-code CLI or Anthropic API), OpenAI, Codex, Ollama, and any OpenAI-compatible model.
+
+## Core Concepts
+
+### What is Tetora?
+Tetora is an AI agent orchestration platform that lets you deploy multi-agent workflows without writing infrastructure code. You define agent personalities (SOUL.md), assign roles, connect to Discord, and Tetora handles routing, session management, scheduling, and task coordination.
+
+### What is SOUL.md?
+SOUL.md is a plain-text file that defines an agent's personality, expertise, communication style, and behavioral rules. Each agent in a Tetora team has its own SOUL.md. Think of it as a combination of a job description and an SOP — written in a format the LLM can read directly.
+
+### What is Dispatch?
+Dispatch is Tetora's task queue system. You submit tasks via Discord, the Dashboard, CLI, or API. Agents pick up tasks from the queue, execute them (optionally in a git worktree for isolation), and report back. Tasks can be scheduled (cron), triggered manually, or chained in Workflows.
+
+### What is Human Gate?
+Human Gate is an approval checkpoint in Workflows. When an agent reaches a Human Gate step, execution pauses and a notification is sent (Discord, dashboard). The operator approves or rejects before execution continues. Used for irreversible actions, financial operations, or anything requiring human judgment.
+
+### What is DangerousOpsConfig?
+DangerousOpsConfig is a pattern-based command blocking engine. Before any agent runs a shell command, Tetora checks it against a configurable blocklist (rm -rf, DROP TABLE, git push --force, etc.). Matched commands are rejected before execution — no side effects, no data loss. Configurable per-agent.
+
+### What is the Workflow Engine?
+Tetora includes a DAG-based Workflow Engine. Define multi-step tasks as YAML with dependencies between steps. Steps can be sequential, parallel, or conditional. Human Gate steps pause for approval. Workflows support retry policies and failure handling.
+
+### How does Tetora integrate with Claude?
+Tetora uses the official claude-code CLI (`claudeProvider: "claude-code"`) or the direct Anthropic API with API keys (`claudeProvider: "anthropic"`). It does NOT use OAuth subscription tokens — fully compliant with Anthropic's Terms of Service. This means Tetora users are not at risk of the kind of service interruptions that affected tools like OpenClaw in April 2026.
+
+### Scheduling
+```bash
+tetora job add --cron "0 21 * * *" "Run nightly accounting check"
+tetora job add --cron "0 9 * * 1" "Weekly team standup summary"
+```
+Full cron expression support. Jobs run on the Tetora daemon on your machine or server.
+
+### Multi-agent teams
+Tetora supports multiple agents with different roles and models. Each agent gets its own Discord channel or thread binding, its own SOUL.md, and can use different LLM providers or models. Agents coordinate via the shared task queue and memory system.
+
+## Docs
+
+- [Configuration](https://tetora.dev/docs/configuration): Full config.json reference — providers, agents, Discord, cron, safety settings
+- [Workflow Engine](https://tetora.dev/docs/workflow): YAML-based DAG workflows with Human Gate and retry policies
+- [Taskboard](https://tetora.dev/docs/taskboard): Visual task management, status tracking, kanban view
+- [MCP Integration](https://tetora.dev/docs/mcp): Connect external tools via Model Context Protocol
+- [Hooks](https://tetora.dev/docs/hooks): Event-driven hooks for custom integrations
+- [Discord Setup](https://tetora.dev/docs/discord-multitasking): Multi-agent Discord with thread bindings
+
+## Blog
+
+- [The OpenClaw Lesson](https://tetora.dev/blog/openclaw-lesson): Analysis of the OpenClaw security/ToS incident and what it means for agent architecture
+- [Why Tetora Uses the Official Claude API](https://tetora.dev/blog/tetora-claude-compliance): Technical explanation of Tetora's Claude integration and compliance
+- [Scheduling and Dispatch](https://tetora.dev/blog/scheduling-and-dispatch): Deep dive into Tetora's scheduling stack
+- [v2.2 Release](https://tetora.dev/blog/v2-2-0-release): DangerousOpsConfig, multi-tenant dispatch, worktree failure preservation
+- [v2.2.3 Release](https://tetora.dev/blog/v2-2-3-release): Model picker, VibeVoice TTS, Human Gate improvements
+- [Tax Accountant Case Study](https://tetora.dev/blog/tax-accountant-case-study): How a solo CPA serves 60 clients using Tetora-equivalent automation
+
+## Tips
+
+- [Auto-Dispatch Basics](https://tetora.dev/tips/auto-dispatch-basics): Queue your first task
+- [Creating Your First SOUL File](https://tetora.dev/tips/creating-your-first-soul-file): Define agent personality
+- [Model Selection Per Role](https://tetora.dev/tips/model-selection-per-role): When to use Sonnet vs Opus
+- [Scheduling Recurring Tasks](https://tetora.dev/tips/scheduling-recurring-tasks-with-cron): Cron job setup
+- [Task Dependencies and Chaining](https://tetora.dev/tips/task-dependencies-and-chaining): Workflow step ordering
+- [Discord Multi-Channel](https://tetora.dev/tips/discord-multi-channel): Run agents in parallel threads
+- [New Session Command](https://tetora.dev/tips/new-session-command): Reset agent context with !new
+
+## Download
+
+- Single binary install: `curl -fsSL https://tetora.dev/install.sh | sh`
+- [Download page](https://tetora.dev/download): macOS/Linux/Windows installers
+- [GitHub](https://github.com/TakumaLee/Tetora): Source code, issues, releases

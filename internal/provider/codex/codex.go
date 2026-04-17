@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"tetora/internal/provider"
@@ -25,6 +24,19 @@ var (
 
 func pctRegexp() *regexp.Regexp   { return rePercent }
 func resetRegexp() *regexp.Regexp { return reReset }
+
+func detectQuotaError(text string) string {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return ""
+	}
+	if strings.Contains(lower, "out of extra usage") ||
+		(strings.Contains(lower, "extra usage") && strings.Contains(lower, "resets")) ||
+		(strings.Contains(lower, "usage limit") && strings.Contains(lower, "resets")) {
+		return strings.TrimSpace(text)
+	}
+	return ""
+}
 
 // Provider executes tasks using the Codex CLI (codex exec --json).
 type Provider struct {
@@ -45,13 +57,7 @@ func (p *Provider) Execute(ctx context.Context, req provider.Request) (*provider
 	cmd.Dir = req.Workdir
 	cmd.Env = os.Environ()
 	// Kill entire process group on timeout to prevent orphaned child processes.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
-		return os.ErrProcessDone
-	}
+	setProcessGroup(cmd)
 	cmd.WaitDelay = 5 * time.Second
 
 	if req.EventCh != nil {
@@ -333,6 +339,11 @@ func ParseOutput(stdout, stderr []byte, exitCode int) *provider.Result {
 	}
 
 	pr.Output = strings.Join(outputParts, "")
+	if quotaErr := detectQuotaError(pr.Output); quotaErr != "" {
+		pr.IsError = true
+		pr.Error = quotaErr
+		pr.Output = ""
+	}
 
 	if !pr.IsError && exitCode != 0 {
 		pr.IsError = true
@@ -344,6 +355,13 @@ func ParseOutput(stdout, stderr []byte, exitCode int) *provider.Result {
 			errStr = fmt.Sprintf("codex exited with code %d", exitCode)
 		}
 		pr.Error = errStr
+	}
+	if !pr.IsError {
+		if quotaErr := detectQuotaError(string(stderr)); quotaErr != "" {
+			pr.IsError = true
+			pr.Error = quotaErr
+			pr.Output = ""
+		}
 	}
 
 	return pr

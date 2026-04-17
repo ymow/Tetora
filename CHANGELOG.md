@@ -2,6 +2,100 @@
 
 ---
 
+## [v2.2.5] - 2026-04-17
+
+### Added
+- **Fresh-session compaction**: New `fresh-session` strategy — summarises session via LLM, writes summary to workspace memory, archives the old session, and injects the summary into the next session's system prompt. Eliminates JSONL cache bloat while preserving full context continuity
+- **Notify-only compaction mode**: `compaction.mode = "notify"` alerts user via Discord when context threshold is approached instead of auto-compacting; backoff prevents notification spam
+- **`/compact` Discord command**: Manual compaction trigger respecting configured strategy (`fresh-session` or inline); typing indicator and 3-min timeout
+- **BM25 tool search**: Replace substring search with BM25-ranked two-stage tool reranking; pluggable reranker interface, deferred tool loading, usage frequency tracking
+- **Per-task todo file**: Agents can maintain per-task todo lists at `agents/{agent}/todos/{taskId}.md`; task ID shown on dashboard cards with URL hash routing
+- **Per-context tool profile**: Agents can declare a tool profile override in their config, applied per-context without affecting other agents
+- **Session auto-resume**: Discord sessions auto-continue context from archived sessions on channel reconnect
+- **`allowDangerous` taskboard flag**: Bypass dangerous-ops check for trusted automation flows
+
+### Fixed
+- **Discord output cap**: Raise max output from 5700 → 16000 chars with chunked delivery
+- **CLI error surfacing**: Non-JSON CLI output now captured (10 lines × 300 chars) and surfaced as structured error instead of silent failure
+- **Image error auto-recovery**: Detect image-related CLI crash → archive broken session → notify user with friendly message; no more wedged channels
+- **Agent session dispatch bypass**: Agent sub-sessions auto-bypass the concurrent dispatch guard to prevent deadlock
+- **Claude binary auto-detect**: Detect `claude` binary via login shell before falling back to PATH, fixing installs that use `fnm`/`nvm` managed Node
+- **Service restart**: Use `tetora restart` in bump flow; fix KeepAlive respawn loop with proper `bootout` before kill
+- **Session token counter reset**: Inline compaction now resets `total_tokens_in` to 0 so the compaction threshold re-arms correctly after compact
+- **Memory abort on failure**: `compactSessionFresh` aborts archive if summary memory write fails, preventing silent context loss
+- **Summary one-shot injection**: Replace `MessageCount <= 3` guard with delete-after-inject, eliminating async race in summary injection
+
+---
+
+## [v2.2.4] - 2026-04-12
+
+### Added
+- **Regression guard tests**: Context cancellation timeout tests for DB operations, unit test for dispatchTask prompt construction with task ID validation
+- **Context propagation improvements**: ExecContext/QueryContext for DB calls, QuerySessionByIDCtx method to ensure timeout handling in all goroutines
+- **Site SEO enhancements**: BreadcrumbList structured data, theme-color extraction, OG locale optimization
+- **CI improvements**: Auto-update site version on release, CODEOWNERS for auto-assignment, dashboard drift guard (rebuild + `git diff --exit-code` on every PR)
+- **Tips**: Model Selection Per Role (en/ja/zh-TW) — Sonnet for drafts, Opus for strategy
+- **Observability**: Warning logs to distinguish CLI silent success vs truly no output in provider streaming
+
+### Fixed
+- **i18n URL dedup**: Fix duplicate locale prefix in zh-TW blog/tips URLs (e.g. `/zh-TW/blog/zh-tw/slug/`)
+- **Build system**: Extract platform-specific process group handling, syscall usage for Windows cross-compile support
+- **Site versioning**: Update i18n download buttons to v2.2.3, fix release CI workflow
+- **Refactoring**: Extract OG_LOCALE_MAP constant from Base.astro to consts.ts for reusability, preserve task description language (繁體中文) in agent commit messages
+- **Skills cache**: `LoadFileSkills` now caches per-directory with `sync.RWMutex`; invalidated on create/approve/delete
+- **SessionLockFile**: Extracted `.tetora-active` into a shared constant to eliminate duplicate hardcoded strings
+
+---
+
+## [v2.2.3] - 2026-04-04
+
+### Added
+- **Model switching UX**: Discord `!model pick` interactive picker (Agent → Provider → Model), `!local`/`!cloud` bulk toggle, `!mode` summary with buttons
+- **Dashboard model picker**: Provider bar + model dropdown in agent editor, quick-switch on agent cards, Cloud/Local badges, global inference mode toggle
+- **Inference mode API**: `POST/GET /api/inference-mode` for cloud/local/mixed switching with atomic batch config write
+- **Claude provider preference**: `claudeProvider` config field — choose between `claude-code` (CLI) and `anthropic` (API) per installation
+- **Per-model history tracking**: `provider` column in history DB, `byModel` stats grouped by model + provider
+- **Human gate reject recovery**: Retry API + dashboard UI for rejected human gates
+- **Human gate cancel**: Cancel API + dashboard button
+- **Human gate Discord notifications**: Timeout/waiting/assignee notifications with dashboard links
+- **Human gate schema unification**: `action` (canonical) + `decision` (legacy compat) API fields
+- **VibeVoice TTS**: Local VibeVoice + fal.ai cloud TTS providers with fallback chain
+- **Skill AllowedTools**: Per-skill tool restrictions via `allowedTools` field in SkillConfig
+- **Learned skill extraction**: Auto-extract skills from session history with pending review display
+- **Discord commands docs**: Full reference at `docs/discord-commands.md` + README section
+- **Blog**: v2.2 release notes (en/zh-TW/ja), Auto-Dispatch tips
+- **CLI**: `tetora project add` and `tetora guide` commands
+- **Config**: `config.local.json` deep-merge override support
+- **Privacy policy**: tetora.dev/privacy page
+
+### Fixed
+- **Codex CLI v0.118+**: Support new JSONL format (`item.completed` events), close stdin to prevent hang
+- **Claude CLI permissions**: Add `--dangerously-skip-permissions` when `bypassPermissions` is set (enables Bash commands like `gh`)
+- **Local model cost**: Ollama/LM Studio endpoints automatically report $0 cost
+- **Provider inference**: Dynamic model matching for Ollama (e.g. `dolphin-mistral` matches `dolphin-mistral:latest`), exact match for Claude aliases
+- **Auto-new-session**: Automatically archive Discord session when provider changes
+- **workspace package**: Add missing `internal/workspace/` (was imported but never committed)
+- **resumeWorkflow**: Fix missing `extraVars` parameter at 3 call sites
+- **Data race**: Hold mutex during `checkpointRun` JSON marshal in workflow DAG
+- **TestSpendingForecast**: Avoid month boundary crossing when day-of-month < 5
+- **Session resume**: Retry with new session when resume fails with `error_during_execution`
+- **launchd**: Fix plist PATH and make reload race condition
+- **Codex quota**: Detect quota/usage-limit errors from stdout and stderr
+- **OAuth**: Fix redirect URL construction
+- **Security**: Harden config/data file permissions (0644 → 0600)
+- **Dispatch**: Dedup guard + execution guard to prevent infinite retry loops
+- **Worktree**: Auto-resolve `.tetora-branch` conflict on merge
+
+### Changed
+- **IsLocalProvider / IsLocalEndpoint helpers**: Replace magic string checks across codebase
+- **TruncateStr consolidation**: Unified into `internal/text` package with rune-aware truncation
+- **History SQL**: Migrate write operations from `db.Query` to `db.Exec` for write mutex consistency
+- **Human gate**: Replace `http.Error` with `writeJSONError` for consistent JSON responses
+- **Provider presets**: Add `gpt-5.4`, `gpt-5.3` to OpenAI/Codex presets
+- **OpenAIProvider**: Cache `IsLocal` at construction instead of per-request URL check
+
+---
+
 ## [v2.2.2] - 2026-03-27
 
 ### Added

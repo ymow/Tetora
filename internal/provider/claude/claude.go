@@ -73,6 +73,29 @@ func setProcessGroup(cmd *exec.Cmd) {
 }
 
 func (p *Provider) Execute(ctx context.Context, req provider.Request) (*provider.Result, error) {
+	pr, err := p.executeOnce(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Retry once without --resume if the session file is stale (e.g. copied from
+	// another machine with a different project path). The existing sessionFileExists
+	// check in BuildArgs handles missing files; this handles files that exist but
+	// belong to the wrong project directory.
+	if req.Resume && isStaleSessionError(pr) {
+		log.Warn("session resume failed with error_during_execution, retrying with new session",
+			"sessionId", req.SessionID, "error", pr.Error)
+		req.Resume = false
+		pr, err = p.executeOnce(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return pr, nil
+}
+
+func (p *Provider) executeOnce(ctx context.Context, req provider.Request) (*provider.Result, error) {
 	args := BuildArgs(req, req.EventCh != nil)
 
 	var cmd *exec.Cmd
@@ -82,22 +105,25 @@ func (p *Provider) Execute(ctx context.Context, req provider.Request) (*provider
 		if p.envFilter != nil {
 			envVars = p.envFilter()
 		}
+		envVars = append(envVars, "TETORA_SOURCE=agent_dispatch")
 		cmd = p.buildDockerCmd(ctx, req.Workdir, p.binaryPath, dockerArgs, req.AddDirs, req.MCPPath, envVars)
 	} else {
 		cmd = exec.CommandContext(ctx, p.binaryPath, args...)
 		cmd.Dir = req.Workdir
 		// Filter out Claude Code session env vars so Claude Code doesn't refuse to start
 		// when Tetora is invoked from within a Claude Code session.
+		// Also filter TETORA_SOURCE to avoid duplicate values in nested dispatches.
 		rawEnv := os.Environ()
 		filteredEnv := make([]string, 0, len(rawEnv))
 		for _, e := range rawEnv {
 			if !strings.HasPrefix(e, "CLAUDECODE=") &&
 				!strings.HasPrefix(e, "CLAUDE_CODE_ENTRYPOINT=") &&
-				!strings.HasPrefix(e, "CLAUDE_CODE_TEAM_MODE=") {
+				!strings.HasPrefix(e, "CLAUDE_CODE_TEAM_MODE=") &&
+				!strings.HasPrefix(e, "TETORA_SOURCE=") {
 				filteredEnv = append(filteredEnv, e)
 			}
 		}
-		cmd.Env = filteredEnv
+		cmd.Env = append(filteredEnv, "TETORA_SOURCE=agent_dispatch")
 	}
 	setProcessGroup(cmd)
 
@@ -187,6 +213,17 @@ func (p *Provider) Execute(ctx context.Context, req provider.Request) (*provider
 	return pr, nil
 }
 
+// isStaleSessionError returns true when a resume attempt failed because the
+// session file is stale or belongs to a different project path. This is
+// detected by: is_error with subtype "error_during_execution" and zero tokens
+// consumed (meaning Claude never actually started processing).
+func isStaleSessionError(pr *provider.Result) bool {
+	return pr != nil &&
+		pr.IsError &&
+		pr.Error == "error_during_execution" &&
+		pr.TokensIn == 0 && pr.TokensOut == 0
+}
+
 // executeStreaming runs the command and parses stream-json output in real time.
 func (p *Provider) executeStreaming(ctx context.Context, cmd *exec.Cmd, req provider.Request) (*provider.Result, error) {
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -205,11 +242,13 @@ func (p *Provider) executeStreaming(ctx context.Context, cmd *exec.Cmd, req prov
 	toolNameByID := make(map[string]string)
 	scanner := bufio.NewScanner(stdoutPipe)
 	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
+	lineCount := 0
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
+		lineCount++
 
 		var msg streamMsg
 		if err := json.Unmarshal(line, &msg); err != nil {
@@ -310,8 +349,25 @@ func (p *Provider) executeStreaming(ctx context.Context, cmd *exec.Cmd, req prov
 		exitCode = cmd.ProcessState.ExitCode()
 	}
 
+	// Distinguish between CLI silent success and truly no output to aid diagnosis.
+	if exitCode == 0 && ctx.Err() == nil && runErr == nil {
+		if lineCount == 0 {
+			log.Warn("truly_no_output: CLI exited 0 with empty stdout",
+				"sessionId", req.SessionID, "exitCode", exitCode)
+		} else if resultMsg == nil {
+			log.Warn("output_without_result: CLI produced output lines but no result message",
+				"sessionId", req.SessionID, "lineCount", lineCount)
+		}
+	}
+
 	pr := buildResultFromStream(resultMsg, stderr.Bytes(), exitCode)
 	pr.DurationMs = elapsed.Milliseconds()
+
+	// Warn when result message is present but carries no tokens and no output.
+	if pr.Error == "empty run: CLI returned success but no tokens were consumed" {
+		log.Warn("empty_result_event: CLI returned result message with zero tokens and empty output",
+			"sessionId", req.SessionID, "exitCode", exitCode)
+	}
 
 	if ctx.Err() == context.DeadlineExceeded {
 		pr.IsError = true
@@ -419,6 +475,10 @@ func BuildArgs(req provider.Request, streaming bool) []string {
 
 	if req.MCPPath != "" {
 		args = append(args, "--mcp-config", req.MCPPath)
+	}
+
+	if len(req.AllowedTools) > 0 {
+		args = append(args, "--allowedTools", strings.Join(req.AllowedTools, ","))
 	}
 
 	if req.SystemPrompt != "" {
@@ -597,7 +657,7 @@ func buildFromParsed(co output, result ParsedResult) ParsedResult {
 		result.TokensIn = co.Usage.totalInputTokens()
 		result.TokensOut = co.Usage.OutputTokens
 	}
-	if co.IsError {
+	if co.IsError && co.Subtype != "success" {
 		result.Status = "error"
 		result.Error = co.Subtype
 		if result.Error == "" {

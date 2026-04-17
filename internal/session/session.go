@@ -2,6 +2,7 @@
 package session
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"log/slog"
@@ -306,6 +307,77 @@ func UpdateSessionStatus(dbPath, sessionID, status string) error {
 	return db.Exec(dbPath, sql)
 }
 
+// CreateSessionCtx is like CreateSession but respects context cancellation.
+func CreateSessionCtx(ctx context.Context, dbPath string, s Session) error {
+	sql := fmt.Sprintf(
+		`INSERT OR IGNORE INTO sessions (id, %s, source, status, title, channel_key, total_cost, total_tokens_in, total_tokens_out, message_count, created_at, updated_at)
+		 VALUES ('%s','%s','%s','%s','%s','%s',0,0,0,0,'%s','%s')`,
+		sessionAgentCol,
+		db.Escape(s.ID),
+		db.Escape(s.Agent),
+		db.Escape(s.Source),
+		db.Escape(s.Status),
+		db.Escape(s.Title),
+		db.Escape(s.ChannelKey),
+		db.Escape(s.CreatedAt),
+		db.Escape(s.UpdatedAt),
+	)
+	return db.ExecContext(ctx, dbPath, sql)
+}
+
+// AddSessionMessageCtx is like AddSessionMessage but respects context cancellation.
+func AddSessionMessageCtx(ctx context.Context, dbPath string, msg SessionMessage) error {
+	content := msg.Content
+	if k := getEncryptionKey(); k != "" {
+		if EncryptFn != nil {
+			if enc, err := EncryptFn(content, k); err == nil {
+				content = enc
+			}
+		}
+	}
+	sql := fmt.Sprintf(
+		`INSERT INTO session_messages (session_id, role, content, cost_usd, tokens_in, tokens_out, model, task_id, created_at)
+		 VALUES ('%s','%s','%s',%f,%d,%d,'%s','%s','%s')`,
+		db.Escape(msg.SessionID),
+		db.Escape(msg.Role),
+		db.Escape(content),
+		msg.CostUSD,
+		msg.TokensIn,
+		msg.TokensOut,
+		db.Escape(msg.Model),
+		db.Escape(msg.TaskID),
+		db.Escape(msg.CreatedAt),
+	)
+	return db.ExecContext(ctx, dbPath, sql)
+}
+
+// UpdateSessionStatsCtx is like UpdateSessionStats but respects context cancellation.
+func UpdateSessionStatsCtx(ctx context.Context, dbPath, sessionID string, costDelta float64, tokensInDelta, tokensOutDelta, msgCountDelta int) error {
+	now := time.Now().Format(time.RFC3339)
+	sql := fmt.Sprintf(
+		`UPDATE sessions SET
+		  total_cost = total_cost + %f,
+		  total_tokens_in = total_tokens_in + %d,
+		  total_tokens_out = total_tokens_out + %d,
+		  message_count = message_count + %d,
+		  updated_at = '%s'
+		 WHERE id = '%s'`,
+		costDelta, tokensInDelta, tokensOutDelta, msgCountDelta,
+		db.Escape(now), db.Escape(sessionID),
+	)
+	return db.ExecContext(ctx, dbPath, sql)
+}
+
+// UpdateSessionStatusCtx is like UpdateSessionStatus but respects context cancellation.
+func UpdateSessionStatusCtx(ctx context.Context, dbPath, sessionID, status string) error {
+	now := time.Now().Format(time.RFC3339)
+	sql := fmt.Sprintf(
+		`UPDATE sessions SET status = '%s', updated_at = '%s' WHERE id = '%s'`,
+		db.Escape(status), db.Escape(now), db.Escape(sessionID),
+	)
+	return db.ExecContext(ctx, dbPath, sql)
+}
+
 func UpdateSessionTitle(dbPath, sessionID, title string) error {
 	now := time.Now().Format(time.RFC3339)
 	sql := fmt.Sprintf(
@@ -370,6 +442,21 @@ func QuerySessionByID(dbPath, id string) (*Session, error) {
 		`SELECT `+sessionSelectCols()+`
 		 FROM sessions WHERE id = '%s'`, db.Escape(id))
 	rows, err := db.Query(dbPath, sql)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	s := sessionFromRow(rows[0])
+	return &s, nil
+}
+
+func QuerySessionByIDCtx(ctx context.Context, dbPath, id string) (*Session, error) {
+	sql := fmt.Sprintf(
+		`SELECT `+sessionSelectCols()+`
+		 FROM sessions WHERE id = '%s'`, db.Escape(id))
+	rows, err := db.QueryContext(ctx, dbPath, sql)
 	if err != nil {
 		return nil, err
 	}
@@ -666,6 +753,24 @@ func FindChannelSession(dbPath, chKey string) (*Session, error) {
 	return &s, nil
 }
 
+// FindLastArchivedChannelSession returns the most recently archived session
+// for the given channel key, or nil if none exists.
+func FindLastArchivedChannelSession(dbPath, chKey string) (*Session, error) {
+	sql := fmt.Sprintf(
+		`SELECT `+sessionSelectCols()+`
+		 FROM sessions WHERE channel_key = '%s' AND status = 'archived' ORDER BY updated_at DESC LIMIT 1`,
+		db.Escape(chKey))
+	rows, err := db.Query(dbPath, sql)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	s := sessionFromRow(rows[0])
+	return &s, nil
+}
+
 func GetOrCreateChannelSession(dbPath, source, chKey, role, title string) (*Session, error) {
 	sess, err := FindChannelSession(dbPath, chKey)
 	if err != nil {
@@ -776,12 +881,4 @@ func NewUUID() string {
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
-}
-
-// TruncateStr truncates a string to maxLen, appending "..." if truncated.
-func TruncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }

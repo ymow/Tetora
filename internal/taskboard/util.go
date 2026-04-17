@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+// SessionLockFile is the filename written inside an active worktree to signal
+// that a Claude session is currently running there. Both the worktree manager
+// and the task dispatcher reference this constant to avoid hardcoding the string
+// in multiple places.
+const SessionLockFile = ".tetora-active"
+
 // GenerateID generates a unique ID with the given prefix.
 func GenerateID(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
@@ -74,12 +80,14 @@ func parseTaskRow(row map[string]any) TaskBoard {
 		CreatedAt:     fmt.Sprintf("%v", row["created_at"]),
 		UpdatedAt:     fmt.Sprintf("%v", row["updated_at"]),
 		CompletedAt:   fmt.Sprintf("%v", row["completed_at"]),
-		RetryCount:    int(getFloat64(row, "retry_count")),
+		RetryCount:     int(getFloat64(row, "retry_count")),
+		ExecutionCount: int(getFloat64(row, "execution_count")),
 		CostUSD:       getFloat64(row, "cost_usd"),
 		DurationMs:    int64(getFloat64(row, "duration_ms")),
 		SessionID:     fmt.Sprintf("%v", row["session_id"]),
-		WorkflowRunID: workflowRunID,
-		Workdirs:      workdirs,
+		WorkflowRunID:  workflowRunID,
+		Workdirs:       workdirs,
+		AllowDangerous: getFloat64(row, "allow_dangerous") != 0,
 	}
 }
 
@@ -123,6 +131,8 @@ func toSnakeCase(s string) string {
 		return "`type`" // SQLite reserved word — must be quoted
 	case "workflowRunId":
 		return "workflow_run_id"
+	case "executionCount":
+		return "execution_count"
 	default:
 		return s
 	}

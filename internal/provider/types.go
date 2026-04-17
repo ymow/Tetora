@@ -46,6 +46,9 @@ type Request struct {
 	Resume         bool // use --resume to resume existing CLI session
 	PersistSession bool // don't add --no-session-persistence (channel sessions)
 
+	// AllowedTools restricts which tools the CLI agent can use (Claude --allowedTools).
+	AllowedTools []string
+
 	// AgentName is the Tetora agent name (e.g. "ruri") for worker display.
 	AgentName string
 
@@ -133,9 +136,10 @@ type ContentBlock struct {
 // ToolDef defines a tool that can be called by providers.
 // Note: Handler is intentionally omitted — providers only need Name/Description/InputSchema.
 type ToolDef struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	InputSchema  json.RawMessage `json:"input_schema"`
+	DeferLoading bool            `json:"defer_loading,omitempty"` // When true, tool is loaded on-demand via search
 }
 
 // ToolCall represents a tool invocation request from the provider.

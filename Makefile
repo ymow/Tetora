@@ -1,6 +1,6 @@
 export PATH := /usr/local/Cellar/go/1.26.0/bin:$(PATH)
 
-VERSION  := 2.2.2
+VERSION  := 2.2.5
 BINARY   := tetora
 INSTALL  := $(HOME)/.tetora/bin
 LDFLAGS  := -s -w -X main.tetoraVersion=$(VERSION)
@@ -39,14 +39,20 @@ dev: dashboard
 	go build -ldflags "$(LDFLAGS)" -o $(INSTALL)/$(BINARY) .
 	@codesign -s - -f -i com.takumalee.tetora $(INSTALL)/$(BINARY) 2>/dev/null || true
 
+PLIST := $(HOME)/Library/LaunchAgents/com.tetora.daemon.plist
+
 reload: dev
-	$(INSTALL)/$(BINARY) stop 2>/dev/null || true
+	@# Unload launchd first to prevent KeepAlive from re-spawning during binary replacement.
+	@if [ -f "$(PLIST)" ]; then launchctl bootout gui/$$(id -u)/com.tetora.daemon 2>/dev/null || true; fi
+	@$(INSTALL)/$(BINARY) stop 2>/dev/null || true
 	@sleep 1
-	@if lsof -ti :8991 >/dev/null 2>&1; then \
-		lsof -ti :8991 | xargs kill -9 2>/dev/null || true; \
-		sleep 1; \
+	@pgrep -f "tetora serve" | xargs kill -9 2>/dev/null || true
+	@sleep 1
+	@if [ -f "$(PLIST)" ]; then \
+		launchctl bootstrap gui/$$(id -u) "$(PLIST)" 2>/dev/null || true; \
+	else \
+		$(INSTALL)/$(BINARY) start 2>/dev/null || true; \
 	fi
-	$(INSTALL)/$(BINARY) start 2>/dev/null || true
 	@echo "Reloaded v$(VERSION)"
 
 install: build
@@ -137,13 +143,7 @@ bump: _bump_check_running_workflows dashboard
 	sed -i '' "s/^VERSION  := .*/VERSION  := $$NEXT/" Makefile; \
 	go build -ldflags "-s -w -X main.tetoraVersion=$$NEXT" -o $(INSTALL)/$(BINARY) .; \
 	codesign -s - -f -i com.takumalee.tetora $(INSTALL)/$(BINARY) 2>/dev/null || true; \
-	$(INSTALL)/$(BINARY) stop 2>/dev/null || true; \
-	sleep 1; \
-	if lsof -ti :8991 >/dev/null 2>&1; then \
-		lsof -ti :8991 | xargs kill -9 2>/dev/null || true; \
-		sleep 1; \
-	fi; \
-	$(INSTALL)/$(BINARY) start 2>/dev/null || true; \
+	$(INSTALL)/$(BINARY) restart 2>&1 || true; \
 	echo "v$$NEXT installed and reloaded"
 
 bump-force: dashboard
@@ -158,13 +158,7 @@ bump-force: dashboard
 	sed -i '' "s/^VERSION  := .*/VERSION  := $$NEXT/" Makefile; \
 	go build -ldflags "-s -w -X main.tetoraVersion=$$NEXT" -o $(INSTALL)/$(BINARY) .; \
 	codesign -s - -f -i com.takumalee.tetora $(INSTALL)/$(BINARY) 2>/dev/null || true; \
-	$(INSTALL)/$(BINARY) stop 2>/dev/null || true; \
-	sleep 1; \
-	if lsof -ti :8991 >/dev/null 2>&1; then \
-		lsof -ti :8991 | xargs kill -9 2>/dev/null || true; \
-		sleep 1; \
-	fi; \
-	$(INSTALL)/$(BINARY) start 2>/dev/null || true; \
+	$(INSTALL)/$(BINARY) restart 2>&1 || true; \
 	echo "v$$NEXT installed and reloaded"
 
 test:

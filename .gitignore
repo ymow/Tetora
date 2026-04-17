@@ -10,6 +10,7 @@ dist/
 *.db-wal
 *.db-shm
 config.json
+config.local.json
 jobs.json
 logs/
 *.log
@@ -17,6 +18,12 @@ logs/
 # Secrets
 .env
 .env.*
+
+# Config files with credentials (API keys, tokens, etc.)
+config.json
+config.local.json
+config.local.*.json
+*.secret.json
 
 # Test artifacts
 *.test
@@ -34,11 +41,16 @@ mcp_final2.out
 mcp/
 sessions/
 vault/
-workspace/
+/workspace/
 outputs/
 uploads/
 knowledge/
 backups/
+
+# Agent workspace (absolute path outside repo - git will never track it)
+# NOTE: ~/.tetora/workspace/ is an absolute path, no .gitignore entry needed.
+# Git does not expand ~ in patterns, and absolute paths outside the repo
+# are naturally ignored. This comment documents the workspace location.
 
 # IDE
 .idea/
@@ -55,3 +67,20 @@ tasks/todo.md
 
 # Claude Code
 .claude/
+.gstack/
+
+# Qwen Code (local config)
+.qwen/
+
+# Local workflow docs (not for upstream)
+GIT_WORKFLOW.md
+
+# Local project files (client-specific, not for upstream)
+temp_move_project/
+14_report/
+~$*.docx
+~$*.doc
+
+# Client onboarding configs (generated per client)
+config.client*.json
+configs/
