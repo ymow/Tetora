@@ -69,17 +69,39 @@ gh pr create \
 
 ### 4. 回應 Review 意見
 
-```bash
-# 根據 @黑曜 的 review 意見修改
-# 在本地修正後...
+**⚠️ 重要：在修改 PR 前，務必先確認並同步 upstream/main 的最新狀態！**
 
+```bash
+# 第一步：先同步 upstream（必須！）
+git fetch upstream
+git checkout main
+git merge upstream/main
+git push origin main
+
+# 第二步：將最新 main 合併到你的 PR 分支
+git checkout feat/your-feature-name
+git merge main
+# 如果有衝突，解決衝突後...
+git add .
+git commit -m "merge: resolve conflicts with upstream/main"
+
+# 第三步：根據 @黑曜 的 review 意見修改
+# 在本地修正後...
 git add .
 git commit -m "fix: address PR review comments"
+
+# 第四步：推送修正
 git push origin feat/your-feature-name
 
-# 在 PR 中通知 reviewer
+# 第五步：在 PR 中通知 reviewer
 gh pr comment <PR_NUMBER> --repo TakumaLee/Tetora --body "@黑曜 已修正，請 review"
 ```
+
+**為什麼要先同步 upstream？**
+- upstream/main 可能已有其他 PR 的合併
+- 不同步可能導致衝突或重複修改
+- 確保你的修正是基於最新的程式碼基礎
+- 減少 PR 合併時的衝突風險
 
 ### 5. PR 合併後清理
 
