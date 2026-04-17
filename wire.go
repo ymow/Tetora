@@ -8913,7 +8913,7 @@ func toolExecuteSkill(ctx context.Context, cfg *Config, input json.RawMessage) (
 	}
 
 	if name == "" {
-		return "", fmt.Errorf("missing skill name")
+		return "", fmt.Errorf("missing skill name (raw input: %s)", string(input))
 	}
 
 	s := getSkill(cfg, name)
