@@ -77,6 +77,7 @@ GIT_WORKFLOW.md
 
 # Local project files (client-specific, not for upstream)
 temp_move_project/
+14_report/
 ~$*.docx
 ~$*.doc
 
