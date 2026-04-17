@@ -8881,6 +8881,88 @@ func toolSkillSearch(ctx context.Context, cfg *Config, input json.RawMessage) (s
 	return skill.ToolSkillSearch(ctx, toSkillAppConfig(cfg), input)
 }
 
+// --- Execute Skill ---
+
+func toolExecuteSkill(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {
+	var raw map[string]interface{}
+	json.Unmarshal(input, &raw)
+
+	// 1. 靈活提取 Skill Name
+	name, _ := raw["name"].(string)
+	
+	// 如果 name 是 "execute_skill" 本身，我們要找的是內部的 skill name
+	if name == "execute_skill" || name == "" {
+		// 嘗試從 arguments 找
+		if args, ok := raw["arguments"].(map[string]interface{}); ok {
+			if n, ok := args["name"].(string); ok {
+				name = n
+			} else if n, ok := args["skill_name"].(string); ok {
+				name = n
+			}
+		}
+		// 嘗試從 parameters 找 (某些 LLM 格式)
+		if name == "" || name == "execute_skill" {
+			if params, ok := raw["parameters"].(map[string]interface{}); ok {
+				if n, ok := params["name"].(string); ok {
+					name = n
+				} else if n, ok := params["skill_name"].(string); ok {
+					name = n
+				}
+			}
+		}
+	}
+
+	if name == "" {
+		return "", fmt.Errorf("missing skill name")
+	}
+
+	s := getSkill(cfg, name)
+	if s == nil {
+		return "", fmt.Errorf("skill %q not found", name)
+	}
+
+	// 2. 靈活提取 Variables
+	vars := make(map[string]string)
+	
+	sources := []map[string]interface{}{raw} // 根層級
+	
+	if args, ok := raw["arguments"].(map[string]interface{}); ok {
+		sources = append(sources, args)
+	}
+	if args, ok := raw["args"].(map[string]interface{}); ok {
+		sources = append(sources, args)
+	}
+	if params, ok := raw["parameters"].(map[string]interface{}); ok {
+		sources = append(sources, params)
+	}
+
+	for _, src := range sources {
+		for k, v := range src {
+			if k == "name" || k == "skill_name" || k == "arguments" || k == "args" || k == "parameters" {
+				continue
+			}
+			if s, ok := v.(string); ok {
+				vars[k] = s
+			} else if f, ok := v.(float64); ok {
+				vars[k] = fmt.Sprintf("%.0f", f)
+			}
+		}
+	}
+
+	// 3. 執行
+	result, err := executeSkill(ctx, *s, vars)
+	if err != nil {
+		return "", err
+	}
+	if result.Status == "error" || result.Status == "timeout" {
+		return "", fmt.Errorf("skill %s failed: %s", name, result.Error)
+	}
+	if result.Output == "" {
+		return "", fmt.Errorf("skill %s returned empty (vars: %v)", name, vars)
+	}
+	return result.Output, nil
+}
+
 // --- NotebookLM ---
 
 func toolNotebookLMImport(ctx context.Context, cfg *Config, input json.RawMessage) (string, error) {

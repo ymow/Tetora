@@ -97,6 +97,24 @@ func registerAdminTools(r *ToolRegistry, cfg *Config, enabled func(string) bool)
 		})
 	}
 
+	if enabled("execute_skill") {
+		r.Register(&ToolDef{
+			Name:        "execute_skill",
+			Description: "Execute a registered config skill (e.g. competitive-intel) by name with the given parameters.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"name": {"type": "string", "description": "Skill name to execute (e.g. competitive-intel)"},
+					"target": {"type": "string", "description": "Target query for the skill"},
+					"count": {"type": "number", "description": "Number of results (default 5)"}
+				},
+				"required": ["name"]
+			}`),
+			Handler: toolExecuteSkill,
+			Builtin: true,
+		})
+	}
+
 	if enabled("backup_now") {
 		r.Register(&ToolDef{
 			Name:        "backup_now",
