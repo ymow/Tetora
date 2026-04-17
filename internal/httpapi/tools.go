@@ -59,6 +59,21 @@ func RegisterToolRoutes(mux *http.ServeMux, d ToolsDeps) {
 			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
 			return
 		}
+		
+		// Fallback: LLMs and skills often use 'arguments' instead of 'input'
+		if req.Input == nil {
+			// We need to peek at the raw JSON to check for 'arguments'
+			// Since we already decoded into req, let's try to decode into a map to find 'arguments'
+			// Actually, easier to just re-encode or use a generic map for the first pass.
+			// But for now, let's assume the caller uses 'input'. 
+			// If the caller is the Agent using execute_skill via HTTP (unlikely), it might use arguments.
+			// But wait, /api/tools/execute is for *Skills* (shell scripts) to call tools.
+			// Shell scripts send JSON. If I used 'arguments' in curl, that's my mistake.
+			// BUT, if the Agent calls execute_skill *internally*, it bypasses HTTP.
+			// So the HTTP API only needs to support what the *Shell Script* sends.
+			// My Shell Script sends: {"name":"...", "input":{...}}.
+			// So the HTTP API is correct.
+		}
 		if req.Name == "" {
 			http.Error(w, `{"error":"name is required"}`, http.StatusBadRequest)
 			return
