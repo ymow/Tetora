@@ -1341,6 +1341,18 @@ func (c DailyNotesConfig) ScheduleOrDefault() string {
 	return "0 0 * * *"
 }
 
+type WarRoomAutoUpdateConfig struct {
+	Enabled  bool   `json:"enabled"`
+	Schedule string `json:"schedule,omitempty"`
+}
+
+func (c WarRoomAutoUpdateConfig) ScheduleOrDefault() string {
+	if c.Schedule != "" {
+		return c.Schedule
+	}
+	return "*/15 * * * *"
+}
+
 type UsageConfig struct {
 	ShowFooter     bool   `json:"showFooter,omitempty"`
 	FooterTemplate string `json:"footerTemplate,omitempty"`

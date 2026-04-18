@@ -721,6 +721,8 @@ func main() {
 		} else {
 			// Register daily notes job if enabled.
 			registerDailyNotesJob(ctx, cfg, cron)
+			// Register war room auto-updater job if enabled.
+			registerWarRoomAutoUpdateJob(ctx, cfg, cron)
 			cron.Start(ctx)
 			cron.StartupReplay(ctx)
 		}
