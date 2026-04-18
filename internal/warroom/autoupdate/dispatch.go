@@ -12,7 +12,8 @@ import (
 type UpdaterFunc func(ctx context.Context, cfg *config.Config, front json.RawMessage) (map[string]any, error)
 
 var updaters = map[string]UpdaterFunc{
-	"polymarket":        updatePolymarket,
-	"taiwan-stock-auto": updateTaiwanStockAuto,
-	"tetora":            updateTetora,
+	"polymarket":          updatePolymarket,
+	"taiwan-stock-auto":   updateTaiwanStockAuto,
+	"taiwan-stock-manual": updateTaiwanStockManual,
+	"tetora":              updateTetora,
 }
