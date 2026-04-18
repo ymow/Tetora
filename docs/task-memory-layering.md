@@ -110,6 +110,7 @@
 ### 儲存
 - `~/.tetora/history.db` 的 `tasks` 表
 - Schema：`id TEXT PK, project, title, description, status, assignee, priority, depends_on TEXT (JSON), type, parent_id, workflow, workdirs TEXT (JSON), cost_usd, duration_ms, session_id, model, created_at, updated_at, completed_at, retry_count`
+- 上述欄位清單為撰寫當下的快照，日後若 schema 異動而本文未同步，**以 `tetora task show <id>` 的實際輸出為準**
 
 ### Status 狀態機
 ```
