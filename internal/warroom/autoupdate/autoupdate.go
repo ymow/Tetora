@@ -2,7 +2,6 @@ package autoupdate
 
 import (
 	"context"
-	"path/filepath"
 	"time"
 
 	"tetora/internal/config"
@@ -18,7 +17,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	warroom.Mu.Lock()
 	defer warroom.Mu.Unlock()
 
-	statusPath := filepath.Join(cfg.BaseDir, "workspace/memory/war-room/status.json")
+	statusPath := warroom.StatusPath(cfg.BaseDir)
 	s, err := warroom.LoadStatus(statusPath)
 	if err != nil {
 		return err

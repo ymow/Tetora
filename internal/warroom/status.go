@@ -10,9 +10,17 @@ import (
 )
 
 // Mu serialises concurrent writes to status.json across all writers
-// (cron autoupdater, Discord bot, HTTP API). Future migrations of Discord
-// and HTTP writers should acquire this mutex before calling SaveStatus.
+// (cron autoupdater, Discord bot, HTTP API). Every writer acquires this
+// before calling LoadStatus/SaveStatus so the multi-writer design stays
+// race-free. AppendIntel (HTTP + Discord /wr intel) also holds it while
+// reading/writing the md file and status.json in a single critical section.
 var Mu sync.Mutex
+
+// StatusPath returns the canonical path to war-room status.json given a
+// tetora base directory (typically cfg.BaseDir, i.e. ~/.tetora).
+func StatusPath(baseDir string) string {
+	return filepath.Join(baseDir, "workspace", "memory", "war-room", "status.json")
+}
 
 // Status is the top-level structure of war-room/status.json.
 type Status struct {

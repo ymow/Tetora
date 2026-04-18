@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"tetora/internal/log"
+	"tetora/internal/warroom"
 )
 
 // Sentinel errors returned by AppendIntel so non-HTTP callers (e.g. the Discord
@@ -27,12 +27,6 @@ const warRoomNoteMaxLen = 4096
 // reValidFrontID matches kebab-case front IDs: lowercase alphanumeric and hyphens only.
 // A leading hyphen is rejected because the regex requires starting with [a-z0-9].
 var reValidFrontID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
-
-// warRoomMu serialises concurrent writes to status.json from the HTTP layer.
-// The Discord bot writes status.json without holding this mutex (it runs in its
-// own goroutine context), but HTTP-layer writes are rare and this prevents races
-// between concurrent HTTP requests.
-var warRoomMu sync.Mutex
 
 // WarRoomDeps holds dependencies for War Room HTTP handlers.
 type WarRoomDeps struct {
@@ -164,8 +158,8 @@ func AppendIntel(wsDir, frontID, note string) (string, error) {
 	mdPath := warRoomMDPath(wsDir, frontID)
 	statusPath := warRoomStatusPath(wsDir)
 
-	warRoomMu.Lock()
-	defer warRoomMu.Unlock()
+	warroom.Mu.Lock()
+	defer warroom.Mu.Unlock()
 
 	var mdData []byte
 	existing, err := os.ReadFile(mdPath)
