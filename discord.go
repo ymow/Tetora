@@ -1425,6 +1425,12 @@ func (db *DiscordBot) cmdContext(msg discord.Message) {
 	} else if pct >= 70 {
 		color = 0xFEE75C // yellow
 	}
+	// Clamp displayed percentage so the numeric value never contradicts the bar
+	// (contextBar already clamps internally).
+	displayPct := pct
+	if displayPct > 100 {
+		displayPct = 100
+	}
 	agent := sess.Agent
 	if agent == "" {
 		agent = "(unset)"
@@ -1433,7 +1439,7 @@ func (db *DiscordBot) cmdContext(msg discord.Message) {
 		Title: "Session Context",
 		Color: color,
 		Fields: []discord.EmbedField{
-			{Name: "Usage", Value: fmt.Sprintf("`%s` %d%%", bar, pct), Inline: false},
+			{Name: "Usage", Value: fmt.Sprintf("`%s` %d%%", bar, displayPct), Inline: false},
 			{Name: "Tokens", Value: fmt.Sprintf("%d / %d", sess.ContextSize, maxTokens), Inline: true},
 			{Name: "Messages", Value: fmt.Sprintf("%d", sess.MessageCount), Inline: true},
 			{Name: "Agent", Value: agent, Inline: true},
@@ -1468,7 +1474,7 @@ func (db *DiscordBot) cmdHelp(msg discord.Message) {
 			{Name: "!mode", Value: "Show inference mode summary"},
 			{Name: "!new", Value: "Start a new session (clear context)"},
 			{Name: "!compact", Value: "Summarize & carry forward current session"},
-			{Name: "!context", Value: "Show session context usage (tokens, %)"},
+			{Name: "!context / !ctx", Value: "Show session context usage (tokens, %)"},
 			{Name: "!cancel", Value: "Cancel all running tasks"},
 			{Name: "!chat <agent>", Value: "Lock this channel to an agent (skip dispatch)"},
 			{Name: "!end", Value: "Unlock channel, resume smart dispatch"},
