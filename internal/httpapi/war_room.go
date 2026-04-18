@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,6 +14,15 @@ import (
 
 	"tetora/internal/log"
 )
+
+// Sentinel errors returned by AppendIntel so non-HTTP callers (e.g. the Discord
+// bot) can translate them into their own response formats.
+var (
+	ErrInvalidFrontID = errors.New("invalid front_id")
+	ErrInvalidNote    = errors.New("invalid note")
+)
+
+const warRoomNoteMaxLen = 4096
 
 // reValidFrontID matches kebab-case front IDs: lowercase alphanumeric and hyphens only.
 // A leading hyphen is rejected because the regex requires starting with [a-z0-9].
@@ -107,64 +117,17 @@ func RegisterWarRoomRoutes(mux *http.ServeMux, d WarRoomDeps) {
 			return
 		}
 
-		note := strings.TrimSpace(req.Note)
-		if note == "" {
-			http.Error(w, `{"error":"invalid_note","detail":"note must not be empty"}`, http.StatusBadRequest)
-			return
-		}
-		if len(note) > 4096 {
-			http.Error(w, `{"error":"invalid_note","detail":"note exceeds 4096 characters"}`, http.StatusBadRequest)
-			return
-		}
-
-		// Taipei is UTC+8.
-		loc := time.FixedZone("Asia/Taipei", 8*60*60)
-		now := time.Now().In(loc)
-		timestamp := now.Format("2006-01-02 15:04")
-		bullet := fmt.Sprintf("- [%s (台北)] %s", timestamp, note)
-
-		wsDir := d.WorkspaceDir()
-		mdPath := warRoomMDPath(wsDir, req.FrontID)
-		statusPath := warRoomStatusPath(wsDir)
-
-		warRoomMu.Lock()
-		defer warRoomMu.Unlock()
-
-		// Read or create the md file.
-		var mdData []byte
-		existing, err := os.ReadFile(mdPath)
+		bullet, err := AppendIntel(d.WorkspaceDir(), req.FrontID, req.Note)
 		if err != nil {
-			if !os.IsNotExist(err) {
-				http.Error(w, `{"error":"internal_error","detail":"failed to read md file"}`, http.StatusInternalServerError)
-				return
+			switch {
+			case errors.Is(err, ErrInvalidNote):
+				http.Error(w, `{"error":"invalid_note","detail":"`+err.Error()+`"}`, http.StatusBadRequest)
+			default:
+				log.Error("war-room intel: append failed", "front_id", req.FrontID, "err", err)
+				http.Error(w, `{"error":"internal_error","detail":"failed to append intel"}`, http.StatusInternalServerError)
 			}
-			// File does not exist — create minimal header.
-			if mkErr := os.MkdirAll(filepath.Dir(mdPath), 0o755); mkErr != nil {
-				http.Error(w, `{"error":"internal_error","detail":"failed to create directory"}`, http.StatusInternalServerError)
-				return
-			}
-			mdData = warRoomMinimalMD(req.FrontID)
-		} else {
-			mdData = existing
-		}
-
-		// Append bullet under the Intel section.
-		mdData = appendIntelBullet(mdData, bullet)
-
-		// Write atomically.
-		if err := atomicWrite(mdPath, mdData, 0o644); err != nil {
-			log.Error("war-room intel: write md failed", "front_id", req.FrontID, "err", err)
-			http.Error(w, `{"error":"internal_error","detail":"failed to write md file"}`, http.StatusInternalServerError)
 			return
 		}
-
-		// Update status.json last_intel_at field.
-		if err := updateStatusLastIntelAt(statusPath, req.FrontID, time.Now().UTC()); err != nil {
-			// Non-fatal — log and continue. The md was already written.
-			log.Warn("war-room intel: status.json update failed", "front_id", req.FrontID, "err", err)
-		}
-
-		log.Info("war-room intel appended", "front_id", req.FrontID, "chars", len(note))
 
 		b, _ := json.Marshal(map[string]string{
 			"ok":            "true",
@@ -173,6 +136,63 @@ func RegisterWarRoomRoutes(mux *http.ServeMux, d WarRoomDeps) {
 		})
 		w.Write(b)
 	})
+}
+
+// AppendIntel appends an intel bullet to the front's markdown document and
+// updates status.json's last_intel_at. Returns the bullet line that was
+// appended. Callers must validate frontID via reValidFrontID before calling.
+//
+// Errors:
+//   - ErrInvalidNote: note is empty or exceeds warRoomNoteMaxLen after trimming.
+//   - Other errors wrap underlying I/O failures.
+func AppendIntel(wsDir, frontID, note string) (string, error) {
+	if !reValidFrontID.MatchString(frontID) {
+		return "", ErrInvalidFrontID
+	}
+	note = strings.TrimSpace(note)
+	if note == "" {
+		return "", fmt.Errorf("%w: note must not be empty", ErrInvalidNote)
+	}
+	if len(note) > warRoomNoteMaxLen {
+		return "", fmt.Errorf("%w: note exceeds %d characters", ErrInvalidNote, warRoomNoteMaxLen)
+	}
+
+	loc := time.FixedZone("Asia/Taipei", 8*60*60)
+	now := time.Now().In(loc)
+	bullet := fmt.Sprintf("- [%s (台北)] %s", now.Format("2006-01-02 15:04"), note)
+
+	mdPath := warRoomMDPath(wsDir, frontID)
+	statusPath := warRoomStatusPath(wsDir)
+
+	warRoomMu.Lock()
+	defer warRoomMu.Unlock()
+
+	var mdData []byte
+	existing, err := os.ReadFile(mdPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("read md: %w", err)
+		}
+		if mkErr := os.MkdirAll(filepath.Dir(mdPath), 0o755); mkErr != nil {
+			return "", fmt.Errorf("mkdir: %w", mkErr)
+		}
+		mdData = warRoomMinimalMD(frontID)
+	} else {
+		mdData = existing
+	}
+
+	mdData = appendIntelBullet(mdData, bullet)
+
+	if err := atomicWrite(mdPath, mdData, 0o644); err != nil {
+		return "", fmt.Errorf("write md: %w", err)
+	}
+
+	if err := updateStatusLastIntelAt(statusPath, frontID, time.Now().UTC()); err != nil {
+		log.Warn("war-room intel: status.json update failed", "front_id", frontID, "err", err)
+	}
+
+	log.Info("war-room intel appended", "front_id", frontID, "chars", len(note))
+	return bullet, nil
 }
 
 // warRoomMDPath returns the path to a front's markdown file.

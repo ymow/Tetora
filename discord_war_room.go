@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"tetora/internal/discord"
+	"tetora/internal/httpapi"
 	"tetora/internal/log"
 )
 
@@ -130,8 +132,41 @@ func (db *DiscordBot) handleWrSlashCommand(interaction *discord.Interaction) dis
 	case "status":
 		return db.wrShowStatus(eph)
 
+	case "intel":
+		frontID, note := opts["front_id"], opts["note"]
+		if frontID == "" || note == "" {
+			return eph("❌ 缺少必要參數。")
+		}
+		return db.wrIntel(frontID, note, eph)
+
 	default:
 		return eph("❌ 未知子命令：" + sub.Name)
+	}
+}
+
+// wrIntel appends an intel bullet to the front's md living document.
+func (db *DiscordBot) wrIntel(frontID, note string, eph func(string) discord.InteractionResponse) discord.InteractionResponse {
+	wsDir := db.cfg.WorkspaceDir
+	if wsDir == "" {
+		wsDir = filepath.Join(db.cfg.BaseDir, "workspace")
+	}
+	bullet, err := httpapi.AppendIntel(wsDir, frontID, note)
+	if err != nil {
+		switch {
+		case errors.Is(err, httpapi.ErrInvalidFrontID):
+			return eph(fmt.Sprintf("❌ 無效的 front_id：`%s`", frontID))
+		case errors.Is(err, httpapi.ErrInvalidNote):
+			return eph("❌ note 不能為空或超過 4096 字元。")
+		default:
+			log.Error("wr intel: append failed", "front_id", frontID, "err", err)
+			return eph("❌ 寫入 intel 失敗。")
+		}
+	}
+	return discord.InteractionResponse{
+		Type: discord.InteractionResponseMessage,
+		Data: &discord.InteractionResponseData{
+			Content: fmt.Sprintf("📥 **%s** intel 已記錄\n%s", frontID, bullet),
+		},
 	}
 }
 
@@ -338,6 +373,15 @@ func (db *DiscordBot) registerWrSlashCommand(appID string) {
 				Type:        discord.ApplicationCommandOptionSubCommand,
 				Name:        "status",
 				Description: "顯示所有戰線摘要",
+			},
+			{
+				Type:        discord.ApplicationCommandOptionSubCommand,
+				Name:        "intel",
+				Description: "餵一條 intel（觀察/文章/tip）到戰線",
+				Options: []discord.ApplicationCommandOption{
+					{Type: discord.ApplicationCommandOptionString, Name: "front_id", Description: "戰線 ID", Required: true},
+					{Type: discord.ApplicationCommandOptionString, Name: "note", Description: "intel 內容（最多 4096 字）", Required: true},
+				},
 			},
 		},
 	}
