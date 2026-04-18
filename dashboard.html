@@ -2930,6 +2930,9 @@ body:not([class*="theme-"])::after, body.theme-default::after {
     <button class="nav-item active" id="tab-dashboard" onclick="switchTab('dashboard')">
       <span class="nav-icon">&#x1F4CA;</span> Dashboard<span class="hg-nav-badge" id="hg-nav-badge" style="display:none">0</span>
     </button>
+    <button class="nav-item" id="tab-war-room" onclick="switchTab('war-room')">
+      <span class="nav-icon">&#x1F5FA;</span> 戰情室
+    </button>
     <button class="nav-item" id="tab-chat" onclick="switchTab('chat')">
       <span class="nav-icon">&#x1F4AC;</span> Chat
     </button>
@@ -4266,6 +4269,475 @@ body:not([class*="theme-"])::after, body.theme-default::after {
 
     </div>
   </div><!-- /settings-content -->
+
+  <!-- ===== War Room ===== -->
+  <div id="war-room-content" style="display:none;padding:24px;box-sizing:border-box;min-height:100%">
+    <style>
+      .wr-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 24px;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      .wr-title {
+        font-size: 22px;
+        font-weight: 700;
+        font-family: var(--font-heading);
+        color: var(--text);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .wr-meta {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .wr-refresh-btn {
+        padding: 7px 16px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
+        font-size: 13px;
+        cursor: pointer;
+        font-family: var(--font-heading);
+        transition: background 0.15s;
+      }
+      .wr-refresh-btn:hover { background: rgba(128,128,255,0.1); }
+      .wr-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+        gap: 16px;
+      }
+      .wr-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        transition: box-shadow 0.15s;
+      }
+      .wr-card:hover { box-shadow: 0 4px 18px rgba(0,0,0,0.18); }
+      .wr-card-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 14px 8px;
+        gap: 8px;
+      }
+      .wr-status-dot {
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        box-shadow: 0 0 6px currentColor;
+      }
+      .wr-category-badge {
+        font-size: 11px;
+        color: var(--muted);
+        background: rgba(128,128,128,0.12);
+        border-radius: 20px;
+        padding: 2px 8px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .wr-card-name-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 14px 10px;
+        gap: 6px;
+      }
+      .wr-card-name {
+        font-size: 15px;
+        font-weight: 600;
+        font-family: var(--font-heading);
+        color: var(--text);
+      }
+      .wr-auto-icon {
+        font-size: 14px;
+        opacity: 0.75;
+        title: "自動戰線";
+      }
+      .wr-card-body {
+        padding: 0 14px 10px;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+      }
+      .wr-summary {
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      .wr-blocking {
+        font-size: 12px;
+        color: #ef4444;
+        display: flex;
+        align-items: flex-start;
+        gap: 4px;
+      }
+      .wr-next-action {
+        font-size: 12px;
+        color: #60a5fa;
+        display: flex;
+        align-items: flex-start;
+        gap: 4px;
+      }
+      .wr-card-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 14px;
+        border-top: 1px solid var(--border);
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .wr-edit-btn {
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-size: 14px;
+        padding: 2px 5px;
+        border-radius: 5px;
+        color: var(--muted);
+        transition: background 0.15s;
+      }
+      .wr-edit-btn:hover { background: rgba(128,128,255,0.12); color: var(--accent); }
+      .wr-edit-form {
+        border-top: 1px solid var(--border);
+        padding: 12px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        background: rgba(0,0,0,0.08);
+      }
+      .wr-edit-form select,
+      .wr-edit-form input[type="text"] {
+        width: 100%;
+        padding: 6px 10px;
+        border-radius: 7px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--text);
+        font-size: 12px;
+        font-family: var(--font-body, inherit);
+        box-sizing: border-box;
+      }
+      .wr-edit-form label {
+        font-size: 11px;
+        color: var(--muted);
+        margin-bottom: 2px;
+        display: block;
+      }
+      .wr-save-btn {
+        align-self: flex-end;
+        padding: 5px 14px;
+        border-radius: 7px;
+        border: none;
+        background: var(--accent);
+        color: #fff;
+        font-size: 12px;
+        cursor: pointer;
+        font-family: var(--font-heading);
+        transition: opacity 0.15s;
+      }
+      .wr-save-btn:hover { opacity: 0.85; }
+      .wr-empty {
+        grid-column: 1 / -1;
+        text-align: center;
+        color: var(--muted);
+        padding: 60px 20px;
+        font-size: 14px;
+      }
+      .wr-error {
+        grid-column: 1 / -1;
+        text-align: center;
+        color: #ef4444;
+        padding: 40px 20px;
+        font-size: 14px;
+      }
+      .wr-card.is-stale { opacity: 0.5; }
+      .wr-stale-badge {
+        font-size: 10px;
+        color: #9ca3af;
+        background: rgba(156,163,175,0.15);
+        border: 1px solid rgba(156,163,175,0.3);
+        border-radius: 20px;
+        padding: 2px 7px;
+        white-space: nowrap;
+      }
+      .wr-override-badge {
+        font-size: 10px;
+        color: #60a5fa;
+        background: rgba(96,165,250,0.12);
+        border: 1px solid rgba(96,165,250,0.3);
+        border-radius: 20px;
+        padding: 2px 7px;
+        white-space: nowrap;
+      }
+      .wr-dep-warning {
+        border-top: 1px solid rgba(245,158,11,0.35);
+        background: rgba(245,158,11,0.08);
+        color: #f59e0b;
+        font-size: 11px;
+        padding: 6px 14px;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+    </style>
+
+    <div class="wr-header">
+      <div>
+        <div class="wr-title">&#x1F5FA; 戰情室</div>
+        <div class="wr-meta" id="wr-last-updated">讀取中...</div>
+      </div>
+      <button class="wr-refresh-btn" onclick="loadWarRoom()">&#x21BB; 手動刷新</button>
+    </div>
+
+    <div class="wr-grid" id="wr-grid">
+      <div class="wr-empty">讀取中...</div>
+    </div>
+  </div><!-- /war-room-content -->
+
+  <script>
+  // ===== War Room =====
+  var _warRoomData = null;
+
+  var WR_CATEGORY_ICON = {
+    finance:       '&#x1F4B0;',
+    dev:           '&#x2699;&#xFE0F;',
+    content:       '&#x1F3AC;',
+    marketing:     '&#x1F4E2;',
+    business:      '&#x1F4BC;',
+    collaboration: '&#x1F91D;',
+    planning:      '&#x1F3AF;'
+  };
+
+  function wrStatusColor(status) {
+    switch (status) {
+      case 'green':  return '#22c55e';
+      case 'yellow': return '#f59e0b';
+      case 'red':    return '#ef4444';
+      case 'paused': return '#9ca3af';
+      default:       return '#6b7280';
+    }
+  }
+
+  function wrStatusLabel(status) {
+    switch (status) {
+      case 'green':  return '運行中';
+      case 'yellow': return '注意';
+      case 'red':    return '阻塞';
+      case 'paused': return '暫停';
+      default:       return '未設定';
+    }
+  }
+
+  function wrFormatTime(iso) {
+    if (!iso) return '--';
+    try {
+      var d = new Date(iso);
+      return d.toLocaleString('zh-TW', { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' });
+    } catch(e) { return iso; }
+  }
+
+  function loadWarRoom() {
+    document.getElementById('wr-last-updated').textContent = '讀取中...';
+    fetch('/api/workspace/file?path=memory/war-room/status.json')
+      .then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function(data) {
+        // API may return { content: "..." } (string) or the parsed object directly
+        var parsed = data;
+        if (typeof data === 'object' && data !== null && typeof data.content === 'string') {
+          parsed = JSON.parse(data.content);
+        }
+        _warRoomData = parsed;
+        renderWarRoom(parsed);
+      })
+      .catch(function(err) {
+        document.getElementById('wr-grid').innerHTML =
+          '<div class="wr-error">&#x26A0; 無法讀取 status.json：' + err.message + '</div>';
+        document.getElementById('wr-last-updated').textContent = '讀取失敗';
+      });
+  }
+
+  function renderWarRoom(data) {
+    var fronts = (data && Array.isArray(data.fronts)) ? data.fronts : [];
+    var genAt  = (data && data.generated_at) ? data.generated_at : '';
+
+    document.getElementById('wr-last-updated').textContent =
+      genAt ? '上次更新：' + wrFormatTime(genAt) : '無更新紀錄';
+
+    var grid = document.getElementById('wr-grid');
+    if (fronts.length === 0) {
+      grid.innerHTML = '<div class="wr-empty">尚無戰線資料。請在 status.json 中新增 fronts。</div>';
+      return;
+    }
+
+    grid.innerHTML = fronts.map(function(f) {
+      return renderWarRoomCard(f);
+    }).join('');
+  }
+
+  function renderWarRoomCard(front) {
+    var color    = wrStatusColor(front.status);
+    var catIcon  = WR_CATEGORY_ICON[front.category] || '&#x1F4CC;';
+    var autoIcon = front.auto ? ' <span class="wr-auto-icon" title="自動戰線">&#x1F916;</span>' : '';
+    var editBtn  = !front.auto
+      ? '<button class="wr-edit-btn" onclick="editWarRoomFront(\'' + esc(front.id) + '\')" title="編輯">&#x270F;&#xFE0F;</button>'
+      : '<span style="width:24px;display:inline-block"></span>';
+
+    var blockingHtml = front.blocking
+      ? '<div class="wr-blocking">&#x26A0; ' + esc(front.blocking) + '</div>'
+      : '';
+    var nextHtml = front.next_action
+      ? '<div class="wr-next-action">&#x2192; ' + esc(front.next_action) + '</div>'
+      : '';
+
+    // Staleness
+    var isStale = false;
+    if (!front.auto && front.staleness_threshold_hours != null && front.last_updated) {
+      var hoursSince = (Date.now() - new Date(front.last_updated).getTime()) / 3600000;
+      isStale = hoursSince > front.staleness_threshold_hours;
+    }
+    var staleBadge = isStale ? '<span class="wr-stale-badge">&#x23F0; 資訊已過期</span>' : '';
+
+    // Manual override badge
+    var overrideBadge = '';
+    var mo = front.manual_override;
+    if (mo && mo.active && mo.expires_at) {
+      if (new Date(mo.expires_at) > new Date()) {
+        overrideBadge = '<span class="wr-override-badge">&#x1F512; 覆蓋中 到 ' + wrFormatTime(mo.expires_at) + '</span>';
+      }
+    }
+
+    // Depends_on warning
+    var depWarning = '';
+    if (Array.isArray(front.depends_on) && front.depends_on.length > 0 && _warRoomData && Array.isArray(_warRoomData.fronts)) {
+      var redDepNames = [];
+      front.depends_on.forEach(function(depId) {
+        var dep = _warRoomData.fronts.find(function(f) { return f.id === depId; });
+        if (dep && dep.status === 'red') redDepNames.push(esc(dep.name || dep.id));
+      });
+      if (redDepNames.length > 0) {
+        depWarning = '<div class="wr-dep-warning">&#x26A0; 依賴 ' + redDepNames.join('、') + ' 異常</div>';
+      }
+    }
+
+    var headBadges = staleBadge || overrideBadge
+      ? '<div style="display:flex;gap:4px;flex-wrap:wrap">' + staleBadge + overrideBadge + '</div>'
+      : '';
+
+    return [
+      '<div class="wr-card' + (isStale ? ' is-stale' : '') + '" id="wr-card-' + esc(front.id) + '">',
+      '  <div class="wr-card-head">',
+      '    <div style="display:flex;align-items:center;gap:7px">',
+      '      <span class="wr-status-dot" style="background:' + color + ';color:' + color + '"></span>',
+      '      <span class="wr-category-badge">' + catIcon + ' ' + esc(front.category || '') + '</span>',
+      '    </div>',
+      '    ' + headBadges,
+      '  </div>',
+      '  <div class="wr-card-name-row">',
+      '    <span class="wr-card-name">' + esc(front.name || front.id) + autoIcon + '</span>',
+      '  </div>',
+      '  <div class="wr-card-body">',
+      '    <div class="wr-summary">' + esc(front.summary || '') + '</div>',
+      '    ' + blockingHtml,
+      '    ' + nextHtml,
+      '  </div>',
+      '  <div class="wr-card-footer">',
+      '    <span>更新: ' + wrFormatTime(front.last_updated) + '</span>',
+      '    ' + editBtn,
+      '  </div>',
+      '  ' + depWarning,
+      '  <div class="wr-edit-form" id="wr-edit-' + esc(front.id) + '" style="display:none">',
+      '    <div><label>状態</label>',
+      '      <select id="wr-ef-status-' + esc(front.id) + '">',
+      '        <option value="green"'  + (front.status==='green'  ? ' selected' : '') + '>&#x1F7E2; 運行中 (green)</option>',
+      '        <option value="yellow"' + (front.status==='yellow' ? ' selected' : '') + '>&#x1F7E1; 注意 (yellow)</option>',
+      '        <option value="red"'    + (front.status==='red'    ? ' selected' : '') + '>&#x1F534; 阻塞 (red)</option>',
+      '        <option value="paused"' + (front.status==='paused' ? ' selected' : '') + '>&#x23F8; 暫停 (paused)</option>',
+      '        <option value="unknown"'+ (front.status==='unknown'? ' selected' : '') + '>&#x26AA; 未設定 (unknown)</option>',
+      '      </select>',
+      '    </div>',
+      '    <div><label>Summary</label>',
+      '      <input type="text" id="wr-ef-summary-' + esc(front.id) + '" value="' + escAttr(front.summary || '') + '" placeholder="概況說明">',
+      '    </div>',
+      '    <div><label>Blocking（阻塞事項，留空則不顯示）</label>',
+      '      <input type="text" id="wr-ef-blocking-' + esc(front.id) + '" value="' + escAttr(front.blocking || '') + '" placeholder="無">',
+      '    </div>',
+      '    <div><label>Next Action（留空則不顯示）</label>',
+      '      <input type="text" id="wr-ef-next-' + esc(front.id) + '" value="' + escAttr(front.next_action || '') + '" placeholder="無">',
+      '    </div>',
+      '    <button class="wr-save-btn" onclick="saveWarRoomFront(\'' + esc(front.id) + '\')">儲存</button>',
+      '  </div>',
+      '</div>'
+    ].join('\n');
+  }
+
+  function editWarRoomFront(id) {
+    var form = document.getElementById('wr-edit-' + id);
+    if (!form) return;
+    form.style.display = form.style.display === 'none' ? '' : 'none';
+  }
+
+  function saveWarRoomFront(id) {
+    if (!_warRoomData || !Array.isArray(_warRoomData.fronts)) return;
+    var front = _warRoomData.fronts.find(function(f) { return f.id === id; });
+    if (!front) return;
+
+    var statusEl  = document.getElementById('wr-ef-status-'  + id);
+    var summaryEl = document.getElementById('wr-ef-summary-' + id);
+    var blockEl   = document.getElementById('wr-ef-blocking-'+ id);
+    var nextEl    = document.getElementById('wr-ef-next-'    + id);
+
+    front.status      = statusEl  ? statusEl.value  : front.status;
+    front.summary     = summaryEl ? summaryEl.value : front.summary;
+    front.blocking    = blockEl   ? blockEl.value   : front.blocking;
+    front.next_action = nextEl    ? nextEl.value    : front.next_action;
+    front.last_updated = new Date().toISOString();
+    _warRoomData.generated_at = new Date().toISOString();
+
+    var body = JSON.stringify(_warRoomData, null, 2);
+    fetch('/api/workspace/file', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: 'memory/war-room/status.json', content: body })
+    })
+    .then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      renderWarRoom(_warRoomData);
+    })
+    .catch(function(err) {
+      alert('儲存失敗：' + err.message);
+    });
+  }
+
+  function esc(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+  function escAttr(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+  </script>
 
   <!-- Provider Add Modal -->
   <div class="modal-overlay" id="provider-modal" style="display:none" onclick="if(event.target===this)closeProviderModal()">
@@ -10098,7 +10570,7 @@ function onJobProjectChange() {
   }
 }
 
-var TAB_LIST = ['dashboard','chat','operations','team-builder','store','docs','settings'];
+var TAB_LIST = ['dashboard','chat','operations','team-builder','store','docs','settings','war-room'];
 
 // Backward-compat mapping: old tab names → new tab + sub-tab
 var TAB_COMPAT = {
@@ -10149,6 +10621,9 @@ function switchTab(tab) {
   if (tab === 'dashboard') {
     applyDashView();
     loadDashViewData();
+  }
+  if (tab === 'war-room') {
+    loadWarRoom();
   }
   updateSidebarHighlight();
   closeSidebar();
@@ -10215,6 +10690,8 @@ function updateSidebarHighlight() {
   } else if (currentTab === 'settings') {
     var sub = getActiveSubTab('settings');
     activeId = 'tab-settings-' + (sub || 'general');
+  } else if (currentTab === 'war-room') {
+    activeId = 'tab-war-room';
   }
   var el = document.getElementById(activeId);
   if (el) el.classList.add('active');
