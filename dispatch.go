@@ -29,6 +29,7 @@ import (
 	"tetora/internal/log"
 	"tetora/internal/provider"
 	"tetora/internal/sandbox"
+	"tetora/internal/skill"
 	"tetora/internal/taskboard"
 	"tetora/internal/telemetry"
 	"tetora/internal/trace"
@@ -3438,6 +3439,9 @@ func isGitRepo(dir string) bool {
 // estimateTimeoutSem is a dedicated semaphore for timeout estimation LLM calls.
 var estimateTimeoutSem = make(chan struct{}, 3)
 
+// skillExtractSem limits concurrent skill extraction LLM calls (background, non-critical).
+var skillExtractSem = make(chan struct{}, 2)
+
 // estimateTimeoutLLM uses a lightweight LLM call to estimate appropriate timeout
 // for a taskboard task. Returns a duration string (e.g. "45m", "2h") or empty
 // string on failure (caller should fall back to keyword-based estimation).
@@ -3856,6 +3860,16 @@ func newTaskBoardDispatcher(engine *TaskBoardEngine, cfg *Config, sem, childSem 
 					log.Debug("taskboard reflection stored", "taskId", task.ID[:8], "agent", ref.Agent, "score", ref.Score)
 				}
 				extractAutoLesson(cfg.WorkspaceDir, ref)
+			}()
+		}
+		if shouldExtractSkill(cfg, rootTask, rootResult) {
+			// Derive from parent ctx so process shutdown cancels in-flight LLM calls.
+			// Hard 30s ceiling independent of LLM's internal 15s timeout, to bound
+			// the goroutine lifetime even if the Haiku call hangs past its budget.
+			skillCtx, skillCancel := context.WithTimeout(ctx, 30*time.Second)
+			go func() {
+				defer skillCancel()
+				extractAutoSkill(skillCtx, cfg, rootTask, rootResult)
 			}()
 		}
 	}
@@ -4690,4 +4704,141 @@ func parseCompletionStatus(output string) (CompletionStatus, string, string) {
 	}
 
 	return status, concerns, blockedReason
+}
+
+// appConfigToSkillCfg projects the dispatch Config onto the subset
+// of fields the skill package needs (WorkspaceDir, HistoryDB).
+func appConfigToSkillCfg(cfg *Config) *skill.AppConfig {
+	return &skill.AppConfig{WorkspaceDir: cfg.WorkspaceDir, HistoryDB: cfg.HistoryDB}
+}
+
+// toolUseJSONRe matches the JSON shape `"type":"tool_use"` that Claude API
+// emits for each tool invocation. Tolerates whitespace variants from JSON
+// pretty-printers. Narrower than a bare substring match on "tool_use", which
+// would false-positive on prose output that happens to contain the phrase.
+var toolUseJSONRe = regexp.MustCompile(`"type"\s*:\s*"tool_use"`)
+
+// countToolCalls estimates how many tool invocations occurred during a task by
+// counting JSON tool_use markers in the captured output. Used as a heuristic
+// to decide whether a task is complex enough to be worth extracting as a skill.
+// Providers that don't emit the Claude API JSON format will report 0 — that's
+// acceptable: skill extraction has other triggers (ErrorRecovery, UserCorrection).
+func countToolCalls(output string) int {
+	return len(toolUseJSONRe.FindAllStringIndex(output, -1))
+}
+
+// shouldExtractSkill is the synchronous gate that runs inside the dispatch
+// completion callback. It performs only cheap in-memory checks so a slow or
+// locked HistoryDB can never stall the dispatch pipeline — the DB-backed
+// dedup against existing learned skills is deferred to extractAutoSkill,
+// which runs on a bounded goroutine.
+//
+// Trigger thresholds (any one is sufficient):
+//   - ToolCallCount >= 5 (complex enough to be worth capturing)
+//   - ErrorRecovery == true (non-obvious recovery path) — reserved; not yet populated
+//   - UserCorrection == true (agent was wrong) — reserved; not yet populated
+//
+// Note: the goroutine-side dedup uses literal-prompt similarity via
+// SuggestSkillsForPrompt, not semantic similarity. Identical workflows with
+// reworded prompts will not dedup — treat "learned" skills as suggestions,
+// not as an already-deduped catalog.
+func shouldExtractSkill(cfg *Config, task Task, result TaskResult) bool {
+	if result.Status != "success" || cfg.WorkspaceDir == "" {
+		return false
+	}
+	signals := skill.TaskSignals{
+		ToolCallCount: countToolCalls(result.Output),
+		TaskPrompt:    task.Prompt,
+		AgentRole:     task.Agent,
+	}
+	// Cheap in-memory trigger only. See skill.ShouldExtractSkill (non-dispatch
+	// callers, e.g. tests) for the full gate including DB-backed dedup.
+	return signals.ToolCallCount >= 5 || signals.ErrorRecovery || signals.UserCorrection
+}
+
+// extractAutoSkill runs a bounded Haiku LLM call (budget 0.02, 15s timeout)
+// that summarises the completed task into a LearnedSkillSpec and writes
+// it under <WorkspaceDir>/skills/learned/<name>/ via skill.CreateLearnedSkill.
+// Extracted skills start with Approved=false and are not injected into future
+// tasks until explicitly approved. To approve a pending skill run:
+//
+//	tetora skill approve <name>
+//
+// Intended to be launched as a background goroutine: all failure paths log
+// at DEBUG level and return without propagating errors to the caller.
+// Concurrency is bounded by skillExtractSem (cap 2).
+func extractAutoSkill(ctx context.Context, cfg *Config, task Task, result TaskResult) {
+	// Dedup (moved off the dispatch main goroutine to keep the callback
+	// non-blocking — a slow or contended HistoryDB query here cannot stall
+	// task completion accounting).
+	if cfg.HistoryDB != "" && task.Prompt != "" {
+		if existing := skill.SuggestSkillsForPrompt(cfg.HistoryDB, task.Prompt, 1); len(existing) > 0 {
+			log.Debug("skill extraction skipped: similar learned skill exists",
+				"taskId", task.ID[:min(8, len(task.ID))], "existing", existing[0])
+			return
+		}
+	}
+
+	prompt := fmt.Sprintf(`You analyzed a completed agent task. Extract a reusable skill from it.
+
+Task prompt:
+%s
+
+Task output (truncated):
+%s
+
+Reply with ONLY a JSON object with these fields:
+{
+  "name": "slug-style-name",
+  "description": "one-line description under 80 chars",
+  "triggers": ["keyword1", "keyword2", "keyword3"],
+  "doc": "brief workflow summary in 2-3 sentences"
+}`, truncateStr(task.Prompt, 500), truncateStr(result.Output, 1000))
+
+	llmTask := Task{
+		ID:             newUUID(),
+		Name:           "skill-extract",
+		Prompt:         prompt,
+		Timeout:        "15s",
+		PermissionMode: "plan",
+		Source:         "skill-extract",
+	}
+	fillDefaults(cfg, &llmTask)
+	llmTask.Model = "haiku"
+	llmTask.Budget = 0.02
+
+	llmResult := runSingleTask(ctx, cfg, llmTask, skillExtractSem, nil, "")
+	if llmResult.Status != "success" || llmResult.Output == "" {
+		log.Debug("skill extraction LLM failed", "status", llmResult.Status)
+		return
+	}
+
+	raw := extractJSON(llmResult.Output)
+	var parsed struct {
+		Name        string   `json:"name"`
+		Description string   `json:"description"`
+		Triggers    []string `json:"triggers"`
+		Doc         string   `json:"doc"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		log.Debug("skill extraction parse failed", "error", err)
+		return
+	}
+	if !skill.IsValidSkillName(parsed.Name) {
+		log.Debug("skill extraction invalid name", "name", parsed.Name)
+		return
+	}
+
+	spec := skill.LearnedSkillSpec{
+		Name:        parsed.Name,
+		Description: parsed.Description,
+		Triggers:    parsed.Triggers,
+		Doc:         parsed.Doc,
+		CreatedBy:   task.Agent,
+	}
+	if err := skill.CreateLearnedSkill(appConfigToSkillCfg(cfg), spec); err != nil {
+		log.Debug("skill creation failed", "name", parsed.Name, "error", err)
+		return
+	}
+	log.Debug("learned skill extracted", "name", parsed.Name, "role", task.Agent)
 }
