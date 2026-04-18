@@ -731,14 +731,24 @@ func CreateLearnedSkill(cfg *AppConfig, spec LearnedSkillSpec) error {
 	}
 
 	// Build SKILL.md with frontmatter matching char-pose-gen format.
+	// The source of Description/Triggers is LLM output (Haiku); sanitize
+	// aggressively before writing to prevent YAML-frontmatter injection:
+	//   - Description: collapse any newline/CR into a single space so the
+	//     scalar stays on one line and can't terminate the frontmatter block.
+	//   - Triggers: accept only [A-Za-z0-9_-]; drop anything else so a
+	//     rogue comma/`]`/quote cannot corrupt the inline array. Also dedup
+	//     and cap length to keep the file compact.
+	desc := sanitizeFrontmatterScalar(spec.Description)
+	triggers := sanitizeFrontmatterTriggers(spec.Triggers)
+
 	var sb strings.Builder
 	sb.WriteString("---\n")
 	sb.WriteString("name: " + spec.Name + "\n")
-	if spec.Description != "" {
-		sb.WriteString("description: " + spec.Description + "\n")
+	if desc != "" {
+		sb.WriteString("description: " + desc + "\n")
 	}
-	if len(spec.Triggers) > 0 {
-		sb.WriteString("triggers: [" + strings.Join(spec.Triggers, ", ") + "]\n")
+	if len(triggers) > 0 {
+		sb.WriteString("triggers: [" + strings.Join(triggers, ", ") + "]\n")
 	}
 	if spec.CreatedBy != "" {
 		sb.WriteString("maintainer: " + spec.CreatedBy + "\n")
@@ -781,5 +791,53 @@ func CreateLearnedSkill(cfg *AppConfig, spec LearnedSkillSpec) error {
 	invalidateSkillsCache(cfg)
 	logInfo("learned skill extracted", "name", spec.Name, "createdBy", spec.CreatedBy)
 	return nil
+}
+
+// sanitizeFrontmatterScalar collapses any embedded newline/CR in a
+// frontmatter scalar value (description, etc.) to a single space, preventing
+// untrusted input (LLM output) from terminating the YAML frontmatter block.
+func sanitizeFrontmatterScalar(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	return strings.TrimSpace(s)
+}
+
+// sanitizeFrontmatterTriggers restricts each trigger to a safe charset
+// (alphanumeric + `_-`), drops empty/duplicate entries, and caps the total
+// count. This protects the inline-array frontmatter form against injection
+// from LLM-supplied values containing `,`, `]`, `'`, or `"`.
+func sanitizeFrontmatterTriggers(in []string) []string {
+	const maxTriggers = 16
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, t := range in {
+		clean := strings.Map(func(r rune) rune {
+			switch {
+			case r >= 'a' && r <= 'z':
+				return r
+			case r >= 'A' && r <= 'Z':
+				return r
+			case r >= '0' && r <= '9':
+				return r
+			case r == '-' || r == '_':
+				return r
+			default:
+				return -1
+			}
+		}, t)
+		if clean == "" {
+			continue
+		}
+		if _, dup := seen[clean]; dup {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, clean)
+		if len(out) >= maxTriggers {
+			break
+		}
+	}
+	return out
 }
 

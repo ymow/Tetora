@@ -4727,17 +4727,18 @@ func countToolCalls(output string) int {
 	return len(toolUseJSONRe.FindAllStringIndex(output, -1))
 }
 
-// shouldExtractSkill decides whether post-task auto skill extraction
-// should run for the completed task. Returns false when the task did
-// not succeed or WorkspaceDir is unset; otherwise delegates to
-// skill.ShouldExtractSkill, which checks trigger thresholds:
+// shouldExtractSkill is the synchronous gate that runs inside the dispatch
+// completion callback. It performs only cheap in-memory checks so a slow or
+// locked HistoryDB can never stall the dispatch pipeline — the DB-backed
+// dedup against existing learned skills is deferred to extractAutoSkill,
+// which runs on a bounded goroutine.
+//
+// Trigger thresholds (any one is sufficient):
 //   - ToolCallCount >= 5 (complex enough to be worth capturing)
-//   - ErrorRecovery == true (non-obvious recovery path)
-//   - UserCorrection == true (agent was wrong; the correction is worth persisting)
+//   - ErrorRecovery == true (non-obvious recovery path) — reserved; not yet populated
+//   - UserCorrection == true (agent was wrong) — reserved; not yet populated
 //
-// De-duplicates against existing skills via HistoryDB.
-//
-// Note: ShouldExtractSkill's dedup uses literal-prompt similarity via
+// Note: the goroutine-side dedup uses literal-prompt similarity via
 // SuggestSkillsForPrompt, not semantic similarity. Identical workflows with
 // reworded prompts will not dedup — treat "learned" skills as suggestions,
 // not as an already-deduped catalog.
@@ -4750,7 +4751,9 @@ func shouldExtractSkill(cfg *Config, task Task, result TaskResult) bool {
 		TaskPrompt:    task.Prompt,
 		AgentRole:     task.Agent,
 	}
-	return skill.ShouldExtractSkill(appConfigToSkillCfg(cfg), signals)
+	// Cheap in-memory trigger only. See skill.ShouldExtractSkill (non-dispatch
+	// callers, e.g. tests) for the full gate including DB-backed dedup.
+	return signals.ToolCallCount >= 5 || signals.ErrorRecovery || signals.UserCorrection
 }
 
 // extractAutoSkill runs a bounded Haiku LLM call (budget 0.02, 15s timeout)
@@ -4765,6 +4768,17 @@ func shouldExtractSkill(cfg *Config, task Task, result TaskResult) bool {
 // at DEBUG level and return without propagating errors to the caller.
 // Concurrency is bounded by skillExtractSem (cap 2).
 func extractAutoSkill(ctx context.Context, cfg *Config, task Task, result TaskResult) {
+	// Dedup (moved off the dispatch main goroutine to keep the callback
+	// non-blocking — a slow or contended HistoryDB query here cannot stall
+	// task completion accounting).
+	if cfg.HistoryDB != "" && task.Prompt != "" {
+		if existing := skill.SuggestSkillsForPrompt(cfg.HistoryDB, task.Prompt, 1); len(existing) > 0 {
+			log.Debug("skill extraction skipped: similar learned skill exists",
+				"taskId", task.ID[:min(8, len(task.ID))], "existing", existing[0])
+			return
+		}
+	}
+
 	prompt := fmt.Sprintf(`You analyzed a completed agent task. Extract a reusable skill from it.
 
 Task prompt:

@@ -192,10 +192,18 @@ func resolveEnvRef(value, fieldName string) string {
 
 // TaskSignals holds observable signals from a completed agent task.
 // Used by ShouldExtractSkill to decide if a learned skill should be extracted.
+//
+// Current population status (dispatch/shouldExtractSkill):
+//   - ToolCallCount: populated via regex count of `"type":"tool_use"` markers.
+//   - TaskPrompt / AgentRole: populated directly from the task.
+//   - ErrorRecovery / UserCorrection: reserved; not yet populated. Kept as
+//     real gate conditions so future providers (or an error-pattern classifier
+//     over result.Output) can opt in without a skill.go API change. Tests
+//     assert the gate still fires on these flags to prevent regressions.
 type TaskSignals struct {
 	ToolCallCount  int    // total tool calls made during the task
-	ErrorRecovery  bool   // true if agent recovered from ≥1 error
-	UserCorrection bool   // true if user corrected the agent during the task
+	ErrorRecovery  bool   // reserved — true if agent recovered from ≥1 error
+	UserCorrection bool   // reserved — true if user corrected the agent during the task
 	TaskPrompt     string // original task prompt (used for duplicate detection)
 	AgentRole      string // agent that completed the task
 }

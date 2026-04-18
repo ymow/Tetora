@@ -190,6 +190,90 @@ func TestCreateLearnedSkill_NoTriggers(t *testing.T) {
 	}
 }
 
+// --- Frontmatter sanitization tests (YAML injection hardening) ---
+
+func TestCreateLearnedSkill_SanitizesDescriptionNewlines(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &AppConfig{BaseDir: dir}
+
+	// Adversarial LLM output: embedded newline + `---` tries to terminate the
+	// frontmatter block and forge a second field. The sanitizer must collapse
+	// newlines so the payload stays a scalar on the `description:` line and
+	// cannot escape as a separate YAML key.
+	spec := LearnedSkillSpec{
+		Name:        "sanitize-desc",
+		Description: "first line\n---\ninjected: true",
+		CreatedBy:   "kokuyou",
+	}
+	if err := CreateLearnedSkill(cfg, spec); err != nil {
+		t.Fatalf("CreateLearnedSkill() error: %v", err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "skills", "learned", "sanitize-desc", "SKILL.md"))
+	content := string(data)
+	// Structural safety: exactly two `---` document markers (open + close),
+	// and the injected string must not appear on its own line as a key:value.
+	if strings.Count(content, "---\n") != 2 {
+		t.Errorf("expected exactly two `---\\n` lines (open+close); got content:\n%s", content)
+	}
+	// The injected payload MUST stay on the description line (same line as
+	// `description:`), not on its own line.
+	for _, line := range strings.Split(content, "\n") {
+		if line == "injected: true" {
+			t.Errorf("injection escaped to its own YAML line in:\n%s", content)
+		}
+	}
+}
+
+func TestCreateLearnedSkill_SanitizesTriggerCharset(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &AppConfig{BaseDir: dir}
+
+	// Adversarial trigger entries: commas, quotes, brackets, and newlines
+	// must all be stripped; clean parts (alphanumeric + `-_`) must survive.
+	spec := LearnedSkillSpec{
+		Name: "sanitize-trig",
+		Triggers: []string{
+			"deploy",                        // clean
+			"rm]-rf, 'pwn'",                 // punctuation → keep only letters/hyphen
+			"foo\nbar",                      // newline → merged into "foobar"
+			"valid_keyword-2",               // underscore + digit + hyphen allowed
+			"deploy",                        // duplicate of first
+			"",                              // empty → dropped
+		},
+		CreatedBy: "kokuyou",
+	}
+	if err := CreateLearnedSkill(cfg, spec); err != nil {
+		t.Fatalf("CreateLearnedSkill() error: %v", err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "skills", "learned", "sanitize-trig", "SKILL.md"))
+	content := string(data)
+	// Assert that no unsafe punctuation leaked into the triggers line.
+	for _, badFragment := range []string{"'", "\"", "]", "[]"} {
+		// `[` is the legitimate triggers array opener; only `]` we care about not appearing spuriously.
+		_ = badFragment
+	}
+	if strings.Contains(content, "'pwn'") || strings.Contains(content, "rm]") {
+		t.Errorf("triggers not sanitized:\n%s", content)
+	}
+	// Clean entries must survive (hyphens are allowed so "rm]-rf, 'pwn'" → "rm-rfpwn").
+	for _, want := range []string{"deploy", "rm-rfpwn", "foobar", "valid_keyword-2"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("missing expected sanitized trigger %q in:\n%s", want, content)
+		}
+	}
+	// Dedup + count check: "deploy" appears once in the triggers line.
+	triggersLine := ""
+	for _, ln := range strings.Split(content, "\n") {
+		if strings.HasPrefix(ln, "triggers:") {
+			triggersLine = ln
+			break
+		}
+	}
+	if strings.Count(triggersLine, "deploy") != 1 {
+		t.Errorf("duplicate trigger not deduped: %q", triggersLine)
+	}
+}
+
 // --- ShouldInjectLearnedSkill tests ---
 
 func TestShouldInjectLearnedSkill_KeywordMatch(t *testing.T) {

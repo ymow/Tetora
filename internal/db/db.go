@@ -158,6 +158,13 @@ func Escape(s string) string {
 // silently ignored. Only string-like interpolation is performed — callers must
 // not rely on type-specific SQL casts. Use ExecArgs / QueryArgs instead of
 // calling bindArgs directly.
+//
+// WARNING: bindArgs does not parse SQL; a literal `?` inside a string literal
+// (e.g. `LIKE '%?%'`) is treated as a placeholder and silently consumed by the
+// next arg. None of the current callers hit this case, but future writers
+// should either rewrite such queries to use concatenation-free patterns
+// (e.g. `LIKE ?` with an arg of `"%pattern%"`) or avoid ExecArgs/QueryArgs
+// for those statements.
 func bindArgs(query string, args []any) string {
 	if len(args) == 0 {
 		return query
