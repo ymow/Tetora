@@ -251,7 +251,9 @@ Configuration uses plain JSON with support for `$ENV_VAR` references, so secrets
 
 Hot-reload is supported: send `SIGHUP` to the running daemon to reload `config.json` without downtime.
 
-### Task Memory Layering
+---
+
+## Task Memory Layering
 
 Tetora organizes task and memory state into three layers with different lifecycles — session-bound todos (Claude Code `TaskCreate`), cross-session structured tickets (`tetora task` / taskboard), and permanent markdown documents (specs, plans, roadmaps under `docs/` or `tasks/`). Agent memory subsystems (`rules/`, `skills/`, `memory/`) sit alongside these layers with their own promotion path.
 
