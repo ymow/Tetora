@@ -382,6 +382,20 @@ func RegisterWarRoomRoutes(mux *http.ServeMux, d WarRoomDeps) {
 		if req.DependsOn == nil {
 			req.DependsOn = []string{}
 		}
+		// Each depends_on item must match the same front-id format. Otherwise
+		// arbitrary strings (e.g. XSS payloads, SQL-ish fragments) could land
+		// in status.json's raw depends_on array.
+		for _, dep := range req.DependsOn {
+			if !reValidFrontID.MatchString(dep) {
+				b, _ := json.Marshal(map[string]string{
+					"error":  "invalid_depends_on",
+					"detail": "each depends_on item must match ^[a-z0-9][a-z0-9-]*$",
+					"got":    dep,
+				})
+				http.Error(w, string(b), http.StatusBadRequest)
+				return
+			}
+		}
 		if err := createFront(d.WorkspaceDir(), req.ID, req.Name, req.Category, req.CardType, req.Auto, req.DependsOn); err != nil {
 			writeMutateError(w, err)
 			return
