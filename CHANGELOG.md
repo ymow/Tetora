@@ -1,11 +1,21 @@
 ## [Unreleased]
 
+---
+
+## [v2.4.2] - 2026-04-19
+
 ### Added
+- **Lesson promotion pipeline (#89)**: New `tetora lessons {scan,promote,audit,prune}` CLI closes the reflection feedback loop — auto-lessons.md (pending) entries are scanned for occurrence counts, promotion candidates surface clusters ≥ threshold, and human gate review before materializing to rules/auto-promoted-*.md. Auto-prune state machine (pending→stale→deleted after 30/60d) clears accumulated pending lessons
+- **Agent-facing reflection tools (#89)**: `reflection_search` (keyword/agent/taskId filter), `reflection_get` (fetch single reflection), `lesson_history` (trace pattern occurrences), `lesson_candidates` (peek at promotion queue) — all parameterized-safe and limit-capped
+- **Dynamic rule injection (#86)**: Rules now keyword-matched at task dispatch time instead of statically injected (58KB fixed cost). New `internal/rule/` package with INDEX.md parser + frontmatter metadata support. Active rules budget capped (MaxRulesPerTask=3, RulesMax=8000 chars); gracefully degrades instead of silently skipping. Auto-lessons moved to workspace/memory/auto-lessons.md (pending queue, not governance)
 - **Skill auto-extraction**: Dispatch server automatically extracts reusable skills after task success as a background goroutine (Haiku model, $0.02 budget, 15s timeout). Triggers when: `tool_use count ≥ 5`, `error_recovery`, or `user_correction` — and no similar skill exists. Extracted skills start `Approved=false`; activate with `tetora skill approve <name>`
 - **Skill extraction prompt injection**: `skillExtractionSection` injected into every agent prompt via `tier.go` — appended to user prompt for `claude-code`/`codex-cli` providers, added to system prompt for standard/complex tiers
 - **Parameterized query API**: `db.QueryArgs` / `db.ExecArgs` for injection-safe SQLite queries via `bindArgs`; applied to zombie janitor and task history queries
 
 ### Fixed
+- **Taskboard retry loop bugs (#90)**: 3 critical fixes — (1) race condition on `next_retry_at` with concurrent SetRetryBackoff, (2) stranded failed tasks when `scan()` never called AutoRetryFailed on no-slots condition, (3) UpdateTask silent no-op when persisting incremented retry_count. Review nits also addressed: `db.Escape` applied consistently to `nowForUpdate`; `retryCount` now rejects unexpected types instead of silently writing 0
+- **Discord session refresh (#87)**: Compact race fix — after `runSingleTask` blocks, `maybeCompactSession` may archive the session; now re-read session status before recording output to redirect to the current active session if archived
+- **Reflection review fixes (#89)**: `PromoteLessons` surfaces non-ENOENT read errors on `auto-lessons.md` instead of silently producing a report with un-flipped `[pending]` markers; `LessonCandidatesHandler` no longer swallows `json.Unmarshal` errors; `QueryLessonHistory` escapes LIKE wildcards (`% _ \`) in caller-supplied prefixes
 - **Zombie janitor error message**: `?` placeholder in string literal was misinterpreted by `bindArgs` as a parameter, causing the UPDATE to fail silently and `resetZombieWorkflowRuns` to return 0. Fixed by pre-formatting the error message before binding
 
 ---
