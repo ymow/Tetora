@@ -11989,16 +11989,29 @@ func buildProviderCandidates(cfg *Config, task Task, agentName string) []string 
 func buildProviderRequest(cfg *Config, task Task, agentName, providerName string, eventCh chan<- SSEEvent) provider.Request {
 	model := task.Model
 
-	// If active provider has an explicit model override (not "auto"), use it.
+	// Active provider override changes how model is resolved.
+	var hasOverride bool
 	if cfg.ActiveProviderStore != nil {
 		activeState, _ := cfg.ActiveProviderStore.LoadFromFile()
-		if activeState != nil && activeState.Model != "" && activeState.Model != "auto" {
-			model = activeState.Model
+		if activeState != nil && activeState.ProviderName != "" {
+			hasOverride = true
+			if activeState.Model != "" && activeState.Model != "auto" {
+				model = activeState.Model
+			} else {
+				// Override active without explicit model. Agent-level model
+				// (e.g. "qwen3.6-plus") may be incompatible with the override
+				// provider, so substitute the provider's configured default.
+				if pc, ok := cfg.Providers[providerName]; ok && pc.Model != "" {
+					model = pc.Model
+				} else if cfg.DefaultModel != "" && cfg.DefaultModel != "auto" {
+					model = cfg.DefaultModel
+				}
+			}
 		}
 	}
 
-	// Resolve "auto" model to the provider's default model.
-	if model == "" || model == "auto" {
+	// Resolve "auto"/empty model when no override touched it.
+	if !hasOverride && (model == "" || model == "auto") {
 		if pc, ok := cfg.Providers[providerName]; ok && pc.Model != "" {
 			model = pc.Model
 		} else if cfg.DefaultModel != "" && cfg.DefaultModel != "auto" {

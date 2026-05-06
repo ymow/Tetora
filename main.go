@@ -2049,8 +2049,20 @@ func tryLoadConfig(path string) (*Config, error) {
 			}
 		}
 		if path == "" {
-			path = "config.json"
+			// Prefer canonical ~/.tetora/config.json over a cwd-relative file
+			// so daemon's BaseDir matches the CLI's regardless of where it ran.
+			path = configPathOrDefault()
 		}
+	}
+
+	// Resolve to absolute path and follow symlinks so BaseDir/RuntimeDir agree
+	// with the CLI side. Symlink-following matters when a repo-root config.json
+	// links to ~/.tetora/config.json — without it BaseDir would be the repo dir.
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
 	}
 
 	// Auto-migrate config if version is outdated.
