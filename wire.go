@@ -11984,12 +11984,13 @@ func buildProviderCandidates(cfg *Config, task Task, agentName string) []string 
 	return candidates
 }
 
-// buildProviderRequest constructs a provider.Request from task, config, and provider name.
-// The eventCh is bridged into the provider.Request.OnEvent callback.
-func buildProviderRequest(cfg *Config, task Task, agentName, providerName string, eventCh chan<- SSEEvent) provider.Request {
+// resolveTaskModel returns the effective model that will be sent to the
+// provider, after applying the active-provider override and the auto/empty
+// fallbacks. Mirrors the resolution inside buildProviderRequest so callers
+// (e.g. dispatch logging) can observe the post-remap model.
+func resolveTaskModel(cfg *Config, task Task, providerName string) string {
 	model := task.Model
 
-	// Active provider override changes how model is resolved.
 	var hasOverride bool
 	if cfg.ActiveProviderStore != nil {
 		activeState, _ := cfg.ActiveProviderStore.LoadFromFile()
@@ -12010,7 +12011,6 @@ func buildProviderRequest(cfg *Config, task Task, agentName, providerName string
 		}
 	}
 
-	// Resolve "auto"/empty model when no override touched it.
 	if !hasOverride && (model == "" || model == "auto") {
 		if pc, ok := cfg.Providers[providerName]; ok && pc.Model != "" {
 			model = pc.Model
@@ -12018,6 +12018,14 @@ func buildProviderRequest(cfg *Config, task Task, agentName, providerName string
 			model = cfg.DefaultModel
 		}
 	}
+
+	return model
+}
+
+// buildProviderRequest constructs a provider.Request from task, config, and provider name.
+// The eventCh is bridged into the provider.Request.OnEvent callback.
+func buildProviderRequest(cfg *Config, task Task, agentName, providerName string, eventCh chan<- SSEEvent) provider.Request {
+	model := resolveTaskModel(cfg, task, providerName)
 
 	timeout, parseErr := time.ParseDuration(task.Timeout)
 	if parseErr != nil {
