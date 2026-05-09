@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"tetora/internal/log"
 	"tetora/internal/version"
 )
 
@@ -34,7 +35,7 @@ func LoadAgentPrompt(cfg *CLIConfig, agentName string) (string, error) {
 	// Fallback: agents/{agent}/SOUL.local.md (per-machine override, not committed)
 	agentSoulLocalPath := filepath.Join(cfg.AgentsDir, agentName, "SOUL.local.md")
 	if data, err := os.ReadFile(agentSoulLocalPath); err == nil {
-		fmt.Fprintf(os.Stderr, "[warn] agent %q: SOUL.local.md overrides SOUL.md (local machine only)\n", agentName)
+		log.Debug("agent soul override active", "agent", agentName, "file", "SOUL.local.md")
 		return string(data), nil
 	}
 

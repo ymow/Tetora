@@ -552,6 +552,22 @@ func annotateManifestWithHint(m *prompt.Manifest, task Task, hintUsed bool) {
 	m.ClassifyResult = classify.Classify(task.Prompt, task.Source).String()
 }
 
+// taskStartLogFields builds structured log fields for "task start" log entries.
+// resolvedModel is the post-remap model; task.Model is the originally requested model.
+// extra receives additional caller-specific key-value pairs (e.g. "source", task.Source).
+func taskStartLogFields(task Task, resolvedModel, providerName string, extra ...any) []any {
+	fields := []any{
+		"taskId", task.ID[:8], "name", task.Name,
+		"model", resolvedModel, "provider", providerName,
+		"workdir", task.Workdir,
+	}
+	fields = append(fields, extra...)
+	if resolvedModel != task.Model {
+		fields = append(fields, "requestedModel", task.Model)
+	}
+	return fields
+}
+
 // runSingleTask runs one task using the shared semaphore. Used by cron engine.
 func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem chan struct{}, agentName string) TaskResult {
 	// Register worker origin (if not already registered by cron layer).
@@ -657,16 +673,7 @@ func runSingleTask(ctx context.Context, cfg *Config, task Task, sem, childSem ch
 
 	providerName := resolveProviderName(cfg, task, agentName)
 	resolvedModel := resolveTaskModel(cfg, task, providerName)
-
-	logFields := []any{
-		"source", task.Source, "taskId", task.ID[:8], "name", task.Name,
-		"model", resolvedModel, "provider", providerName,
-		"agent", agentName, "workdir", task.Workdir,
-	}
-	if resolvedModel != task.Model {
-		logFields = append(logFields, "requestedModel", task.Model)
-	}
-	log.DebugCtx(ctx, "task start", logFields...)
+	log.DebugCtx(ctx, "task start", taskStartLogFields(task, resolvedModel, providerName, "source", task.Source, "agent", agentName)...)
 
 	timeout, err := time.ParseDuration(task.Timeout)
 	if err != nil {
@@ -966,16 +973,7 @@ func runTask(ctx context.Context, cfg *Config, task Task, state *dispatchState) 
 
 	providerName := resolveProviderName(cfg, task, agentName)
 	resolvedModel := resolveTaskModel(cfg, task, providerName)
-
-	logFields := []any{
-		"taskId", task.ID[:8], "name", task.Name,
-		"model", resolvedModel, "provider", providerName,
-		"role", agentName, "workdir", task.Workdir,
-	}
-	if resolvedModel != task.Model {
-		logFields = append(logFields, "requestedModel", task.Model)
-	}
-	log.DebugCtx(ctx, "task start", logFields...)
+	log.DebugCtx(ctx, "task start", taskStartLogFields(task, resolvedModel, providerName, "role", agentName)...)
 
 	// Discord thread-per-task notification (top-level tasks only).
 	doDiscordNotify := task.Depth == 0 && state.discordBot != nil && state.discordBot.notifier != nil

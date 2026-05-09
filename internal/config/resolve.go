@@ -207,6 +207,25 @@ func ResolveMCPPaths(cfg *Config) {
 	}
 }
 
+// LoadFromFile loads config from the given path, applying the same
+// BaseDir / RuntimeDir defaulting and secret resolution that the daemon uses.
+// This shared helper ensures CLI and daemon resolve identical file paths
+// (e.g. active-provider.json in RuntimeDir).
+func LoadFromFile(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	cfg.BaseDir = filepath.Dir(path)
+	ResolveSecrets(&cfg)
+	cfg.NormalizePaths()
+	return &cfg, nil
+}
+
 // LoadForVersioning is a lightweight config loader for versioning hooks.
 // It only resolves historyDB path. Returns nil if loading fails.
 func LoadForVersioning(configPath string) *Config {

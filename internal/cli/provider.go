@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -129,12 +128,11 @@ func providerStatusCmd() {
 	storePath := getActiveProviderPath(cfg)
 	store := config.NewActiveProviderStore(storePath)
 
-	if _, err := store.Load(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading provider state: %v\n", err)
-		os.Exit(1)
+	state, err := store.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: provider state file corrupt (%v) — treating as no active override\n", err)
+		state = &config.ActiveProviderState{}
 	}
-
-	state := store.Get()
 	if state.ProviderName == "" {
 		fmt.Println("No active provider override.")
 		fmt.Println("Using agent-level and global default provider configuration.")
@@ -246,27 +244,10 @@ func isKnownPreset(name string) bool {
 	return false
 }
 
-// loadConfig loads the full Tetora configuration.
-// Applies the same BaseDir/RuntimeDir defaulting as the main daemon so that
-// getActiveProviderPath resolves to the same file the daemon uses.
+// loadConfig loads the Tetora configuration using the shared loader so that
+// BaseDir / RuntimeDir defaulting matches the daemon's behavior exactly.
 func loadConfig() (*config.Config, error) {
-	configPath := getConfigPath()
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil, fmt.Errorf("reading config: %w", err)
-	}
-
-	var cfg config.Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing config: %w", err)
-	}
-
-	cfg.BaseDir = filepath.Dir(configPath)
-	config.ResolveSecrets(&cfg)
-	cfg.NormalizePaths()
-
-	return &cfg, nil
+	return config.LoadFromFile(getConfigPath())
 }
 
 // getConfigPath returns the path to the config file.

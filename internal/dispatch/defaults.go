@@ -41,18 +41,18 @@ func FillDefaults(cfg *config.Config, t *Task) {
 	}
 	if t.Workdir == "" {
 		// Priority: agent's output dir (output-only agents only) > workspace dir > default workdir
+		defaultWorkdir := cfg.DefaultWorkdir
+		if cfg.WorkspaceDir != "" {
+			defaultWorkdir = cfg.WorkspaceDir
+		}
 		if t.Agent != "" && cfg.AgentOutputBase != "" {
 			if rc, ok := cfg.Agents[t.Agent]; ok && rc.OutputOnly {
 				t.Workdir = filepath.Join(cfg.AgentOutputBase, t.Agent, "outputs")
-			} else if cfg.WorkspaceDir != "" {
-				t.Workdir = cfg.WorkspaceDir
 			} else {
-				t.Workdir = cfg.DefaultWorkdir
+				t.Workdir = defaultWorkdir
 			}
-		} else if cfg.WorkspaceDir != "" {
-			t.Workdir = cfg.WorkspaceDir
 		} else {
-			t.Workdir = cfg.DefaultWorkdir
+			t.Workdir = defaultWorkdir
 		}
 	}
 	// Expand ~ in workdir.

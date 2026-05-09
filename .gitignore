@@ -12,7 +12,6 @@ dist/
 config.json
 config.local.json
 agents/**/SOUL.local.md
-agents/SOUL.local.md
 jobs.json
 logs/
 *.log
@@ -92,7 +91,7 @@ config.client*.json
 configs/
 
 # Per-machine agent persona customization (must stay local)
-agents/*/SOUL.local.md
+# (covered by agents/**/ pattern above)
 
 # Cross-machine peer-agents registry (local-only, not for upstream)
 docs/peer-agents.md

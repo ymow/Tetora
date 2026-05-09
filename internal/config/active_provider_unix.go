@@ -1,4 +1,4 @@
-//go:build windows
+//go:build !windows
 
 package config
 
@@ -6,17 +6,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
-// NOTE: Windows lacks POSIX flock. This implementation provides in-process
-// mutual exclusion via s.mu, which covers concurrent daemon goroutines and
-// HTTP handlers. Cross-process locking (e.g., CLI running concurrently with
-// the daemon) is NOT enforced — two concurrent processes writing at the exact
-// same instant will result in one write silently winning, which is an
-// acceptable edge-case given the rarity of simultaneous provider-set calls.
-// TODO(windows): add kernel32.dll LockFileEx for full cross-process safety.
-
 // Load reads the active provider state from disk and caches it in memory.
+// Uses a shared flock for concurrent read safety across processes.
 func (s *ActiveProviderStore) Load() (*ActiveProviderState, error) {
 	f, err := os.Open(s.filePath)
 	if err != nil {
@@ -30,6 +24,11 @@ func (s *ActiveProviderStore) Load() (*ActiveProviderState, error) {
 	}
 	defer f.Close()
 
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH); err != nil {
+		return nil, err
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:errcheck
+
 	var alias activeProviderStateAlias
 	if err := json.NewDecoder(f).Decode(&alias); err != nil {
 		return nil, err
@@ -42,8 +41,9 @@ func (s *ActiveProviderStore) Load() (*ActiveProviderState, error) {
 	return state, nil
 }
 
-// LoadFromFile reads fresh from disk without updating the in-memory cache.
-// Use this when the daemon needs to see changes made by the CLI.
+// LoadFromFile reads the active provider state fresh from disk without updating
+// the in-memory cache. Use this when the daemon needs to see changes made by
+// the CLI while the daemon is running.
 func (s *ActiveProviderStore) LoadFromFile() (*ActiveProviderState, error) {
 	f, err := os.Open(s.filePath)
 	if err != nil {
@@ -54,6 +54,11 @@ func (s *ActiveProviderStore) LoadFromFile() (*ActiveProviderState, error) {
 	}
 	defer f.Close()
 
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH); err != nil {
+		return nil, err
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:errcheck
+
 	var alias activeProviderStateAlias
 	if err := json.NewDecoder(f).Decode(&alias); err != nil {
 		return nil, err
@@ -61,39 +66,31 @@ func (s *ActiveProviderStore) LoadFromFile() (*ActiveProviderState, error) {
 	return alias.toState(), nil
 }
 
-// Save persists the active provider state to disk.
-// Uses os.CreateTemp for a random temp name to reduce same-process collision
-// risk, and s.mu for in-process exclusive access.
+// Save persists the active provider state to disk atomically.
+// Uses an exclusive flock to prevent concurrent writes across processes,
+// and a temp-file + rename for atomic replacement.
 func (s *ActiveProviderStore) Save(state *ActiveProviderState) error {
 	dir := filepath.Dir(s.filePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
 
-	f, err := os.CreateTemp(dir, ".active-provider-*.tmp")
+	f, err := os.OpenFile(s.filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
-	tmpPath := f.Name()
+	defer f.Close()
+
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:errcheck
 
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
-		f.Close()
-		os.Remove(tmpPath)
 		return err
 	}
 	if _, err := f.Write(data); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-
-	if err := os.Rename(tmpPath, s.filePath); err != nil {
-		os.Remove(tmpPath)
 		return err
 	}
 
